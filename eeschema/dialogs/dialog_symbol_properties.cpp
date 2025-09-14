@@ -23,10 +23,6 @@
 
 #include "dialog_symbol_properties.h"
 
-#include <dialog_symbol_fields_table_base.h>
-#include <fields_data_model.h>
-#include <sch_commit.h> 
-
 #include <memory>
 
 #include <bitmaps.h>
