@@ -904,7 +904,8 @@ void DIALOG_SYMBOL_PROPERTIES::OnEditSymbol( wxCommandEvent&  ){
         EndQuasiModal( SYMBOL_PROPS_EDIT_SCHEMATIC_SYMBOL );
 }
 void DIALOG_SYMBOL_PROPERTIES::OnFindPart(wxCommandEvent& event){ //Executing and Processing Part Find Plugin
-    //############# DEFINING PATH TO PLUGIN EXECUTABLE ############## 
+    // button press -> define path executable -> exucute -> capture json result -> parse json -> push to fields -> end
+    //################################# DEFINING PATH TO PLUGIN EXECUTABLE - SINGLE TIME ################################## 
     wxString pluginPath;
     wxFileName cfgFile(wxStandardPaths::Get().GetExecutablePath());
     cfgFile.SetFullName("path_to_part_search.cfg");
@@ -937,14 +938,15 @@ void DIALOG_SYMBOL_PROPERTIES::OnFindPart(wxCommandEvent& event){ //Executing an
     std::map<wxString, wxString> fields;
     wxExecute(pluginPath, output, errors, wxEXEC_SYNC);
     //########################################## CAPTURE & PARSE STDOUT RESULT #############################################
-    wxString prtnm = "",
-             avail = "",
-             rdUrl = "",
-             prdUrl= "", 
-             mfrno = "", 
-             mfr   = "", 
-             descr = "", 
-             dsUrl = "";
+    //bool debug = false;
+    wxString prtnm = "", //part number
+             avail = "", //availability 
+             prUrl = "", //product url
+             mfrno = "", //manufacturer number
+             mfr   = "", //manufacturer
+             descr = "", //description 
+             prcpc = "", //price per piece
+             dsUrl = ""; //datasheet url (product url)
     for (size_t i = 0; i < output.GetCount(); ++i){
         wxString line = output[i]; //searching for keyword "Export[" and end "]"
         int exprt = line.Find("Export[");
@@ -957,26 +959,32 @@ void DIALOG_SYMBOL_PROPERTIES::OnFindPart(wxCommandEvent& event){ //Executing an
                     nlohmann::json j = nlohmann::json::parse(jsonText.ToStdString());
                     if (j.is_object()) { j = nlohmann::json::array({ j }); }
                     for (auto& item : j){ // parsing data
-                        printf("Part:\n");
-                        // \/\/\/\/\/\/ get string from json \/\/\/\/\/\/ |   \/\/\/ placing to list \/\/\/  | \/\/\/\/ printing imported values \/\/\/\/
-                        prtnm =wxString::FromUTF8(item.value("prtnm","")); fields[wxS("PartNumber")] = prtnm; //printf("Name:   %s\n", prtnm.ToUTF8().data());   
-                        mfrno =wxString::FromUTF8(item.value("mfrno","")); fields[wxS("Mfr. No")]    = mfrno; //printf("Mfr. No:%s\n", mfrno.ToUTF8().data()); 
-                        mfr   =wxString::FromUTF8(item.value("mfr", ""));  fields[wxS("Mfr")]        = mfr;   //printf("Mfr:    %s\n", mfr.ToUTF8().data());   
-                        descr =wxString::FromUTF8(item.value("descr","")); fields[wxS("Description")]= descr; //printf("Descr:  %s\n", descr.ToUTF8().data()); 
-                        avail =wxString::FromUTF8(item.value("avail","")); fields[wxS("Avail")]      = avail; //printf("Avail:  %s\n", avail.ToUTF8().data()); 
-                        prdUrl=wxString::FromUTF8(item.value("prdUrl",""));fields[wxS("ProductURL")] = prdUrl;//printf("URL:    %s\n", prdUrl.ToUTF8().data());
-                        dsUrl =wxString::FromUTF8(item.value("dsUrl","")); fields[wxS("Datasheet")]  = dsUrl; //printf("DS:     %s\n", dsUrl.ToUTF8().data());
-                        // priceBreaks --------------------------------------------------------
-                        // if (item.contains("priceBreaks") && item["priceBreaks"].is_array()){
-                        //     printf("  Price breaks:\n");
-                        //     for (auto& pb : item["priceBreaks"]){
-                        //         int qty = pb.value("qty", 0);
-                        //         double price = pb.value("price", 0.0);
-                        //         std::string curr = pb.value("curr", "");
-                        //         printf("    %d pcs -> %.2f %s\n", qty, price, curr.c_str());
-                        //     }
-                        // }
-                        printf("----------------------------------------------------\n");
+                        //if(debug) printf("Part:\n");
+                        // \/\/\/\/\/\/ get string from json \/\/\/\/\/\/ |   \/\/\/ placing to list \/\/\/   | \/\/\/\/ printing imported values \/\/\/\/
+                        prtnm = wxString::FromUTF8(item.value("prtnm","")); fields[wxS("PartNumber")] = prtnm; //if(debug) printf("Name:   %s\n", prtnm.ToUTF8().data());   
+                        mfrno = wxString::FromUTF8(item.value("mfrno","")); fields[wxS("Mfr. No")]    = mfrno; //if(debug) printf("Mfr. No:%s\n", mfrno.ToUTF8().data()); 
+                        mfr   = wxString::FromUTF8(item.value("mfr", ""));  fields[wxS("Mfr")]        = mfr;   //if(debug) printf("Mfr:    %s\n", mfr.ToUTF8().data());   
+                        descr = wxString::FromUTF8(item.value("descr","")); fields[wxS("Description")]= descr; //if(debug) printf("Descr:  %s\n", descr.ToUTF8().data()); 
+                        avail = wxString::FromUTF8(item.value("avail","")); fields[wxS("Avail")]      = avail; //if(debug) printf("Avail:  %s\n", avail.ToUTF8().data()); 
+                        prUrl = wxString::FromUTF8(item.value("prdUrl",""));fields[wxS("ProductURL")] = prUrl; //if(debug) printf("URL:    %s\n", prUrl.ToUTF8().data());
+                        dsUrl = wxString::FromUTF8(item.value("dsUrl","")); fields[wxS("Datasheet")]  = dsUrl; //if(debug) printf("DS:     %s\n", dsUrl.ToUTF8().data());
+                        //priceBreaks --------------------------------------------------------
+                        //if(debug) printf("Parsing prices...");
+                        if (item.contains("priceBreaks") && item["priceBreaks"].is_array() && !item["priceBreaks"].empty()){
+                            // first row
+                            const auto& first = item["priceBreaks"].front();
+                            double price = first.value("price", 0.0);
+                            std::string curr = first.value("curr", "");
+                        prcpc = wxString::Format("%.2f %s", price, curr); fields[wxS("Price")]  = prcpc;
+                            //if(debug) printf("  Price breaks:\n");
+                            for (const auto& pb : item["priceBreaks"]){
+                                int qty = pb.value("qty", 0);
+                                price = pb.value("price", 0.0);
+                                curr = pb.value("curr", "");
+                                //if(debug) printf("    %d pcs -> %.2f %s\n", qty, price, curr.c_str());
+                            }
+                        }
+                        //if(debug) printf("----------------------------------------------------\n");
                     }   
                 }//error :(
                 catch (std::exception& e){ wxLogError("JSON parse error: %s", e.what()); return; 
@@ -988,21 +996,21 @@ void DIALOG_SYMBOL_PROPERTIES::OnFindPart(wxCommandEvent& event){ //Executing an
         if(fieldValue == "ignoreField") continue; //skip extra field
         int row = 1; //row needed to place data
         int nrowExisting = 0;
-        //printf("Field name %s", fieldName.ToUTF8().data());
+        //if(debug) printf("Field name %s", fieldName.ToUTF8().data());
         for (;row < m_fieldsGrid->GetNumberRows(); row++){// check is row exists
             if(fieldName == m_fields->GetValue(row, FDC_NAME)){
-                //printf(" already exists in row %d", row);
+                //if(debug) printf(" already exists in row %d", row);
                 nrowExisting = row; break;
         }}
-        //printf(" | fieldValue = %s\n",fieldValue.ToUTF8().data());
+        //if(debug) printf(" | fieldValue = %s\n",fieldValue.ToUTF8().data());
         if(nrowExisting){
             m_fields->SetValue(nrowExisting,FDC_VALUE,fieldValue);
         }else{
-            //printf("Adding new row %s\n",fieldName.ToUTF8().data());
+            //if(debug) printf("Adding new field: %s\n",fieldName.ToUTF8().data());
             m_fieldsGrid->OnAddRow( //add new field
                 [&]() -> std::pair<int, int>{
                     SCH_FIELD newField(m_symbol, FIELD_T::USER, fieldName);
-                    newField.SetTextAngle( m_fields->GetField( FIELD_T::USER )->GetTextAngle() );
+                    //newField.SetTextAngle( m_fields->GetField( FIELD_T::USER )->GetTextAngle() );
                     newField.SetText(fieldValue);
                     newField.SetVisible(false);
                     m_fields->push_back(newField);
@@ -1012,7 +1020,7 @@ void DIALOG_SYMBOL_PROPERTIES::OnFindPart(wxCommandEvent& event){ //Executing an
                     OnModify();
                     return { m_fields->size() - 1, FDC_NAME };
     });}}
-    //printf("n of rows:%d\n",m_fieldsGrid->GetNumberRows());
+    //if(debug) printf("n of rows:%d\n",m_fieldsGrid->GetNumberRows());
 }
 void DIALOG_SYMBOL_PROPERTIES::OnEditLibrarySymbol( wxCommandEvent&  )
 {
