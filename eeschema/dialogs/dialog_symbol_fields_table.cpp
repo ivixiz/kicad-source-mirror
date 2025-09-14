@@ -730,8 +730,7 @@ void DIALOG_SYMBOL_FIELDS_TABLE::LoadFieldNames()
 }
 
 
-void DIALOG_SYMBOL_FIELDS_TABLE::OnAddField( wxCommandEvent& event )
-{
+void DIALOG_SYMBOL_FIELDS_TABLE::OnAddField( wxCommandEvent& event ){
     wxTextEntryDialog dlg( this, _( "New field name:" ), _( "Add Field" ) );
 
     if( dlg.ShowModal() != wxID_OK )
@@ -853,8 +852,7 @@ void DIALOG_SYMBOL_FIELDS_TABLE::OnRenameField( wxCommandEvent& event )
 }
 
 
-void DIALOG_SYMBOL_FIELDS_TABLE::OnFilterText( wxCommandEvent& aEvent )
-{
+void DIALOG_SYMBOL_FIELDS_TABLE::OnFilterText( wxCommandEvent& aEvent ){
     m_dataModel->SetFilter( m_filter->GetValue() );
     m_dataModel->RebuildRows();
     m_grid->ForceRefresh();
@@ -863,8 +861,7 @@ void DIALOG_SYMBOL_FIELDS_TABLE::OnFilterText( wxCommandEvent& aEvent )
 }
 
 
-void DIALOG_SYMBOL_FIELDS_TABLE::OnFilterMouseMoved( wxMouseEvent& aEvent )
-{
+void DIALOG_SYMBOL_FIELDS_TABLE::OnFilterMouseMoved( wxMouseEvent& aEvent ){
 #if defined( __WXOSX__ ) || wxCHECK_VERSION( 3, 3, 0 ) // Doesn't work properly on other ports
     wxPoint pos = aEvent.GetPosition();
     wxRect  ctrlRect = m_filter->GetScreenRect();
@@ -981,8 +978,7 @@ void DIALOG_SYMBOL_FIELDS_TABLE::OnMenu( wxCommandEvent& event )
 }
 
 
-void DIALOG_SYMBOL_FIELDS_TABLE::OnColSort( wxGridEvent& aEvent )
-{
+void DIALOG_SYMBOL_FIELDS_TABLE::OnColSort( wxGridEvent& aEvent ){
     int         sortCol = aEvent.GetCol();
     std::string key( m_dataModel->GetColFieldName( sortCol ).ToUTF8() );
     bool        ascending;
@@ -1015,8 +1011,7 @@ void DIALOG_SYMBOL_FIELDS_TABLE::OnColSort( wxGridEvent& aEvent )
 }
 
 
-void DIALOG_SYMBOL_FIELDS_TABLE::OnColMove( wxGridEvent& aEvent )
-{
+void DIALOG_SYMBOL_FIELDS_TABLE::OnColMove( wxGridEvent& aEvent ){
     int origPos = aEvent.GetCol();
 
     // Save column widths since the setup function uses the saved config values
@@ -1184,8 +1179,7 @@ void DIALOG_SYMBOL_FIELDS_TABLE::OnRegroupSymbols( wxCommandEvent& aEvent )
 }
 
 
-void DIALOG_SYMBOL_FIELDS_TABLE::OnTableCellClick( wxGridEvent& event )
-{
+void DIALOG_SYMBOL_FIELDS_TABLE::OnTableCellClick( wxGridEvent& event ){
     if( m_dataModel->ColIsReference( event.GetCol() ) )
     {
         m_grid->ClearSelection();

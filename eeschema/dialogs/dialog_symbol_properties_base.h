@@ -1,5 +1,5 @@
 ///////////////////////////////////////////////////////////////////////////
-// C++ code generated with wxFormBuilder (version 4.2.1-0-g80c4cb6)
+// C++ code generated with wxFormBuilder (version 4.2.1-111-g5faebfea)
 // http://www.wxformbuilder.org/
 //
 // PLEASE DO *NOT* EDIT THIS FILE!
@@ -70,6 +70,7 @@ class DIALOG_SYMBOL_PROPERTIES_BASE : public DIALOG_SHIM
 		wxButton* m_updateSymbolBtn;
 		wxButton* m_changeSymbolBtn;
 		wxButton* m_editSchematicSymbolBtn;
+		wxButton* m_findPart;
 		wxButton* m_editLibrarySymbolBtn;
 		wxPanel* m_pinTablePage;
 		WX_GRID* m_pinGrid;
@@ -98,6 +99,8 @@ class DIALOG_SYMBOL_PROPERTIES_BASE : public DIALOG_SHIM
 		virtual void OnExchangeSymbol( wxCommandEvent& event ) { event.Skip(); }
 		virtual void OnEditSymbol( wxCommandEvent& event ) { event.Skip(); }
 		virtual void onUpdateEditSymbol( wxUpdateUIEvent& event ) { event.Skip(); }
+		virtual void OnFindPart( wxCommandEvent& event ) { event.Skip(); }
+		virtual void onUpdateFindPart( wxUpdateUIEvent& event ) { event.Skip(); }
 		virtual void OnEditLibrarySymbol( wxCommandEvent& event ) { event.Skip(); }
 		virtual void onUpdateEditLibrarySymbol( wxUpdateUIEvent& event ) { event.Skip(); }
 		virtual void OnPinTableCellEdited( wxGridEvent& event ) { event.Skip(); }

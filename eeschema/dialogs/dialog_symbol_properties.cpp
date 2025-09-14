@@ -1,4 +1,4 @@
-/*
+/* FILE: dialog_symbol_properties.cpp
  * This program source code file is part of KiCad, a free EDA CAD application.
  *
  * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
@@ -23,6 +23,10 @@
 
 #include "dialog_symbol_properties.h"
 
+#include <dialog_symbol_fields_table_base.h>
+#include <fields_data_model.h>
+#include <sch_commit.h> 
+
 #include <memory>
 
 #include <bitmaps.h>
@@ -46,8 +50,9 @@
 #include <sch_commit.h>
 #include <tool/tool_manager.h>
 #include <tool/actions.h>
-
 #include <dialog_sim_model.h>
+
+#include <wx/msgdlg.h> 
 
 
 wxDEFINE_EVENT( SYMBOL_DELAY_FOCUS, wxCommandEvent );
@@ -303,8 +308,6 @@ protected:
     wxGridCellAttr*              m_typeAttr;
     wxGridCellAttr*              m_shapeAttr;
 };
-
-
 DIALOG_SYMBOL_PROPERTIES::DIALOG_SYMBOL_PROPERTIES( SCH_EDIT_FRAME* aParent, SCH_SYMBOL* aSymbol ) :
         DIALOG_SYMBOL_PROPERTIES_BASE( aParent ),
         m_symbol( nullptr ),
@@ -400,8 +403,6 @@ DIALOG_SYMBOL_PROPERTIES::DIALOG_SYMBOL_PROPERTIES( SCH_EDIT_FRAME* aParent, SCH
 
     finishDialogSettings();
 }
-
-
 DIALOG_SYMBOL_PROPERTIES::~DIALOG_SYMBOL_PROPERTIES()
 {
     if( EESCHEMA_SETTINGS* cfg = dynamic_cast<EESCHEMA_SETTINGS*>( Kiface().KifaceSettings() ) )
@@ -426,14 +427,10 @@ DIALOG_SYMBOL_PROPERTIES::~DIALOG_SYMBOL_PROPERTIES()
     m_fieldsGrid->PopEventHandler( true );
     m_pinGrid->PopEventHandler( true );
 }
-
-
 SCH_EDIT_FRAME* DIALOG_SYMBOL_PROPERTIES::GetParent()
 {
     return dynamic_cast<SCH_EDIT_FRAME*>( wxDialog::GetParent() );
 }
-
-
 bool DIALOG_SYMBOL_PROPERTIES::TransferDataToWindow()
 {
     if( !wxDialog::TransferDataToWindow() )
@@ -546,8 +543,6 @@ bool DIALOG_SYMBOL_PROPERTIES::TransferDataToWindow()
 
     return true;
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::OnEditSpiceModel( wxCommandEvent& event )
 {
     if( !m_fieldsGrid->CommitPendingChanges() )
@@ -616,16 +611,12 @@ void DIALOG_SYMBOL_PROPERTIES::OnEditSpiceModel( wxCommandEvent& event )
     OnModify();
     m_fieldsGrid->ForceRefresh();
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::OnCancelButtonClick( wxCommandEvent& event )
 {
     // Running the Footprint Browser gums up the works and causes the automatic cancel
     // stuff to no longer work.  So we do it here ourselves.
     EndQuasiModal( wxID_CANCEL );
 }
-
-
 bool DIALOG_SYMBOL_PROPERTIES::Validate()
 {
     LIB_ID   id;
@@ -657,8 +648,6 @@ bool DIALOG_SYMBOL_PROPERTIES::Validate()
 
     return true;
 }
-
-
 bool DIALOG_SYMBOL_PROPERTIES::TransferDataFromWindow()
 {
     if( !wxDialog::TransferDataFromWindow() )  // Calls our Validate() method.
@@ -786,8 +775,6 @@ bool DIALOG_SYMBOL_PROPERTIES::TransferDataFromWindow()
 
     return true;
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::OnGridCellChanging( wxGridEvent& event )
 {
     wxGridCellEditor* editor = m_fieldsGrid->GetCellEditor( event.GetRow(), event.GetCol() );
@@ -823,8 +810,6 @@ void DIALOG_SYMBOL_PROPERTIES::OnGridCellChanging( wxGridEvent& event )
 
     editor->DecRef();
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::OnGridEditorShown( wxGridEvent& aEvent )
 {
     if( m_fields->at( aEvent.GetRow() ).GetId() == FIELD_T::REFERENCE
@@ -837,14 +822,10 @@ void DIALOG_SYMBOL_PROPERTIES::OnGridEditorShown( wxGridEvent& aEvent )
 
     m_editorShown = true;
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::OnGridEditorHidden( wxGridEvent& aEvent )
 {
     m_editorShown = false;
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::OnAddField( wxCommandEvent& event )
 {
     m_fieldsGrid->OnAddRow(
@@ -865,8 +846,6 @@ void DIALOG_SYMBOL_PROPERTIES::OnAddField( wxCommandEvent& event )
                 return { m_fields->size() - 1, FDC_NAME };
             } );
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::OnDeleteField( wxCommandEvent& event )
 {
     m_fieldsGrid->OnDeleteRows(
@@ -892,8 +871,6 @@ void DIALOG_SYMBOL_PROPERTIES::OnDeleteField( wxCommandEvent& event )
 
     OnModify();
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::OnMoveUp( wxCommandEvent& event )
 {
     m_fieldsGrid->OnMoveRowUp(
@@ -908,8 +885,6 @@ void DIALOG_SYMBOL_PROPERTIES::OnMoveUp( wxCommandEvent& event )
                 OnModify();
             } );
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::OnMoveDown( wxCommandEvent& event )
 {
     m_fieldsGrid->OnMoveRowDown(
@@ -924,36 +899,136 @@ void DIALOG_SYMBOL_PROPERTIES::OnMoveDown( wxCommandEvent& event )
                     OnModify();
             } );
 }
-
-
-void DIALOG_SYMBOL_PROPERTIES::OnEditSymbol( wxCommandEvent&  )
-{
+void DIALOG_SYMBOL_PROPERTIES::OnEditSymbol( wxCommandEvent&  ){
     if( TransferDataFromWindow() )
         EndQuasiModal( SYMBOL_PROPS_EDIT_SCHEMATIC_SYMBOL );
 }
-
-
+void DIALOG_SYMBOL_PROPERTIES::OnFindPart(wxCommandEvent& event){ //Executing and Processing Part Find Plugin
+    //############# DEFINING PATH TO PLUGIN EXECUTABLE ############## 
+    wxString pluginPath;
+    wxFileName cfgFile(wxStandardPaths::Get().GetExecutablePath());
+    cfgFile.SetFullName("path_to_part_search.cfg");
+    if (wxFileExists(cfgFile.GetFullPath())) {
+        wxTextFile file(cfgFile.GetFullPath());
+        if (file.Open()) {
+            pluginPath = file.GetFirstLine().Trim(true).Trim(false);
+            file.Close(); }
+    }else{
+        wxTextEntryDialog dlg(nullptr,
+            "Enter the absolute path to the part_search executable:",
+            "Configure part_search");
+        if (dlg.ShowModal() == wxID_OK) {
+            pluginPath = dlg.GetValue();
+            wxTextFile fileOut(cfgFile.GetFullPath());
+            if (!wxFileExists(cfgFile.GetFullPath())) fileOut.Create();
+            else fileOut.Open();
+            fileOut.Clear();
+            fileOut.AddLine(pluginPath);
+            fileOut.Write();
+            fileOut.Close();
+        } else { wxLogError("No path provided, cannot run part_search."); }
+    }
+    if (pluginPath.IsEmpty() || !wxFileExists(pluginPath)) {
+        wxLogError("Part_search executable not found at the specified path.\n\
+            Please remove file \"%s\" and provide correct directory.", cfgFile.GetFullPath()); 
+        return; }
+    //#################################### SYNC EXECUTE FIND PART PROGRAM ##################################################
+    wxArrayString output, errors;
+    std::map<wxString, wxString> fields;
+    wxExecute(pluginPath, output, errors, wxEXEC_SYNC);
+    //########################################## CAPTURE & PARSE STDOUT RESULT #############################################
+    wxString prtnm = "",
+             avail = "",
+             rdUrl = "",
+             prdUrl= "", 
+             mfrno = "", 
+             mfr   = "", 
+             descr = "", 
+             dsUrl = "";
+    for (size_t i = 0; i < output.GetCount(); ++i){
+        wxString line = output[i]; //searching for keyword "Export[" and end "]"
+        int exprt = line.Find("Export[");
+        if (exprt != wxNOT_FOUND){ //check
+            int start = exprt + 7; // start after "Export["
+            int close = line.Find(']', true);
+            if (close != wxNOT_FOUND && close > start){ //check
+                wxString jsonText = line.Mid(start, close - start); //cut needed json 
+                try{ // trying to parse json 
+                    nlohmann::json j = nlohmann::json::parse(jsonText.ToStdString());
+                    if (j.is_object()) { j = nlohmann::json::array({ j }); }
+                    for (auto& item : j){ // parsing data
+                        printf("Part:\n");
+                        // \/\/\/\/\/\/ get string from json \/\/\/\/\/\/ |   \/\/\/ placing to list \/\/\/  | \/\/\/\/ printing imported values \/\/\/\/
+                        prtnm =wxString::FromUTF8(item.value("prtnm","")); fields[wxS("PartNumber")] = prtnm; //printf("Name:   %s\n", prtnm.ToUTF8().data());   
+                        mfrno =wxString::FromUTF8(item.value("mfrno","")); fields[wxS("Mfr. No")]    = mfrno; //printf("Mfr. No:%s\n", mfrno.ToUTF8().data()); 
+                        mfr   =wxString::FromUTF8(item.value("mfr", ""));  fields[wxS("Mfr")]        = mfr;   //printf("Mfr:    %s\n", mfr.ToUTF8().data());   
+                        descr =wxString::FromUTF8(item.value("descr","")); fields[wxS("Description")]= descr; //printf("Descr:  %s\n", descr.ToUTF8().data()); 
+                        avail =wxString::FromUTF8(item.value("avail","")); fields[wxS("Avail")]      = avail; //printf("Avail:  %s\n", avail.ToUTF8().data()); 
+                        prdUrl=wxString::FromUTF8(item.value("prdUrl",""));fields[wxS("ProductURL")] = prdUrl;//printf("URL:    %s\n", prdUrl.ToUTF8().data());
+                        dsUrl =wxString::FromUTF8(item.value("dsUrl","")); fields[wxS("Datasheet")]  = dsUrl; //printf("DS:     %s\n", dsUrl.ToUTF8().data());
+                        // priceBreaks --------------------------------------------------------
+                        // if (item.contains("priceBreaks") && item["priceBreaks"].is_array()){
+                        //     printf("  Price breaks:\n");
+                        //     for (auto& pb : item["priceBreaks"]){
+                        //         int qty = pb.value("qty", 0);
+                        //         double price = pb.value("price", 0.0);
+                        //         std::string curr = pb.value("curr", "");
+                        //         printf("    %d pcs -> %.2f %s\n", qty, price, curr.c_str());
+                        //     }
+                        // }
+                        printf("----------------------------------------------------\n");
+                    }   
+                }//error :(
+                catch (std::exception& e){ wxLogError("JSON parse error: %s", e.what()); return; 
+    }   }   }   }
+    //#################################################### PUSH TO FIELDS #########################################################
+    for (auto& field : fields) { //creating fields and filling them
+        const wxString& fieldName  = field.first;
+        const wxString& fieldValue = field.second;
+        if(fieldValue == "ignoreField") continue; //skip extra field
+        int row = 1; //row needed to place data
+        int nrowExisting = 0;
+        //printf("Field name %s", fieldName.ToUTF8().data());
+        for (;row < m_fieldsGrid->GetNumberRows(); row++){// check is row exists
+            if(fieldName == m_fields->GetValue(row, FDC_NAME)){
+                //printf(" already exists in row %d", row);
+                nrowExisting = row; break;
+        }}
+        //printf(" | fieldValue = %s\n",fieldValue.ToUTF8().data());
+        if(nrowExisting){
+            m_fields->SetValue(nrowExisting,FDC_VALUE,fieldValue);
+        }else{
+            //printf("Adding new row %s\n",fieldName.ToUTF8().data());
+            m_fieldsGrid->OnAddRow( //add new field
+                [&]() -> std::pair<int, int>{
+                    SCH_FIELD newField(m_symbol, FIELD_T::USER, fieldName);
+                    newField.SetTextAngle( m_fields->GetField( FIELD_T::USER )->GetTextAngle() );
+                    newField.SetText(fieldValue);
+                    newField.SetVisible(false);
+                    m_fields->push_back(newField);
+                    //notify the grid
+                    wxGridTableMessage msg( m_fields, wxGRIDTABLE_NOTIFY_ROWS_APPENDED, 1 );
+                    m_fieldsGrid->ProcessTableMessage( msg );
+                    OnModify();
+                    return { m_fields->size() - 1, FDC_NAME };
+    });}}
+    //printf("n of rows:%d\n",m_fieldsGrid->GetNumberRows());
+}
 void DIALOG_SYMBOL_PROPERTIES::OnEditLibrarySymbol( wxCommandEvent&  )
 {
     if( TransferDataFromWindow() )
         EndQuasiModal( SYMBOL_PROPS_EDIT_LIBRARY_SYMBOL );
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::OnUpdateSymbol( wxCommandEvent&  )
 {
     if( TransferDataFromWindow() )
         EndQuasiModal( SYMBOL_PROPS_WANT_UPDATE_SYMBOL );
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::OnExchangeSymbol( wxCommandEvent&  )
 {
     if( TransferDataFromWindow() )
         EndQuasiModal( SYMBOL_PROPS_WANT_EXCHANGE_SYMBOL );
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::OnPinTableCellEdited( wxGridEvent& aEvent )
 {
     int row = aEvent.GetRow();
@@ -967,8 +1042,6 @@ void DIALOG_SYMBOL_PROPERTIES::OnPinTableCellEdited( wxGridEvent& aEvent )
 
     OnModify();
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::OnPinTableColSort( wxGridEvent& aEvent )
 {
     int sortCol = aEvent.GetCol();
@@ -986,8 +1059,6 @@ void DIALOG_SYMBOL_PROPERTIES::OnPinTableColSort( wxGridEvent& aEvent )
     m_dataModel->SortRows( sortCol, ascending );
     m_dataModel->BuildAttrs();
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::AdjustFieldsGridColumns()
 {
     wxGridUpdateLocker deferRepaintsTillLeavingScope( m_fieldsGrid );
@@ -1005,8 +1076,6 @@ void DIALOG_SYMBOL_PROPERTIES::AdjustFieldsGridColumns()
 
     m_fieldsGrid->SetColSize( 1, std::max( 120, fieldsWidth - fixedColsWidth ) );
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::AdjustPinsGridColumns()
 {
     wxGridUpdateLocker deferRepaintsTillLeavingScope( m_pinGrid );
@@ -1027,8 +1096,6 @@ void DIALOG_SYMBOL_PROPERTIES::AdjustPinsGridColumns()
         m_pinGrid->SetColSize( COL_ALT_NAME, pinTblWidth / 2 );
     }
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::OnUpdateUI( wxUpdateUIEvent& event )
 {
     std::bitset<64> shownColumns = m_fieldsGrid->GetShownColumns();
@@ -1041,8 +1108,6 @@ void DIALOG_SYMBOL_PROPERTIES::OnUpdateUI( wxUpdateUIEvent& event )
             AdjustFieldsGridColumns();
     }
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::HandleDelayedFocus( wxCommandEvent& event )
 {
     VECTOR2I *loc = static_cast<VECTOR2I*>( event.GetClientData() );
@@ -1060,8 +1125,6 @@ void DIALOG_SYMBOL_PROPERTIES::HandleDelayedFocus( wxCommandEvent& event )
 
     delete loc;
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::HandleDelayedSelection( wxCommandEvent& event )
 {
     VECTOR2I *loc = static_cast<VECTOR2I*>( event.GetClientData() );
@@ -1076,7 +1139,6 @@ void DIALOG_SYMBOL_PROPERTIES::HandleDelayedSelection( wxCommandEvent& event )
 
     cellEditor->DecRef();   // we're done; must release
 }
-
 void DIALOG_SYMBOL_PROPERTIES::OnSizeFieldsGrid( wxSizeEvent& event )
 {
     wxSize new_size = event.GetSize();
@@ -1096,8 +1158,6 @@ void DIALOG_SYMBOL_PROPERTIES::OnSizeFieldsGrid( wxSizeEvent& event )
     // Always propagate for a grid repaint (needed if the height changes, as well as width)
     event.Skip();
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::OnSizePinsGrid( wxSizeEvent& event )
 {
     wxSize new_size = event.GetSize();
@@ -1117,8 +1177,6 @@ void DIALOG_SYMBOL_PROPERTIES::OnSizePinsGrid( wxSizeEvent& event )
     // Always propagate for a grid repaint (needed if the height changes, as well as width)
     event.Skip();
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::OnInitDlg( wxInitDialogEvent& event )
 {
     TransferDataToWindow();
@@ -1131,14 +1189,10 @@ void DIALOG_SYMBOL_PROPERTIES::OnInitDlg( wxInitDialogEvent& event )
     if( cfg && cfg->m_Appearance.edit_symbol_width > 0 && cfg->m_Appearance.edit_symbol_height > 0 )
         SetSize( cfg->m_Appearance.edit_symbol_width, cfg->m_Appearance.edit_symbol_height );
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::OnCheckBox( wxCommandEvent& event )
 {
     OnModify();
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::OnUnitChoice( wxCommandEvent& event )
 {
     if( m_dataModel )
@@ -1171,20 +1225,14 @@ void DIALOG_SYMBOL_PROPERTIES::OnUnitChoice( wxCommandEvent& event )
 
     OnModify();
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::onUpdateEditSymbol( wxUpdateUIEvent& event )
 {
     event.Enable( m_symbol && m_symbol->GetLibSymbolRef() );
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::onUpdateEditLibrarySymbol( wxUpdateUIEvent& event )
 {
     event.Enable( m_symbol && m_symbol->GetLibSymbolRef() );
 }
-
-
 void DIALOG_SYMBOL_PROPERTIES::OnPageChanging( wxBookCtrlEvent& aEvent )
 {
     if( !m_fieldsGrid->CommitPendingChanges() )

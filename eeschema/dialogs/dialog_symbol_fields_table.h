@@ -1,3 +1,4 @@
+//FILE: dialog_symbol_fields_table.h
 /*
  * This program source code file is part of KiCad, a free EDA CAD application.
  *
@@ -28,6 +29,9 @@
 #include <sch_reference_list.h>
 #include <schematic.h>
 #include <fields_data_model.h>
+#include <nlohmann/json.hpp>
+
+
 
 wxDECLARE_EVENT( EDA_EVT_CLOSE_DIALOG_SYMBOL_FIELDS_TABLE, wxCommandEvent );
 

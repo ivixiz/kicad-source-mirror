@@ -1,3 +1,4 @@
+//FILE: fields_data_model.cpp
 /*
  * This program source code file is part of KiCad, a free EDA CAD application.
  *
@@ -181,8 +182,7 @@ const wxString FIELDS_EDITOR_GRID_DATA_MODEL::QUANTITY_VARIABLE = wxS( "${QUANTI
 const wxString FIELDS_EDITOR_GRID_DATA_MODEL::ITEM_NUMBER_VARIABLE = wxS( "${ITEM_NUMBER}" );
 
 
-void FIELDS_EDITOR_GRID_DATA_MODEL::AddColumn( const wxString& aFieldName, const wxString& aLabel,
-                                               bool aAddedByUser )
+void FIELDS_EDITOR_GRID_DATA_MODEL::AddColumn( const wxString& aFieldName, const wxString& aLabel, bool aAddedByUser )
 {
     // Don't add a field twice
     if( GetFieldNameCol( aFieldName ) != -1 )
@@ -196,11 +196,7 @@ void FIELDS_EDITOR_GRID_DATA_MODEL::AddColumn( const wxString& aFieldName, const
             updateDataStoreSymbolField( *symbol, aFieldName );
     }
 }
-
-
-void FIELDS_EDITOR_GRID_DATA_MODEL::updateDataStoreSymbolField( const SCH_SYMBOL& aSymbol,
-                                                                const wxString&   aFieldName )
-{
+void FIELDS_EDITOR_GRID_DATA_MODEL::updateDataStoreSymbolField( const SCH_SYMBOL& aSymbol, const wxString&   aFieldName ){
     if( isAttribute( aFieldName ) )
     {
         m_dataStore[aSymbol.m_Uuid][aFieldName] = getAttributeValue( aSymbol, aFieldName );
@@ -227,10 +223,7 @@ void FIELDS_EDITOR_GRID_DATA_MODEL::updateDataStoreSymbolField( const SCH_SYMBOL
         m_dataStore[aSymbol.m_Uuid][aFieldName] = wxEmptyString;
     }
 }
-
-
-void FIELDS_EDITOR_GRID_DATA_MODEL::RemoveColumn( int aCol )
-{
+void FIELDS_EDITOR_GRID_DATA_MODEL::RemoveColumn( int aCol ){
     for( unsigned i = 0; i < m_symbolsList.GetCount(); ++i )
     {
         if( SCH_SYMBOL* symbol = m_symbolsList[i].GetSymbol() )
@@ -239,10 +232,7 @@ void FIELDS_EDITOR_GRID_DATA_MODEL::RemoveColumn( int aCol )
 
     m_cols.erase( m_cols.begin() + aCol );
 }
-
-
-void FIELDS_EDITOR_GRID_DATA_MODEL::RenameColumn( int aCol, const wxString& newName )
-{
+void FIELDS_EDITOR_GRID_DATA_MODEL::RenameColumn( int aCol, const wxString& newName ){
     for( unsigned i = 0; i < m_symbolsList.GetCount(); ++i )
     {
         SCH_SYMBOL* symbol = m_symbolsList[i].GetSymbol();
@@ -258,8 +248,6 @@ void FIELDS_EDITOR_GRID_DATA_MODEL::RenameColumn( int aCol, const wxString& newN
     m_cols[aCol].m_fieldName = newName;
     m_cols[aCol].m_label = newName;
 }
-
-
 int FIELDS_EDITOR_GRID_DATA_MODEL::GetFieldNameCol( const wxString& aFieldName ) const
 {
     for( size_t i = 0; i < m_cols.size(); i++ )
@@ -270,8 +258,6 @@ int FIELDS_EDITOR_GRID_DATA_MODEL::GetFieldNameCol( const wxString& aFieldName )
 
     return -1;
 }
-
-
 std::vector<BOM_FIELD> FIELDS_EDITOR_GRID_DATA_MODEL::GetFieldsOrdered()
 {
     std::vector<BOM_FIELD> fields;
@@ -281,8 +267,6 @@ std::vector<BOM_FIELD> FIELDS_EDITOR_GRID_DATA_MODEL::GetFieldsOrdered()
 
     return fields;
 }
-
-
 void FIELDS_EDITOR_GRID_DATA_MODEL::SetFieldsOrder( const std::vector<wxString>& aNewOrder )
 {
     size_t foundCount = 0;
@@ -303,10 +287,7 @@ void FIELDS_EDITOR_GRID_DATA_MODEL::SetFieldsOrder( const std::vector<wxString>&
         }
     }
 }
-
-
-wxString FIELDS_EDITOR_GRID_DATA_MODEL::GetValue( int aRow, int aCol )
-{
+wxString FIELDS_EDITOR_GRID_DATA_MODEL::GetValue( int aRow, int aCol ){
     if( ColIsReference( aCol ) )
     {
         // Poor-man's tree controls
@@ -346,8 +327,7 @@ wxString FIELDS_EDITOR_GRID_DATA_MODEL::GetValue( const DATA_MODEL_ROW& group, i
                                                   const wxString& refDelimiter,
                                                   const wxString& refRangeDelimiter,
                                                   bool            resolveVars,
-                                                  bool            listMixedValues )
-{
+                                                  bool            listMixedValues ){
     std::vector<SCH_REFERENCE> references;
     std::set<wxString>         mixedValues;
     wxString                   fieldValue;
@@ -449,10 +429,7 @@ wxString FIELDS_EDITOR_GRID_DATA_MODEL::GetValue( const DATA_MODEL_ROW& group, i
 
     return fieldValue;
 }
-
-
-void FIELDS_EDITOR_GRID_DATA_MODEL::SetValue( int aRow, int aCol, const wxString& aValue )
-{
+void FIELDS_EDITOR_GRID_DATA_MODEL::SetValue( int aRow, int aCol, const wxString& aValue ){
     wxCHECK_RET( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), wxS( "Invalid column number" ) );
 
     // Can't modify references or generated fields (e.g. ${QUANTITY})
@@ -469,48 +446,34 @@ void FIELDS_EDITOR_GRID_DATA_MODEL::SetValue( int aRow, int aCol, const wxString
 
     m_edited = true;
 }
-
-
-bool FIELDS_EDITOR_GRID_DATA_MODEL::ColIsReference( int aCol )
-{
+bool FIELDS_EDITOR_GRID_DATA_MODEL::ColIsReference( int aCol ){
     wxCHECK( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), false );
     return m_cols[aCol].m_fieldName == GetCanonicalFieldName( FIELD_T::REFERENCE );
 }
-
-
 bool FIELDS_EDITOR_GRID_DATA_MODEL::ColIsValue( int aCol )
 {
     wxCHECK( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), false );
     return m_cols[aCol].m_fieldName == GetCanonicalFieldName( FIELD_T::VALUE );
 }
-
-
 bool FIELDS_EDITOR_GRID_DATA_MODEL::ColIsQuantity( int aCol )
 {
     wxCHECK( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), false );
     return m_cols[aCol].m_fieldName == QUANTITY_VARIABLE;
 }
-
-
 bool FIELDS_EDITOR_GRID_DATA_MODEL::ColIsItemNumber( int aCol )
 {
     wxCHECK( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), false );
     return m_cols[aCol].m_fieldName == ITEM_NUMBER_VARIABLE;
 }
-
-
 bool FIELDS_EDITOR_GRID_DATA_MODEL::ColIsAttribute( int aCol )
 {
     wxCHECK( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), false );
     return isAttribute( m_cols[aCol].m_fieldName );
 }
-
-
 bool FIELDS_EDITOR_GRID_DATA_MODEL::cmp( const DATA_MODEL_ROW&          lhGroup,
                                          const DATA_MODEL_ROW&          rhGroup,
                                          FIELDS_EDITOR_GRID_DATA_MODEL* dataModel, int sortCol,
-                                         bool ascending )
-{
+                                         bool ascending ){
     // Empty rows always go to the bottom, whether ascending or descending
     if( lhGroup.m_Refs.size() == 0 )
         return true;
@@ -546,10 +509,7 @@ bool FIELDS_EDITOR_GRID_DATA_MODEL::cmp( const DATA_MODEL_ROW&          lhGroup,
         return local_cmp( ValueStringCompare( lhs, rhs ), 0 );
     }
 }
-
-
-void FIELDS_EDITOR_GRID_DATA_MODEL::Sort()
-{
+void FIELDS_EDITOR_GRID_DATA_MODEL::Sort(){
     CollapseForSort();
 
     // We're going to sort the rows based on their first reference, so the first reference
@@ -659,10 +619,7 @@ bool FIELDS_EDITOR_GRID_DATA_MODEL::groupMatch( const SCH_REFERENCE& lhRef, cons
 
     return matchFound;
 }
-
-
-wxString FIELDS_EDITOR_GRID_DATA_MODEL::getFieldShownText( const SCH_REFERENCE& aRef,
-                                                           const wxString&      aFieldName )
+wxString FIELDS_EDITOR_GRID_DATA_MODEL::getFieldShownText(const SCH_REFERENCE& aRef, const wxString& aFieldName )
 {
     SCH_FIELD* field = aRef.GetSymbol()->GetField( aFieldName );
 
@@ -692,10 +649,7 @@ wxString FIELDS_EDITOR_GRID_DATA_MODEL::getFieldShownText( const SCH_REFERENCE& 
 
     return wxEmptyString;
 }
-
-
-bool FIELDS_EDITOR_GRID_DATA_MODEL::isAttribute( const wxString& aFieldName )
-{
+bool FIELDS_EDITOR_GRID_DATA_MODEL::isAttribute( const wxString& aFieldName ){
     return aFieldName == wxS( "${DNP}" )
            || aFieldName == wxS( "${EXCLUDE_FROM_BOARD}" )
            || aFieldName == wxS( "${EXCLUDE_FROM_BOM}" )
@@ -757,14 +711,10 @@ void FIELDS_EDITOR_GRID_DATA_MODEL::EnableRebuilds()
 {
     m_rebuildsEnabled = true;
 }
-
-
 void FIELDS_EDITOR_GRID_DATA_MODEL::DisableRebuilds()
 {
     m_rebuildsEnabled = false;
 }
-
-
 void FIELDS_EDITOR_GRID_DATA_MODEL::RebuildRows()
 {
     if( !m_rebuildsEnabled )
@@ -854,8 +804,6 @@ void FIELDS_EDITOR_GRID_DATA_MODEL::RebuildRows()
 
     Sort();
 }
-
-
 void FIELDS_EDITOR_GRID_DATA_MODEL::ExpandRow( int aRow )
 {
     std::vector<DATA_MODEL_ROW> children;
@@ -896,8 +844,6 @@ void FIELDS_EDITOR_GRID_DATA_MODEL::ExpandRow( int aRow )
     wxGridTableMessage msg( this, wxGRIDTABLE_NOTIFY_ROWS_INSERTED, aRow, children.size() );
     GetView()->ProcessTableMessage( msg );
 }
-
-
 void FIELDS_EDITOR_GRID_DATA_MODEL::CollapseRow( int aRow )
 {
     auto firstChild = m_rows.begin() + aRow + 1;
@@ -916,8 +862,6 @@ void FIELDS_EDITOR_GRID_DATA_MODEL::CollapseRow( int aRow )
     wxGridTableMessage msg( this, wxGRIDTABLE_NOTIFY_ROWS_DELETED, aRow + 1, deleted );
     GetView()->ProcessTableMessage( msg );
 }
-
-
 void FIELDS_EDITOR_GRID_DATA_MODEL::ExpandCollapseRow( int aRow )
 {
     DATA_MODEL_ROW& group = m_rows[aRow];
@@ -927,8 +871,6 @@ void FIELDS_EDITOR_GRID_DATA_MODEL::ExpandCollapseRow( int aRow )
     else if( group.m_Flag == GROUP_EXPANDED )
         CollapseRow( aRow );
 }
-
-
 void FIELDS_EDITOR_GRID_DATA_MODEL::CollapseForSort()
 {
     for( size_t i = 0; i < m_rows.size(); ++i )
@@ -940,8 +882,6 @@ void FIELDS_EDITOR_GRID_DATA_MODEL::CollapseForSort()
         }
     }
 }
-
-
 void FIELDS_EDITOR_GRID_DATA_MODEL::ExpandAfterSort()
 {
     for( size_t i = 0; i < m_rows.size(); ++i )
@@ -950,8 +890,6 @@ void FIELDS_EDITOR_GRID_DATA_MODEL::ExpandAfterSort()
             ExpandRow( i );
     }
 }
-
-
 void FIELDS_EDITOR_GRID_DATA_MODEL::ApplyData( SCH_COMMIT& aCommit, TEMPLATES& aTemplateFieldnames )
 {
     bool symbolModified = false;
@@ -1086,8 +1024,6 @@ int FIELDS_EDITOR_GRID_DATA_MODEL::GetDataWidth( int aCol )
 
     return width;
 }
-
-
 void FIELDS_EDITOR_GRID_DATA_MODEL::ApplyBomPreset( const BOM_PRESET& aPreset )
 {
     // Hide and un-group everything by default
@@ -1147,8 +1083,6 @@ void FIELDS_EDITOR_GRID_DATA_MODEL::ApplyBomPreset( const BOM_PRESET& aPreset )
 
     RebuildRows();
 }
-
-
 BOM_PRESET FIELDS_EDITOR_GRID_DATA_MODEL::GetBomSettings()
 {
     BOM_PRESET current;
@@ -1166,8 +1100,6 @@ BOM_PRESET FIELDS_EDITOR_GRID_DATA_MODEL::GetBomSettings()
 
     return current;
 }
-
-
 wxString FIELDS_EDITOR_GRID_DATA_MODEL::Export( const BOM_FMT_PRESET& settings )
 {
     wxString out;
@@ -1242,8 +1174,6 @@ wxString FIELDS_EDITOR_GRID_DATA_MODEL::Export( const BOM_FMT_PRESET& settings )
 
     return out;
 }
-
-
 void FIELDS_EDITOR_GRID_DATA_MODEL::AddReferences( const SCH_REFERENCE_LIST& aRefs )
 {
     bool refListChanged = false;
@@ -1292,10 +1222,7 @@ void FIELDS_EDITOR_GRID_DATA_MODEL::RemoveSymbol( const SCH_SYMBOL& aSymbol )
                                          } ),
                          m_symbolsList.end() );
 }
-
-
-void FIELDS_EDITOR_GRID_DATA_MODEL::RemoveReferences( const SCH_REFERENCE_LIST& aRefs )
-{
+void FIELDS_EDITOR_GRID_DATA_MODEL::RemoveReferences( const SCH_REFERENCE_LIST& aRefs ){
     for( const SCH_REFERENCE& ref : aRefs )
     {
         int index = m_symbolsList.FindRefByFullPath( ref.GetFullPath() );
@@ -1310,8 +1237,6 @@ void FIELDS_EDITOR_GRID_DATA_MODEL::RemoveReferences( const SCH_REFERENCE_LIST& 
         }
     }
 }
-
-
 void FIELDS_EDITOR_GRID_DATA_MODEL::UpdateReferences( const SCH_REFERENCE_LIST& aRefs )
 {
     bool refListChanged = false;

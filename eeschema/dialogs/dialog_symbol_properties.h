@@ -1,3 +1,4 @@
+//FILE: dialog_symbol_properties.h
 /*
  * This program source code file is part of KiCad, a free EDA CAD application.
  *
@@ -28,7 +29,8 @@
 #include <dialog_symbol_properties_base.h>
 #include <fields_grid_table.h>
 #include <sch_pin.h>
-
+#include <wx/process.h>
+#include <wx/stdpaths.h>
 
 class LIB_SYMBOL;
 class SCH_PIN_TABLE_DATA_MODEL;
@@ -87,6 +89,7 @@ private:
     void OnPageChanging( wxNotebookEvent& event ) override;
 
     void OnEditSymbol( wxCommandEvent&  ) override;
+    void OnFindPart( wxCommandEvent& ) override;
     void OnEditLibrarySymbol( wxCommandEvent&  ) override;
     void OnUpdateSymbol( wxCommandEvent&  ) override;
     void OnExchangeSymbol( wxCommandEvent&  ) override;

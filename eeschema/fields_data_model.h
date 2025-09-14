@@ -1,3 +1,4 @@
+//FILE: fields_data_model.h
 /*
  * This program source code file is part of KiCad, a free EDA CAD application.
  *
