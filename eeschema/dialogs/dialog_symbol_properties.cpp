@@ -899,7 +899,7 @@ void DIALOG_SYMBOL_PROPERTIES::OnEditSymbol( wxCommandEvent&  ){
     if( TransferDataFromWindow() )
         EndQuasiModal( SYMBOL_PROPS_EDIT_SCHEMATIC_SYMBOL );
 }
-void DIALOG_SYMBOL_PROPERTIES::OnFindPart(wxCommandEvent& event){ //Executing and Processing Part Find Plugin
+void DIALOG_SYMBOL_PROPERTIES::OnFindPart(wxCommandEvent& event){ //Executing and Processing Part Search Plugin
     // button press -> define path executable -> exucute -> capture json result -> parse json -> push to fields -> end
     //################################# DEFINING PATH TO PLUGIN EXECUTABLE - SINGLE TIME ################################## 
     wxString pluginPath;
@@ -962,9 +962,9 @@ void DIALOG_SYMBOL_PROPERTIES::OnFindPart(wxCommandEvent& event){ //Executing an
                         mfr   = wxString::FromUTF8(item.value("mfr", ""));  fields[wxS("Mfr")]        = mfr;   //if(debug) printf("Mfr:    %s\n", mfr.ToUTF8().data());   
                         descr = wxString::FromUTF8(item.value("descr","")); fields[wxS("Description")]= descr; //if(debug) printf("Descr:  %s\n", descr.ToUTF8().data()); 
                         avail = wxString::FromUTF8(item.value("avail","")); fields[wxS("Avail")]      = avail; //if(debug) printf("Avail:  %s\n", avail.ToUTF8().data()); 
-                        prUrl = wxString::FromUTF8(item.value("prdUrl",""));fields[wxS("ProductURL")] = prUrl; //if(debug) printf("URL:    %s\n", prUrl.ToUTF8().data());
+                        prUrl = wxString::FromUTF8(item.value("prUrl","")); fields[wxS("ProductURL")] = prUrl; //if(debug) printf("URL:    %s\n", prUrl.ToUTF8().data());
                         dsUrl = wxString::FromUTF8(item.value("dsUrl","")); fields[wxS("Datasheet")]  = dsUrl; //if(debug) printf("DS:     %s\n", dsUrl.ToUTF8().data());
-                        //priceBreaks --------------------------------------------------------
+                        //priceBreaks --------------------------------------------------------------------------------------
                         //if(debug) printf("Parsing prices...");
                         if (item.contains("priceBreaks") && item["priceBreaks"].is_array() && !item["priceBreaks"].empty()){
                             // first row
@@ -989,21 +989,15 @@ void DIALOG_SYMBOL_PROPERTIES::OnFindPart(wxCommandEvent& event){ //Executing an
     for (auto& field : fields) { //creating fields and filling them
         const wxString& fieldName  = field.first;
         const wxString& fieldValue = field.second;
-        if(fieldValue == "ignoreField") continue; //skip extra field
+        if(fieldValue == "ignoreField" || fieldValue == "") continue; //skip empty and ignored field
         int row = 1; //row needed to place data
         int nrowExisting = 0;
-        //if(debug) printf("Field name %s", fieldName.ToUTF8().data());
         for (;row < m_fieldsGrid->GetNumberRows(); row++){// check is row exists
             if(fieldName == m_fields->GetValue(row, FDC_NAME)){
-                //if(debug) printf(" already exists in row %d", row);
                 nrowExisting = row; break;
         }}
-        //if(debug) printf(" | fieldValue = %s\n",fieldValue.ToUTF8().data());
-        if(nrowExisting){
-            m_fields->SetValue(nrowExisting,FDC_VALUE,fieldValue);
-        }else{
-            //if(debug) printf("Adding new field: %s\n",fieldName.ToUTF8().data());
-            m_fieldsGrid->OnAddRow( //add new field
+        if(nrowExisting){ m_fields->SetValue(nrowExisting,FDC_VALUE,fieldValue); }
+        else{ m_fieldsGrid->OnAddRow( //add new field
                 [&]() -> std::pair<int, int>{
                     SCH_FIELD newField(m_symbol, FIELD_T::USER, fieldName);
                     //newField.SetTextAngle( m_fields->GetField( FIELD_T::USER )->GetTextAngle() );
@@ -1016,7 +1010,6 @@ void DIALOG_SYMBOL_PROPERTIES::OnFindPart(wxCommandEvent& event){ //Executing an
                     OnModify();
                     return { m_fields->size() - 1, FDC_NAME };
     });}}
-    //if(debug) printf("n of rows:%d\n",m_fieldsGrid->GetNumberRows());
 }
 void DIALOG_SYMBOL_PROPERTIES::OnEditLibrarySymbol( wxCommandEvent&  )
 {
