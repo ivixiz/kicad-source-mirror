@@ -942,7 +942,8 @@ void DIALOG_SYMBOL_PROPERTIES::OnFindPart(wxCommandEvent& event){ //Executing an
              mfr   = "", //manufacturer
              descr = "", //description 
              prcpc = "", //price per piece
-             dsUrl = ""; //datasheet url (product url)
+             dsUrl = "", //datasheet url (product url)
+             suppl = ""; //supplier
     for (size_t i = 0; i < output.GetCount(); ++i){
         wxString line = output[i]; //searching for keyword "Export[" and end "]"
         int exprt = line.Find("Export[");
@@ -964,6 +965,8 @@ void DIALOG_SYMBOL_PROPERTIES::OnFindPart(wxCommandEvent& event){ //Executing an
                         avail = wxString::FromUTF8(item.value("avail","")); fields[wxS("Avail")]      = avail; //if(debug) printf("Avail:  %s\n", avail.ToUTF8().data()); 
                         prUrl = wxString::FromUTF8(item.value("prUrl","")); fields[wxS("ProductURL")] = prUrl; //if(debug) printf("URL:    %s\n", prUrl.ToUTF8().data());
                         dsUrl = wxString::FromUTF8(item.value("dsUrl","")); fields[wxS("Datasheet")]  = dsUrl; //if(debug) printf("DS:     %s\n", dsUrl.ToUTF8().data());
+                        suppl = wxString::FromUTF8(item.value("suppl","")); fields[wxS("Supplier")]   = suppl; //if(debug) printf("SUP:    %s\n", suppl.ToUTF8().data());
+                        
                         //priceBreaks --------------------------------------------------------------------------------------
                         //if(debug) printf("Parsing prices...");
                         if (item.contains("priceBreaks") && item["priceBreaks"].is_array() && !item["priceBreaks"].empty()){
