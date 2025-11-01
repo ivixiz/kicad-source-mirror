@@ -29,6 +29,9 @@
 #include <fields_grid_table.h>
 #include <sch_pin.h>
 
+#include <wx/process.h>
+#include <wx/stdpaths.h>
+#include <wx/textdlg.h>
 
 class LIB_SYMBOL;
 class SCH_PIN_TABLE_DATA_MODEL;
@@ -87,6 +90,7 @@ private:
     void OnPageChanging( wxNotebookEvent& event ) override;
 
     void OnEditSymbol( wxCommandEvent&  ) override;
+    void OnFindPart( wxCommandEvent& ) override;
     void OnEditLibrarySymbol( wxCommandEvent&  ) override;
     void OnUpdateSymbol( wxCommandEvent&  ) override;
     void OnExchangeSymbol( wxCommandEvent&  ) override;

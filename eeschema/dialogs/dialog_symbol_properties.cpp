@@ -970,7 +970,127 @@ void DIALOG_SYMBOL_PROPERTIES::OnEditSymbol( wxCommandEvent&  )
     if( TransferDataFromWindow() )
         EndQuasiModal( SYMBOL_PROPS_EDIT_SCHEMATIC_SYMBOL );
 }
+void DIALOG_SYMBOL_PROPERTIES::OnFindPart(wxCommandEvent& event){ //Executing and Processing Part Search Plugin
+    // button press -> define path executable -> exucute -> capture json result -> parse json -> push to fields -> end
+    //################################# DEFINING PATH TO PLUGIN EXECUTABLE - SINGLE TIME ################################## 
+    wxString pluginPath;
+    wxFileName cfgFile(wxStandardPaths::Get().GetExecutablePath());
+    cfgFile.SetFullName("path_to_part_search.cfg");
+    if (wxFileExists(cfgFile.GetFullPath())) {
+        wxTextFile file(cfgFile.GetFullPath());
+        if (file.Open()) {
+            pluginPath = file.GetFirstLine().Trim(true).Trim(false);
+            file.Close(); }
+    }else{
+        wxTextEntryDialog dlg(nullptr,
+            "Enter the absolute path to the part_search executable:",
+            "Configure part_search");
+        if (dlg.ShowModal() == wxID_OK) {
+            pluginPath = dlg.GetValue();
+            wxTextFile fileOut(cfgFile.GetFullPath());
+            if (!wxFileExists(cfgFile.GetFullPath())) fileOut.Create();
+            else fileOut.Open();
+            fileOut.Clear();
+            fileOut.AddLine(pluginPath);
+            fileOut.Write();
+            fileOut.Close();
+        } else { wxLogError("No path provided, cannot run part_search."); }
+    }
+    if (pluginPath.IsEmpty() || !wxFileExists(pluginPath)) {
+        wxLogError("Part_search executable not found at the specified path.\n\
+            Please remove file \"%s\" and provide correct directory.", cfgFile.GetFullPath()); 
+        return; }
+    //#################################### SYNC EXECUTE FIND PART PROGRAM ##################################################
+    wxArrayString output, errors;
+    std::map<wxString, wxString> fields;
+    wxExecute(pluginPath, output, errors, wxEXEC_SYNC);
+    //########################################## CAPTURE & PARSE STDOUT RESULT #############################################
+    //bool debug = false;
+    wxString prtnm = "", //part number
+             avail = "", //availability 
+             prUrl = "", //product url
+             mfrno = "", //manufacturer number
+             mfr   = "", //manufacturer
+             descr = "", //description 
+             prcpc = "", //price per piece
+             dsUrl = "", //datasheet url (product url)
+             suppl = ""; //supplier
+    for (size_t i = 0; i < output.GetCount(); ++i){
+        wxString line = output[i]; //searching for keyword "Export[" and end "]"
+        int exprt = line.Find("Export[");
+        if (exprt != wxNOT_FOUND){ //check
+            int start = exprt + 7; // start after "Export["
+            int close = line.Find(']', true);
+            if (close != wxNOT_FOUND && close > start){ //check
+                wxString jsonText = line.Mid(start, close - start); //cut needed json 
+                try{ // trying to parse json 
+                    nlohmann::json j = nlohmann::json::parse(jsonText.ToStdString());
+                    if (j.is_object()) { j = nlohmann::json::array({ j }); }
+                    for (auto& item : j){ // parsing data
+                        //if(debug) printf("Part:\n");
+                        // \/\/\/\/\/\/ get string from json \/\/\/\/\/\/ |   \/\/\/ placing to list \/\/\/   | \/\/\/\/ printing imported values \/\/\/\/
+                        prtnm = wxString::FromUTF8(item.value("prtnm","")); fields[wxS("PartNumber")] = prtnm; //if(debug) printf("Name:   %s\n", prtnm.ToUTF8().data());   
+                        mfrno = wxString::FromUTF8(item.value("mfrno","")); fields[wxS("Mfr. No")]    = mfrno; //if(debug) printf("Mfr. No:%s\n", mfrno.ToUTF8().data()); 
+                        mfr   = wxString::FromUTF8(item.value("mfr", ""));  fields[wxS("Mfr")]        = mfr;   //if(debug) printf("Mfr:    %s\n", mfr.ToUTF8().data());   
+                        descr = wxString::FromUTF8(item.value("descr","")); fields[wxS("Description")]= descr; //if(debug) printf("Descr:  %s\n", descr.ToUTF8().data()); 
+                        avail = wxString::FromUTF8(item.value("avail","")); fields[wxS("Avail")]      = avail; //if(debug) printf("Avail:  %s\n", avail.ToUTF8().data()); 
+                        prUrl = wxString::FromUTF8(item.value("prUrl","")); fields[wxS("ProductURL")] = prUrl; //if(debug) printf("URL:    %s\n", prUrl.ToUTF8().data());
+                        dsUrl = wxString::FromUTF8(item.value("dsUrl","")); fields[wxS("Datasheet")]  = dsUrl; //if(debug) printf("DS:     %s\n", dsUrl.ToUTF8().data());
+                        suppl = wxString::FromUTF8(item.value("suppl","")); fields[wxS("Supplier")]   = suppl; //if(debug) printf("SUP:    %s\n", suppl.ToUTF8().data());
+                        
+                        //priceBreaks --------------------------------------------------------------------------------------
+                        //if(debug) printf("Parsing prices...");
+                        if (item.contains("priceBreaks") && item["priceBreaks"].is_array() && !item["priceBreaks"].empty()){
+                            // first row
+                            const auto& first = item["priceBreaks"].front();
+                            double price = first.value("price", 0.0);
+                            std::string curr = first.value("curr", "");
+                        prcpc = wxString::Format("%.2f %s", price, curr); fields[wxS("Price")]  = prcpc;
+                            //if(debug) printf("  Price breaks:\n");
+                            for (const auto& pb : item["priceBreaks"]){
+                                int qty = pb.value("qty", 0);
+                                price = pb.value("price", 0.0);
+                                curr = pb.value("curr", "");
+                                //if(debug) printf("    %d pcs -> %.2f %s\n", qty, price, curr.c_str());
+                            }
+                        }
+                        //if(debug) printf("----------------------------------------------------\n");
+                    }   
+                }//error :(
+                catch (std::exception& e){ wxLogError("JSON parse error: %s", e.what()); return; 
+    }   }   }   }
+    //#################################################### PUSH TO FIELDS #########################################################
+    for (auto& field : fields) { //creating fields and filling them
+        const wxString& fieldName  = field.first;
+        const wxString& fieldValue = field.second;
+        if(fieldValue == "ignoreField" || fieldValue == "") continue; //skip empty and ignored field
+        int row = 1; //row needed to place data
+        int nrowExisting = 0;
+        for (;row < m_fieldsGrid->GetNumberRows(); row++){// check is row exists
+            if(fieldName == m_fields->GetValue(row, FDC_NAME)){
+                nrowExisting = row; break;
+        }}
+        if(nrowExisting){ m_fields->SetValue(nrowExisting,FDC_VALUE,fieldValue); }
+        else{         
+            if( !m_fieldsGrid->CommitPendingChanges() ) {continue;}
+            SCHEMATIC_SETTINGS& settings = m_symbol->Schematic()->Settings();
+            int                 fieldID  = static_cast<int>( m_fields->size() );
 
+            SCH_FIELD newField( VECTOR2I(), fieldID, m_symbol, fieldName );
+            newField.SetTextAngle( m_fields->at( REFERENCE_FIELD ).GetTextAngle() );
+            newField.SetTextSize( VECTOR2I( settings.m_DefaultTextSize, settings.m_DefaultTextSize ) );
+            newField.SetVisible( false );
+            newField.SetText( fieldValue );
+
+            m_fields->push_back( newField );
+
+            wxGridTableMessage msg( m_fields, wxGRIDTABLE_NOTIFY_ROWS_APPENDED, 1 );
+            m_fieldsGrid->ProcessTableMessage( msg );
+            m_fieldsGrid->MakeCellVisible( (int) m_fields->size() - 1, 0 );
+            m_fieldsGrid->SetGridCursor( (int) m_fields->size() - 1, 0 );
+            OnModify();
+    }}
+}
 
 void DIALOG_SYMBOL_PROPERTIES::OnEditLibrarySymbol( wxCommandEvent&  )
 {
