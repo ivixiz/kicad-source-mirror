@@ -451,6 +451,16 @@ TOOL_ACTION SCH_ACTIONS::placePower( TOOL_ACTION_ARGS()
         .Flags( AF_ACTIVATE )
         .Parameter<SCH_ACTIONS::PLACE_SYMBOL_PARAMS>( {} ) );
 
+TOOL_ACTION SCH_ACTIONS::placeScope( TOOL_ACTION_ARGS()
+        .Name( "eeschema.InteractiveDrawing.placeScope" )
+        .Scope( AS_GLOBAL )
+        .DefaultHotkey( MD_SHIFT + 'T' )
+        .LegacyHotkeyName( "Add Scope" )
+        .FriendlyName( _( "Place Oscilloscope" ) )
+        .Icon( BITMAPS::add_scope_to_sch )
+        .Flags( AF_ACTIVATE )
+        .Parameter<SCH_ACTIONS::PLACE_SYMBOL_PARAMS>( {} ) );
+    
 TOOL_ACTION SCH_ACTIONS::placeDesignBlock( TOOL_ACTION_ARGS()
         .Name( "eeschema.InteractiveDrawing.placeDesignBlock" )
         .Scope( AS_GLOBAL )

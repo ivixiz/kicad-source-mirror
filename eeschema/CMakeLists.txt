@@ -384,6 +384,7 @@ set( EESCHEMA_SRCS
     project_rescue.cpp
     sch_base_frame.cpp
     sch_bitmap.cpp
+    sch_scope.cpp
     sch_bus_entry.cpp
     sch_collectors.cpp
     sch_commit.cpp

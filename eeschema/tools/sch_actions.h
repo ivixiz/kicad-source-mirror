@@ -79,6 +79,7 @@ public:
     static TOOL_ACTION placeSymbol;
     static TOOL_ACTION placeNextSymbolUnit;
     static TOOL_ACTION placePower;
+    static TOOL_ACTION placeScope;
     static TOOL_ACTION placeDesignBlock;
     static TOOL_ACTION drawWire;
     static TOOL_ACTION drawBus;

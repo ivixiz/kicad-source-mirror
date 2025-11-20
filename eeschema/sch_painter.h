@@ -54,6 +54,7 @@ class SCH_LINE;
 class SCH_BUS_ENTRY_BASE;
 class SCH_BITMAP;
 class SCHEMATIC;
+class SCH_SCOPE;
 
 namespace KIGFX
 {
@@ -100,6 +101,7 @@ private:
     void draw( const SCH_BITMAP* aBitmap, int aLayer );
     void draw( const SCH_LINE* aLine, int aLayer );
     void draw( const SCH_BUS_ENTRY_BASE* aEntry, int aLayer );
+    void draw( const SCH_SCOPE* aScope, int aLayer );
 
     void drawPinDanglingIndicator( const SCH_PIN& aPin, const COLOR4D& aColor, bool aDrawingShadows,
                                    bool aBrightened );

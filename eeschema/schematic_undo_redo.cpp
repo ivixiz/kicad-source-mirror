@@ -31,6 +31,7 @@
 #include <sch_junction.h>
 #include <sch_line.h>
 #include <sch_bitmap.h>
+#include <sch_scope.h>
 #include <sch_sheet_pin.h>
 #include <sch_table.h>
 #include <tools/sch_selection_tool.h>

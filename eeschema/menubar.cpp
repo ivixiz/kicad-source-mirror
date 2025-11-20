@@ -235,6 +235,7 @@ void SCH_EDIT_FRAME::doReCreateMenuBar()
 
     placeMenu->Add( SCH_ACTIONS::placeSymbol );
     placeMenu->Add( SCH_ACTIONS::placePower );
+    placeMenu->Add( SCH_ACTIONS::placeScope );
     placeMenu->Add( SCH_ACTIONS::drawWire );
     placeMenu->Add( SCH_ACTIONS::drawBus );
     placeMenu->Add( SCH_ACTIONS::placeBusWireEntry );

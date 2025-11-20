@@ -167,6 +167,7 @@ void SCH_EDIT_FRAME::ReCreateVToolbar()
     m_drawToolBar->AddScaledSeparator( this );
     m_drawToolBar->Add( SCH_ACTIONS::placeSymbol,        ACTION_TOOLBAR::TOGGLE );
     m_drawToolBar->Add( SCH_ACTIONS::placePower,         ACTION_TOOLBAR::TOGGLE );
+    m_drawToolBar->Add( SCH_ACTIONS::placeScope,         ACTION_TOOLBAR::TOGGLE );
     m_drawToolBar->Add( SCH_ACTIONS::drawWire,           ACTION_TOOLBAR::TOGGLE );
     m_drawToolBar->Add( SCH_ACTIONS::drawBus,            ACTION_TOOLBAR::TOGGLE );
     m_drawToolBar->Add( SCH_ACTIONS::placeBusWireEntry,  ACTION_TOOLBAR::TOGGLE );

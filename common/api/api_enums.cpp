@@ -74,6 +74,7 @@ KICAD_T FromProtoEnum( types::KiCadObjectType aValue )
     case types::KiCadObjectType::KOT_SCH_SHEET_PIN:         return SCH_SHEET_PIN_T;
     case types::KiCadObjectType::KOT_SCH_SHEET:             return SCH_SHEET_T;
     case types::KiCadObjectType::KOT_SCH_PIN:               return SCH_PIN_T;
+    case types::KiCadObjectType::KOT_SCH_SCOPE:             return SCH_SCOPE_T;
     case types::KiCadObjectType::KOT_LIB_SYMBOL:            return LIB_SYMBOL_T;
     case types::KiCadObjectType::KOT_WSG_LINE:              return WSG_LINE_T;
     case types::KiCadObjectType::KOT_WSG_RECT:              return WSG_RECT_T;
@@ -133,6 +134,7 @@ types::KiCadObjectType ToProtoEnum( KICAD_T aValue )
     case SCH_SHEET_PIN_T:        return types::KiCadObjectType::KOT_SCH_SHEET_PIN;
     case SCH_SHEET_T:            return types::KiCadObjectType::KOT_SCH_SHEET;
     case SCH_PIN_T:              return types::KiCadObjectType::KOT_SCH_PIN;
+    case SCH_SCOPE_T:            return types::KiCadObjectType::KOT_SCH_SCOPE;
     case LIB_SYMBOL_T:           return types::KiCadObjectType::KOT_LIB_SYMBOL;
     case WSG_LINE_T:             return types::KiCadObjectType::KOT_WSG_LINE;
     case WSG_RECT_T:             return types::KiCadObjectType::KOT_WSG_RECT;

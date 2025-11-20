@@ -36,6 +36,7 @@
 #include <increment.h>
 #include <string_utils.h>
 #include <sch_bitmap.h>
+#include <sch_scope.h>
 #include <sch_bus_entry.h>
 #include <sch_commit.h>
 #include <sch_junction.h>
@@ -412,6 +413,7 @@ bool SCH_EDIT_TOOL::Init()
                 case SCH_RULE_AREA_T:
                 case SCH_FIELD_T:
                 case SCH_SHAPE_T:
+                case SCH_SCOPE_T:
                 case SCH_BITMAP_T:
                     return aSel.GetSize() == 1;
 

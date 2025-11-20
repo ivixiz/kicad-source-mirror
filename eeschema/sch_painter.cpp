@@ -53,6 +53,7 @@
 #include <sch_text.h>
 #include <sch_textbox.h>
 #include <sch_table.h>
+#include "sch_scope.h"
 #include <schematic.h>
 #include <settings/color_settings.h>
 #include <view/view.h>
@@ -93,7 +94,8 @@ std::vector<KICAD_T> SCH_PAINTER::g_ScaledSelectionTypes = {
     SCH_SHEET_PIN_T,
     LIB_SYMBOL_T, SCH_SYMBOL_T,
     SCH_SHEET_T,
-    SCH_PIN_T
+    SCH_PIN_T,
+    SCH_SCOPE_T,
 };
 
 
@@ -211,7 +213,9 @@ void SCH_PAINTER::draw( const EDA_ITEM* aItem, int aLayer, bool aDimmed )
     case SCH_MARKER_T:
         draw( static_cast<const SCH_MARKER*>( aItem ), aLayer );
         break;
-
+    case SCH_SCOPE_T:
+        draw( static_cast<const SCH_SCOPE*>( aItem ), aLayer );
+        break;
     default: return;
     }
 
@@ -2893,6 +2897,12 @@ void SCH_PAINTER::draw( const SCH_BITMAP* aBitmap, int aLayer )
     }
 
     m_gal->Restore();
+}
+
+void SCH_PAINTER::draw( const SCH_SCOPE* aScope, int aLayer )
+{
+
+
 }
 
 

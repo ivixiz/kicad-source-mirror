@@ -683,6 +683,7 @@ enum class BITMAPS : unsigned int
     zoom_out_vertically,
     zoom_page,
     zoom_selection,
+    add_scope_to_sch
 };
 
 

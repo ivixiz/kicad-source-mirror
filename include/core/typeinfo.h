@@ -151,11 +151,11 @@ enum KICAD_T
     SCH_TEXT_T,
     SCH_TEXTBOX_T,
     SCH_PIN_T,
-
     // Schematic draw Items.  The order of these items effects the sort order.
     // It is currently ordered to mimic the old Eeschema locate behavior where
     // the smallest item is the selected item.
     SCH_MARKER_T,
+    SCH_SCOPE_T,
     SCH_JUNCTION_T,
     SCH_NO_CONNECT_T,
     SCH_BUS_WIRE_ENTRY_T,
@@ -232,6 +232,8 @@ enum KICAD_T
     SYMBOL_LIBS_T,
     SEARCH_STACK_T,
     S3D_CACHE_T,
+
+
 
     // End value
     MAX_STRUCT_TYPE_ID
@@ -390,6 +392,7 @@ constexpr bool IsEeschemaType( const KICAD_T aType )
     case SCH_SHEET_PIN_T:
     case SCH_SHEET_T:
     case SCH_PIN_T:
+    case SCH_SCOPE_T:
 
     case SCH_FIELD_LOCATE_REFERENCE_T:
     case SCH_FIELD_LOCATE_VALUE_T:

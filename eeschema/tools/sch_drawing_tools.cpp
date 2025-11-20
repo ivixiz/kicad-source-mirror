@@ -59,6 +59,7 @@
 #include <sch_sheet_pin.h>
 #include <sch_label.h>
 #include <sch_bitmap.h>
+#include <sch_scope.h>
 #include <schematic.h>
 #include <sch_commit.h>
 #include <scoped_set_reset.h>
@@ -3445,12 +3446,18 @@ SCH_HIERLABEL* SCH_DRAWING_TOOLS::importHierLabel( SCH_SHEET* aSheet )
     return nullptr;
 }
 
+int SCH_DRAWING_TOOLS::PlaceScope( const TOOL_EVENT& aEvent )
+{
+    
+    return 0;
+}
 
 void SCH_DRAWING_TOOLS::setTransitions()
 {
     // clang-format off
     Go( &SCH_DRAWING_TOOLS::PlaceSymbol,         SCH_ACTIONS::placeSymbol.MakeEvent() );
     Go( &SCH_DRAWING_TOOLS::PlaceSymbol,         SCH_ACTIONS::placePower.MakeEvent() );
+    Go( &SCH_DRAWING_TOOLS::PlaceScope,          SCH_ACTIONS::placeScope.MakeEvent() );
     Go( &SCH_DRAWING_TOOLS::PlaceNextSymbolUnit, SCH_ACTIONS::placeNextSymbolUnit.MakeEvent() );
     Go( &SCH_DRAWING_TOOLS::SingleClickPlace,    SCH_ACTIONS::placeNoConnect.MakeEvent() );
     Go( &SCH_DRAWING_TOOLS::SingleClickPlace,    SCH_ACTIONS::placeJunction.MakeEvent() );

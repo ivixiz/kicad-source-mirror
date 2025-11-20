@@ -48,6 +48,7 @@ class EDA_ITEM;
 class SCH_LINE;
 class SCH_TEXT;
 class SCH_BITMAP;
+class SCH_SCOPE;
 class SCH_SHEET;
 class SCH_SHEET_PATH;
 class SCH_SHEET_PIN;

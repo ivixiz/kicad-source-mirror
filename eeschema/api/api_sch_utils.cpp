@@ -28,6 +28,7 @@
 #include <sch_line.h>
 #include <sch_no_connect.h>
 #include <sch_shape.h>
+#include <sch_scope.h>
 #include <sch_sheet.h>
 #include <sch_sheet_pin.h>
 #include <sch_table.h>
@@ -51,6 +52,7 @@ std::unique_ptr<EDA_ITEM> CreateItemForType( KICAD_T aType, EDA_ITEM* aContainer
     case SCH_LINE_T:            return std::make_unique<SCH_LINE>();
     case SCH_SHAPE_T:           return std::make_unique<SCH_SHAPE>();
     case SCH_BITMAP_T:          return std::make_unique<SCH_BITMAP>();
+    case SCH_SCOPE_T:           return std::make_unique<SCH_SCOPE>();
     case SCH_TEXTBOX_T:         return std::make_unique<SCH_TEXTBOX>();
     case SCH_TEXT_T:            return std::make_unique<SCH_TEXT>();
     case SCH_TABLE_T:           return std::make_unique<SCH_TABLE>();
