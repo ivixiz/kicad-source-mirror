@@ -57,7 +57,7 @@ public:
 
     ///< @copydoc SPICE_SIMULATOR::Init()
     void Init( const SPICE_SETTINGS* aSettings = nullptr ) override final;
-
+    void Reset() override final;
     ///< @copydoc SPICE_SIMULATOR::Attach()
     bool Attach( const std::shared_ptr<SIMULATION_MODEL>& aModel, const wxString& aSimCommand,
                  unsigned aSimOptions, const wxString& aInputPath,

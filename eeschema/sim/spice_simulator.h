@@ -62,7 +62,7 @@ public:
      *                  to be initialized.
      */
     virtual void Init( const SPICE_SETTINGS* aSettings = nullptr ) = 0;
-
+    
     /**
      * Load a netlist for the simulation.
      *

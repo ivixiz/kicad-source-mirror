@@ -459,7 +459,7 @@ TOOL_ACTION SCH_ACTIONS::placeScope( TOOL_ACTION_ARGS()
         .FriendlyName( _( "Place Oscilloscope" ) )
         .Icon( BITMAPS::add_scope_to_sch )
         .Flags( AF_ACTIVATE )
-        .Parameter<SCH_ACTIONS::PLACE_SYMBOL_PARAMS>( {} ) );
+        .Parameter( SCH_SCOPE_T ) );
     
 TOOL_ACTION SCH_ACTIONS::placeDesignBlock( TOOL_ACTION_ARGS()
         .Name( "eeschema.InteractiveDrawing.placeDesignBlock" )

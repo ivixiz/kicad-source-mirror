@@ -633,7 +633,7 @@ void SIMULATOR_FRAME::doCloseWindow()
 {
     if( m_simulator->IsRunning() )
         m_simulator->Stop();
-
+        
     // Prevent memory leak on exit by deleting all simulation vectors
     m_simulator->Clean();
 
@@ -654,6 +654,8 @@ void SIMULATOR_FRAME::setupUIConditions()
 
     ACTION_MANAGER*   mgr = m_toolManager->GetActionManager();
     wxASSERT( mgr );
+
+
 
     auto showGridCondition =
             [this]( const SELECTION& aSel )

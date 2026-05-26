@@ -86,7 +86,12 @@ public:
      * @return True if simulation is currently executed.
      */
     virtual bool IsRunning() = 0;
-
+    /**
+     * Check if simulation is running at the moment.
+     *
+     * @return True if simulation is currently executed.
+     */
+    virtual void Reset() = 0;
     /**
      * Cleans simulation data (i.e. all vectors)
      *

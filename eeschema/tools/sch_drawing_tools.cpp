@@ -1394,7 +1394,12 @@ int SCH_DRAWING_TOOLS::SingleClickPlace( const TOOL_EVENT& aEvent )
         description = _( "Add Wire to Bus Entry" );
         allowRepeat = true;
         break;
-
+    case SCH_SCOPE_T:
+        previewItem = new SCH_SCOPE( SHAPE_T::RECTANGLE, LAYER_NOTES, 0, FILL_T::NO_FILL );
+        previewItem->SetParent( screen );
+        description = _( "Place Scope" );
+        allowRepeat = false;
+        break;
     default:
         wxASSERT_MSG( false, "Unknown item type in SCH_DRAWING_TOOLS::SingleClickPlace" );
         return 0;
@@ -2975,7 +2980,7 @@ int SCH_DRAWING_TOOLS::DrawSheet( const TOOL_EVENT& aEvent )
 
     if( ( isDrawSheetCopy || isDrawSheetFromDesignBlock ) && !wxFileExists( filename ) )
     {
-        wxMessageBox( wxString::Format( _( "File '%s' does not exist." ), filename ) );
+        wxMessageBox( wxString::Format( _( "File '%s' does not exist." ), filename ),0,0);
         return 0;
     }
 
@@ -3446,18 +3451,13 @@ SCH_HIERLABEL* SCH_DRAWING_TOOLS::importHierLabel( SCH_SHEET* aSheet )
     return nullptr;
 }
 
-int SCH_DRAWING_TOOLS::PlaceScope( const TOOL_EVENT& aEvent )
-{
-    
-    return 0;
-}
 
 void SCH_DRAWING_TOOLS::setTransitions()
 {
     // clang-format off
     Go( &SCH_DRAWING_TOOLS::PlaceSymbol,         SCH_ACTIONS::placeSymbol.MakeEvent() );
     Go( &SCH_DRAWING_TOOLS::PlaceSymbol,         SCH_ACTIONS::placePower.MakeEvent() );
-    Go( &SCH_DRAWING_TOOLS::PlaceScope,          SCH_ACTIONS::placeScope.MakeEvent() );
+    Go( &SCH_DRAWING_TOOLS::SingleClickPlace,    SCH_ACTIONS::placeScope.MakeEvent() );
     Go( &SCH_DRAWING_TOOLS::PlaceNextSymbolUnit, SCH_ACTIONS::placeNextSymbolUnit.MakeEvent() );
     Go( &SCH_DRAWING_TOOLS::SingleClickPlace,    SCH_ACTIONS::placeNoConnect.MakeEvent() );
     Go( &SCH_DRAWING_TOOLS::SingleClickPlace,    SCH_ACTIONS::placeJunction.MakeEvent() );

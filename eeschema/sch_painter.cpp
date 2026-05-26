@@ -2899,10 +2899,34 @@ void SCH_PAINTER::draw( const SCH_BITMAP* aBitmap, int aLayer )
     m_gal->Restore();
 }
 
-void SCH_PAINTER::draw( const SCH_SCOPE* aScope, int aLayer )
-{
+void SCH_PAINTER::draw( const SCH_SCOPE* aScope, int aLayer ){
+    bool highlightNetclassColors = false;
+    EESCHEMA_SETTINGS* eeschemaCfg = eeconfig();
+
+    if( eeschemaCfg )
+    {
+        highlightNetclassColors = eeschemaCfg->m_Selection.highlight_netclass_colors;
+    }
+
+    bool drawingShadows = aLayer == LAYER_SELECTION_SHADOWS;
+    COLOR4D color;
+
+    if( highlightNetclassColors && aLayer == aScope->GetLayer() )
+        color = m_schSettings.GetLayerColor( aScope->GetLayer() );
+    else
+        color = getRenderColor( aScope, aScope->GetLayer(), drawingShadows );
 
 
+    m_gal->SetIsStroke( drawingShadows );
+    m_gal->SetLineWidth( getLineWidth( aScope, drawingShadows ) );
+    m_gal->SetStrokeColor( color );
+    m_gal->SetIsFill( !drawingShadows );
+    m_gal->SetFillColor( color );
+    int r = aScope->GetRadius();
+    if( r < schIUScale.MilsToIU( 10 ) )
+        r = schIUScale.MilsToIU( 10 );
+
+    m_gal->DrawCircle( aScope->GetPosition(), r );
 }
 
 

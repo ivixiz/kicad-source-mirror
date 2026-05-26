@@ -53,7 +53,6 @@ public:
     bool Init() override;
 
     int PlaceSymbol( const TOOL_EVENT& aEvent );
-    int PlaceScope( const TOOL_EVENT& aEvent );
     int PlaceNextSymbolUnit( const TOOL_EVENT& aEvent );
     int SingleClickPlace( const TOOL_EVENT& aEvent );
     int TwoClickPlace( const TOOL_EVENT& aEvent );

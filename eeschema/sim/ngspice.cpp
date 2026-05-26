@@ -92,7 +92,10 @@ void NGSPICE::Init( const SPICE_SETTINGS* aSettings )
     updateNgspiceSettings();
 }
 
-
+void NGSPICE::Reset()
+{
+    Command( "reset" );
+}
 wxString NGSPICE::CurrentPlotName() const
 {
     return wxString( m_ngSpice_CurPlot() );
@@ -518,7 +521,9 @@ void NGSPICE::init_dll()
 
     m_ngSpice_Init( &cbSendChar, &cbSendStat, &cbControlledExit, nullptr, nullptr,
                     &cbBGThreadRunning, this );
-
+    // char cmd[] = "set interactive=0";
+    // m_ngSpice_Command(cmd);
+    // printf("set interactive = FALSE \n");
     // Load a custom spinit file, to fix the problem with loading .cm files
     // Switch to the executable directory, so the relative paths are correct
     wxString cwd( wxGetCwd() );
