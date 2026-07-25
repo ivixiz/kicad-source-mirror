@@ -87,7 +87,8 @@ std::optional<TOOLBAR_CONFIGURATION> SCH_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
                             .AddAction( ACTIONS::cursor45Crosshairs ) );
 
         config.AppendSeparator()
-              .AppendAction( SCH_ACTIONS::toggleHiddenPins );
+              .AppendAction( SCH_ACTIONS::toggleHiddenPins )
+              .AppendAction( SCH_ACTIONS::hideSimExclusions );
 
         config.AppendSeparator()
               .AppendGroup( TOOLBAR_GROUP_CONFIG( _( "Line modes" ) )
@@ -115,6 +116,7 @@ std::optional<TOOLBAR_CONFIGURATION> SCH_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
 
         config.AppendSeparator()
               .AppendAction( SCH_ACTIONS::placeSymbol )
+              .AppendAction( SCH_ACTIONS::placeScope )
               .AppendAction( SCH_ACTIONS::placePower )
               .AppendAction( SCH_ACTIONS::drawWire )
               .AppendAction( SCH_ACTIONS::drawBus )

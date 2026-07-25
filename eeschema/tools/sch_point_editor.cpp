@@ -25,7 +25,9 @@
 #include "sch_point_editor.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <ee_grid_helper.h>
+#include <lib_symbol.h>
 #include <tool/tool_manager.h>
 #include <sch_commit.h>
 #include <view/view_controls.h>
@@ -39,7 +41,10 @@
 #include <sch_edit_frame.h>
 #include <sch_line.h>
 #include <sch_bitmap.h>
+#include <sch_pin.h>
+#include <sch_scope.h>
 #include <sch_sheet.h>
+#include <sch_symbol.h>
 #include <sch_textbox.h>
 #include <sch_table.h>
 #include <sch_sheet_pin.h>
@@ -709,6 +714,358 @@ private:
 };
 
 
+class SCOPE_SYMBOL_POINT_EDIT_BEHAVIOR : public POINT_EDIT_BEHAVIOR
+{
+public:
+    SCOPE_SYMBOL_POINT_EDIT_BEHAVIOR( SCH_SYMBOL& aSymbol, SCH_SCREEN& aScreen ) :
+            m_symbol( aSymbol ),
+            m_screen( aScreen )
+    {
+        for( SCH_PIN* pin : m_symbol.GetPins() )
+        {
+            const VECTOR2I pinPos = pin->GetPosition();
+
+            for( SCH_ITEM* item : m_screen.Items().Overlapping( SCH_LINE_T, pinPos ) )
+            {
+                SCH_LINE* line = static_cast<SCH_LINE*>( item );
+
+                if( !line->IsWire() && !line->IsBus() )
+                    continue;
+
+                if( line->GetStartPoint() == pinPos )
+                    m_connectedWires.push_back( { pin, line, STARTPOINT } );
+                else if( line->GetEndPoint() == pinPos )
+                    m_connectedWires.push_back( { pin, line, ENDPOINT } );
+            }
+
+            for( SCH_ITEM* item : m_screen.Items().Overlapping( SCH_NO_CONNECT_T, pinPos ) )
+            {
+                SCH_NO_CONNECT* noConnect = static_cast<SCH_NO_CONNECT*>( item );
+
+                if( noConnect->GetPosition() == pinPos )
+                    m_noConnects.emplace_back( pin, noConnect );
+            }
+        }
+    }
+
+    static void SetMovingFlags( SCH_SYMBOL& aSymbol )
+    {
+        aSymbol.SetFlags( IS_MOVING );
+        aSymbol.RunOnChildren(
+                []( SCH_ITEM* aChild )
+                {
+                    aChild->SetFlags( IS_MOVING );
+                },
+                RECURSE_MODE::RECURSE );
+    }
+
+    static void ClearMovingFlags( SCH_SYMBOL& aSymbol )
+    {
+        aSymbol.ClearFlags( IS_MOVING );
+        aSymbol.RunOnChildren(
+                []( SCH_ITEM* aChild )
+                {
+                    aChild->ClearFlags( IS_MOVING );
+                },
+                RECURSE_MODE::RECURSE );
+    }
+
+    void MakePoints( EDIT_POINTS& aPoints ) override
+    {
+        const BOX2I box = getBodyBox();
+
+        addRectanglePoints( aPoints, box.GetPosition(), box.GetEnd() );
+    }
+
+    bool UpdatePoints( EDIT_POINTS& aPoints ) override
+    {
+        const BOX2I box = getBodyBox();
+
+        updateRectanglePoints( aPoints, box.GetPosition(), box.GetEnd() );
+        return true;
+    }
+
+    void UpdateItem( const EDIT_POINT& aEditedPoint, EDIT_POINTS& aPoints, COMMIT& aCommit,
+                     std::vector<EDA_ITEM*>& aUpdatedItems ) override
+    {
+        VECTOR2I topLeft = aPoints.Point( RECT_TOPLEFT ).GetPosition();
+        VECTOR2I topRight = aPoints.Point( RECT_TOPRIGHT ).GetPosition();
+        VECTOR2I botLeft = aPoints.Point( RECT_BOTLEFT ).GetPosition();
+        VECTOR2I botRight = aPoints.Point( RECT_BOTRIGHT ).GetPosition();
+
+        const BOX2I    oldBox = getBodyBox();
+        const VECTOR2I minSize = getWorldMinimumSize();
+
+        RECTANGLE_POINT_EDIT_BEHAVIOR::PinEditedCorner( aEditedPoint, aPoints, minSize.x,
+                                                        minSize.y, topLeft, topRight, botLeft,
+                                                        botRight );
+
+        if( isModified( aEditedPoint, aPoints.Point( RECT_TOPLEFT ) )
+            || isModified( aEditedPoint, aPoints.Point( RECT_TOPRIGHT ) )
+            || isModified( aEditedPoint, aPoints.Point( RECT_BOTRIGHT ) )
+            || isModified( aEditedPoint, aPoints.Point( RECT_BOTLEFT ) )
+            || isModified( aEditedPoint, aPoints.Line( RECT_TOP ) )
+            || isModified( aEditedPoint, aPoints.Line( RECT_LEFT ) )
+            || isModified( aEditedPoint, aPoints.Line( RECT_BOT ) )
+            || isModified( aEditedPoint, aPoints.Line( RECT_RIGHT ) ) )
+        {
+            applyGeometry( topLeft, botRight );
+        }
+        else if( isModified( aEditedPoint, aPoints.Point( RECT_CENTER ) ) )
+        {
+            const VECTOR2I moveVec = aPoints.Point( RECT_CENTER ).GetPosition() - oldBox.GetCenter();
+
+            m_symbol.Move( moveVec );
+            snapFirstPinToGrid();
+        }
+
+        updateConnections( aCommit, aUpdatedItems );
+        aUpdatedItems.push_back( &m_symbol );
+
+        for( unsigned i = 0; i < aPoints.LinesSize(); ++i )
+        {
+            if( !isModified( aEditedPoint, aPoints.Line( i ) ) )
+            {
+                aPoints.Line( i ).SetConstraint( new EC_PERPLINE( aPoints.Line( i ) ) );
+            }
+        }
+    }
+
+private:
+    SCH_SHAPE* getBody() const
+    {
+        LIB_SYMBOL* libSymbol = m_symbol.GetLibSymbolRef().get();
+
+        if( !libSymbol )
+            return nullptr;
+
+        SCH_SHAPE* bestShape = nullptr;
+        long long  bestArea = -1;
+
+        for( SCH_ITEM& item : libSymbol->GetDrawItems() )
+        {
+            if( item.Type() != SCH_SHAPE_T )
+                continue;
+
+            SCH_SHAPE* shape = static_cast<SCH_SHAPE*>( &item );
+
+            if( shape->GetShape() == SHAPE_T::RECTANGLE )
+            {
+                const long long width = std::abs( shape->GetEnd().x - shape->GetStart().x );
+                const long long height = std::abs( shape->GetEnd().y - shape->GetStart().y );
+                const long long area = width * height;
+
+                if( area > bestArea )
+                {
+                    bestShape = shape;
+                    bestArea = area;
+                }
+            }
+        }
+
+        return bestShape;
+    }
+
+    int getChannelCount() const
+    {
+        if( LIB_SYMBOL* libSymbol = m_symbol.GetLibSymbolRef().get() )
+            return SCH_SCOPE::ChannelCount( libSymbol );
+
+        return 1;
+    }
+
+    static bool transformSwapsAxes( const TRANSFORM& aTransform )
+    {
+        return aTransform.y1 != 0 || aTransform.x2 != 0;
+    }
+
+    static VECTOR2I transformLocalSizeToWorldSize( const TRANSFORM& aTransform,
+                                                   const VECTOR2I& aLocalSize )
+    {
+        VECTOR2I transformed = aTransform.TransformCoordinate( aLocalSize );
+
+        return VECTOR2I( std::abs( transformed.x ), std::abs( transformed.y ) );
+    }
+
+    VECTOR2I getWorldMinimumSize() const
+    {
+        return transformLocalSizeToWorldSize( m_symbol.GetTransform(),
+                                              SCH_SCOPE::MinimumSize( getChannelCount() ) );
+    }
+
+    VECTOR2I getLocalSizeFromWorldSize( const VECTOR2I& aWorldSize ) const
+    {
+        if( transformSwapsAxes( m_symbol.GetTransform() ) )
+            return VECTOR2I( aWorldSize.y, aWorldSize.x );
+
+        return aWorldSize;
+    }
+
+    VECTOR2I getSymbolPositionForWorldBox( const BOX2I& aWorldBox,
+                                           const VECTOR2I& aLocalSize ) const
+    {
+        BOX2I transformedBox = BOX2I::ByCorners( VECTOR2I( 0, 0 ),
+                                                 m_symbol.GetTransform().TransformCoordinate( aLocalSize ) );
+
+        transformedBox.Normalize();
+        return aWorldBox.GetPosition() - transformedBox.GetPosition();
+    }
+
+    static int snapToScopeGrid( int aValue )
+    {
+        const int gridSize = SCH_SCOPE::GridSize();
+
+        if( gridSize <= 0 )
+            return aValue;
+
+        const int quotient = aValue >= 0 ? ( aValue + gridSize / 2 ) / gridSize
+                                         : ( aValue - gridSize / 2 ) / gridSize;
+
+        return quotient * gridSize;
+    }
+
+    void snapFirstPinToGrid()
+    {
+        m_symbol.UpdatePins();
+
+        SCH_PIN* firstPin = m_symbol.GetPin( wxS( "1" ) );
+
+        if( !firstPin )
+            return;
+
+        const VECTOR2I pinPos = firstPin->GetPosition();
+        const VECTOR2I snappedPinPos( snapToScopeGrid( pinPos.x ), snapToScopeGrid( pinPos.y ) );
+        const VECTOR2I moveVec = snappedPinPos - pinPos;
+
+        if( moveVec != VECTOR2I( 0, 0 ) )
+        {
+            m_symbol.Move( moveVec );
+            m_symbol.UpdatePins();
+        }
+    }
+
+    BOX2I getBodyBox() const
+    {
+        if( SCH_SHAPE* body = getBody() )
+        {
+            BOX2I box = BOX2I::ByCorners( body->GetStart(), body->GetEnd() );
+
+            box = m_symbol.GetTransform().TransformCoordinate( box );
+            box.Normalize();
+            box.Offset( m_symbol.GetPosition() );
+
+            return box;
+        }
+
+        return m_symbol.GetBodyBoundingBox();
+    }
+
+    static void addRectanglePoints( EDIT_POINTS& aPoints, const VECTOR2I& aTopLeft,
+                                    const VECTOR2I& aBotRight )
+    {
+        aPoints.AddPoint( aTopLeft );
+        aPoints.AddPoint( VECTOR2I( aBotRight.x, aTopLeft.y ) );
+        aPoints.AddPoint( VECTOR2I( aTopLeft.x, aBotRight.y ) );
+        aPoints.AddPoint( aBotRight );
+        aPoints.AddPoint( VECTOR2I( ( aTopLeft.x + aBotRight.x ) / 2,
+                                    ( aTopLeft.y + aBotRight.y ) / 2 ) );
+
+        aPoints.AddLine( aPoints.Point( RECT_TOPLEFT ), aPoints.Point( RECT_TOPRIGHT ) );
+        aPoints.Line( RECT_TOP ).SetConstraint( new EC_PERPLINE( aPoints.Line( RECT_TOP ) ) );
+        aPoints.AddLine( aPoints.Point( RECT_TOPRIGHT ), aPoints.Point( RECT_BOTRIGHT ) );
+        aPoints.Line( RECT_RIGHT ).SetConstraint( new EC_PERPLINE( aPoints.Line( RECT_RIGHT ) ) );
+        aPoints.AddLine( aPoints.Point( RECT_BOTRIGHT ), aPoints.Point( RECT_BOTLEFT ) );
+        aPoints.Line( RECT_BOT ).SetConstraint( new EC_PERPLINE( aPoints.Line( RECT_BOT ) ) );
+        aPoints.AddLine( aPoints.Point( RECT_BOTLEFT ), aPoints.Point( RECT_TOPLEFT ) );
+        aPoints.Line( RECT_LEFT ).SetConstraint( new EC_PERPLINE( aPoints.Line( RECT_LEFT ) ) );
+    }
+
+    static void updateRectanglePoints( EDIT_POINTS& aPoints, const VECTOR2I& aTopLeft,
+                                       const VECTOR2I& aBotRight )
+    {
+        aPoints.Point( RECT_TOPLEFT ).SetPosition( aTopLeft );
+        aPoints.Point( RECT_TOPRIGHT ).SetPosition( aBotRight.x, aTopLeft.y );
+        aPoints.Point( RECT_BOTLEFT ).SetPosition( aTopLeft.x, aBotRight.y );
+        aPoints.Point( RECT_BOTRIGHT ).SetPosition( aBotRight );
+        aPoints.Point( RECT_CENTER ).SetPosition( ( aTopLeft.x + aBotRight.x ) / 2,
+                                                  ( aTopLeft.y + aBotRight.y ) / 2 );
+    }
+
+    void applyGeometry( const VECTOR2I& aTopLeft, const VECTOR2I& aBotRight )
+    {
+        LIB_SYMBOL* libSymbol = m_symbol.GetLibSymbolRef().get();
+        SCH_SHAPE*  body = getBody();
+
+        if( !libSymbol || !body )
+            return;
+
+        BOX2I worldBox = BOX2I::ByCorners( aTopLeft, aBotRight );
+        worldBox.Normalize();
+
+        VECTOR2I size = getLocalSizeFromWorldSize( worldBox.GetSize() );
+        const VECTOR2I minSize = SCH_SCOPE::MinimumSize( getChannelCount() );
+
+        size.x = std::max( size.x, minSize.x );
+        size.y = std::max( size.y, minSize.y );
+
+        m_symbol.SetPosition( getSymbolPositionForWorldBox( worldBox, size ) );
+
+        body->SetStart( VECTOR2I( 0, 0 ) );
+        body->SetEnd( size );
+        body->SetFillMode( FILL_T::FILLED_WITH_BG_BODYCOLOR );
+        body->SetLayer( LAYER_DEVICE );
+
+        SCH_SCOPE::UpdateChannelGeometry( libSymbol, size );
+
+        snapFirstPinToGrid();
+    }
+
+    void updateConnections( COMMIT& aCommit, std::vector<EDA_ITEM*>& aUpdatedItems )
+    {
+        for( auto& [pin, noConnect] : m_noConnects )
+        {
+            const VECTOR2I newPinPos = pin->GetPosition();
+
+            if( noConnect->GetPosition() != newPinPos )
+            {
+                aCommit.Modify( noConnect, &m_screen );
+                noConnect->SetPosition( newPinPos );
+                aUpdatedItems.push_back( noConnect );
+            }
+        }
+
+        for( auto& [pin, line, endpoint] : m_connectedWires )
+        {
+            const VECTOR2I newPinPos = pin->GetPosition();
+            bool           needsUpdate = false;
+
+            if( endpoint == STARTPOINT && line->GetStartPoint() != newPinPos )
+                needsUpdate = true;
+            else if( endpoint == ENDPOINT && line->GetEndPoint() != newPinPos )
+                needsUpdate = true;
+
+            if( needsUpdate )
+            {
+                aCommit.Modify( line, &m_screen );
+
+                if( endpoint == STARTPOINT )
+                    line->SetStartPoint( newPinPos );
+                else
+                    line->SetEndPoint( newPinPos );
+
+                aUpdatedItems.push_back( line );
+            }
+        }
+    }
+
+private:
+    SCH_SYMBOL&                                      m_symbol;
+    SCH_SCREEN&                                      m_screen;
+    std::vector<std::pair<SCH_PIN*, SCH_NO_CONNECT*>> m_noConnects;
+    std::vector<std::tuple<SCH_PIN*, SCH_LINE*, int>> m_connectedWires;
+};
+
+
 class TEXTBOX_POINT_EDIT_BEHAVIOR : public POINT_EDIT_BEHAVIOR
 {
 public:
@@ -984,6 +1341,17 @@ void SCH_POINT_EDITOR::makePointsAndBehavior( EDA_ITEM* aItem )
         m_editBehavior = std::make_unique<EDA_POLYGON_POINT_EDIT_BEHAVIOR>( *shape );
         break;
     }
+    case SCH_SYMBOL_T:
+    {
+        SCH_SYMBOL& symbol = static_cast<SCH_SYMBOL&>( *aItem );
+
+        if( SCH_SCOPE::IsScopeSymbol( &symbol ) )
+            m_editBehavior = std::make_unique<SCOPE_SYMBOL_POINT_EDIT_BEHAVIOR>( symbol, *m_frame->GetScreen() );
+        else
+            m_editPoints.reset();
+
+        break;
+    }
     case SCH_TEXTBOX_T:
     {
         SCH_TEXTBOX* textbox = static_cast<SCH_TEXTBOX*>( aItem );
@@ -1147,11 +1515,18 @@ int SCH_POINT_EDITOR::Main( const TOOL_EVENT& aEvent )
 
     const SCH_SELECTION& selection = m_selectionTool->GetSelection();
 
-    if( selection.Size() != 1 || !selection.Front()->IsType( pointEditorTypes ) )
+    if( selection.Size() != 1 )
+        return 0;
+
+    EDA_ITEM* item = selection.Front();
+    const bool isScopeSymbol = item->Type() == SCH_SYMBOL_T
+                               && SCH_SCOPE::IsScopeSymbol( static_cast<SCH_SYMBOL*>( item ) );
+
+    if( !item->IsType( pointEditorTypes ) && !isScopeSymbol )
         return 0;
 
     // Wait till drawing tool is done
-    if( selection.Front()->IsNew() )
+    if( item->IsNew() )
         return 0;
 
     Activate();
@@ -1160,12 +1535,15 @@ int SCH_POINT_EDITOR::Main( const TOOL_EVENT& aEvent )
     EE_GRID_HELPER*       grid = new EE_GRID_HELPER( m_toolMgr );
     VECTOR2I              cursorPos;
     KIGFX::VIEW*          view = getView();
-    EDA_ITEM*             item = selection.Front();
     SCH_COMMIT            commit( m_toolMgr );
 
     controls->ShowCursor( true );
 
     makePointsAndBehavior( item );
+
+    if( !m_editPoints || !m_editBehavior )
+        return 0;
+
     m_angleItem = std::make_unique<KIGFX::PREVIEW::ANGLE_ITEM>( m_editPoints );
     view->Add( m_editPoints.get() );
     view->Add( m_angleItem.get() );
@@ -1201,6 +1579,9 @@ int SCH_POINT_EDITOR::Main( const TOOL_EVENT& aEvent )
             {
                 commit.Modify( m_editPoints->GetParent(), m_frame->GetScreen() );
 
+                if( isScopeSymbol )
+                    SCOPE_SYMBOL_POINT_EDIT_BEHAVIOR::SetMovingFlags( *static_cast<SCH_SYMBOL*>( item ) );
+
                 if( SCH_SHAPE* shape = dynamic_cast<SCH_SHAPE*>( item ) )
                 {
                     shape->SetFlags( IS_MOVING );
@@ -1234,6 +1615,13 @@ int SCH_POINT_EDITOR::Main( const TOOL_EVENT& aEvent )
                 shape->ClearFlags( IS_MOVING );
                 shape->SetHatchingDirty();
                 shape->UpdateHatching();
+            }
+
+            if( isScopeSymbol )
+            {
+                SCOPE_SYMBOL_POINT_EDIT_BEHAVIOR::ClearMovingFlags( *static_cast<SCH_SYMBOL*>( item ) );
+                getView()->Update( item, KIGFX::GEOMETRY | KIGFX::REPAINT );
+                m_frame->GetCanvas()->Refresh();
             }
 
             inDrag = false;
@@ -1281,6 +1669,12 @@ int SCH_POINT_EDITOR::Main( const TOOL_EVENT& aEvent )
         shape->UpdateHatching();
     }
 
+    if( isScopeSymbol )
+    {
+        SCOPE_SYMBOL_POINT_EDIT_BEHAVIOR::ClearMovingFlags( *static_cast<SCH_SYMBOL*>( item ) );
+        getView()->Update( item, KIGFX::GEOMETRY | KIGFX::REPAINT );
+    }
+
     controls->SetAutoPan( false );
     controls->CaptureCursor( false );
     setEditedPoint( nullptr );
@@ -1316,6 +1710,12 @@ void SCH_POINT_EDITOR::updateParentItem( bool aSnapToGrid, SCH_COMMIT& aCommit )
 
     for( EDA_ITEM* updatedItem : updatedItems )
         updateItem( updatedItem, true );
+
+    if( item->Type() == SCH_SYMBOL_T && SCH_SCOPE::IsScopeSymbol( static_cast<SCH_SYMBOL*>( item ) ) )
+    {
+        getView()->Update( item, KIGFX::GEOMETRY | KIGFX::REPAINT );
+        m_frame->GetCanvas()->Refresh();
+    }
 
     m_frame->SetMsgPanel( item );
 }

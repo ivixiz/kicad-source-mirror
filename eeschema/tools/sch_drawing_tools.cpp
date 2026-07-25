@@ -48,7 +48,9 @@
 #include <confirm.h>
 #include <view/view_controls.h>
 #include <view/view.h>
+#include <lib_symbol.h>
 #include <sch_symbol.h>
+#include <sch_pin.h>
 #include <sch_no_connect.h>
 #include <sch_group.h>
 #include <sch_line.h>
@@ -60,6 +62,7 @@
 #include <sch_sheet_pin.h>
 #include <sch_label.h>
 #include <sch_bitmap.h>
+#include <sch_scope.h>
 #include <schematic.h>
 #include <sch_commit.h>
 #include <scoped_set_reset.h>
@@ -103,6 +106,56 @@ wxString uniqueGroupName( SCH_SCREEN* aScreen, const wxString& aBaseName )
     }
 
     return aBaseName;
+}
+
+
+LIB_ID scopeLibId()
+{
+    return SCH_SCOPE::LibId();
+}
+
+
+std::unique_ptr<LIB_SYMBOL> makeScopeLibSymbol()
+{
+    std::unique_ptr<LIB_SYMBOL> symbol = std::make_unique<LIB_SYMBOL>( wxS( "Scope" ) );
+    const LIB_ID                libId = scopeLibId();
+    const VECTOR2I              bodySize = SCH_SCOPE::DefaultSize();
+    const int                   pinNameOffset = SCH_SCOPE::PinNameOffset();
+
+    symbol->SetLibId( libId );
+    symbol->SetDescription( _( "Interactive simulation scope block" ) );
+    symbol->SetShowPinNames( true );
+    symbol->SetShowPinNumbers( false );
+    symbol->SetPinNameOffset( pinNameOffset );
+    symbol->SetExcludedFromBOM( true );
+    symbol->SetExcludedFromBoard( true );
+    symbol->SetExcludedFromPosFiles( true );
+
+    symbol->GetReferenceField().SetText( wxS( "SCOPE" ) );
+    symbol->GetReferenceField().SetVisible( false );
+    symbol->GetValueField().SetText( wxS( "Scope" ) );
+    symbol->GetValueField().SetVisible( false );
+
+    symbol->AddDrawItem( new SCH_SCOPE( VECTOR2I( 0, 0 ) ) );
+    SCH_SCOPE::UpdateChannelGeometry( symbol.get(), bodySize );
+
+    return symbol;
+}
+
+
+SCH_SYMBOL* makeScopeSymbol( SCHEMATIC* aSchematic, const SCH_SHEET_PATH& aSheetPath,
+                             const VECTOR2I& aPosition )
+{
+    std::unique_ptr<LIB_SYMBOL> libSymbol = makeScopeLibSymbol();
+
+    SCH_SYMBOL* symbol = new SCH_SYMBOL( *libSymbol, scopeLibId(), &aSheetPath, 1, 1, aPosition,
+                                         aSchematic );
+
+    symbol->SetExcludedFromBOM( true, &aSheetPath );
+    symbol->SetExcludedFromBoard( true, &aSheetPath );
+    symbol->SetExcludedFromPosFiles( true, &aSheetPath );
+
+    return symbol;
 }
 } // namespace
 
@@ -2857,6 +2910,140 @@ int SCH_DRAWING_TOOLS::DrawShape( const TOOL_EVENT& aEvent )
 }
 
 
+int SCH_DRAWING_TOOLS::PlaceScope( const TOOL_EVENT& aEvent )
+{
+    SCHEMATIC*           schematic = getModel<SCHEMATIC>();
+    SCH_SCREEN*          screen = m_frame->GetScreen();
+    SCH_SYMBOL*          previewItem = nullptr;
+    KIGFX::VIEW_CONTROLS* controls = getViewControls();
+    EE_GRID_HELPER       grid( m_toolMgr );
+    VECTOR2I             cursorPos;
+
+    if( m_inDrawingTool )
+        return 0;
+
+    REENTRANCY_GUARD guard( &m_inDrawingTool );
+
+    previewItem = makeScopeSymbol( schematic, m_frame->GetCurrentSheet(), VECTOR2I( 0, 0 ) );
+    previewItem->SetFlags( IS_NEW | IS_MOVING );
+
+    m_toolMgr->DeactivateTool();
+    m_toolMgr->RunAction( ACTIONS::selectionClear );
+
+    m_frame->PushTool( aEvent );
+
+    auto setCursor =
+            [&]()
+            {
+                m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::PLACE );
+            };
+
+    auto updatePreview =
+            [&]()
+            {
+                previewItem->SetPosition( cursorPos - SCH_SCOPE::FirstPinOffset() );
+                m_view->ClearPreview();
+                m_view->AddToPreview( previewItem->Clone() );
+                m_frame->SetMsgPanel( previewItem );
+            };
+
+    Activate();
+
+    controls->ShowCursor( true );
+    setCursor();
+
+    if( aEvent.HasPosition() )
+        m_toolMgr->PrimeTool( aEvent.Position() );
+    else
+        m_toolMgr->PostAction( ACTIONS::refreshPreview );
+
+    while( TOOL_EVENT* evt = Wait() )
+    {
+        setCursor();
+        grid.SetSnap( !evt->Modifier( MD_SHIFT ) );
+        grid.SetUseGrid( getView()->GetGAL()->GetGridSnapping() && !evt->DisableGridSnapping() );
+
+        cursorPos = evt->IsPrime() ? evt->Position() : controls->GetMousePosition();
+        cursorPos = grid.Align( cursorPos, GRID_HELPER_GRIDS::GRID_CONNECTABLE );
+        controls->ForceCursorPosition( true, cursorPos );
+
+        const bool isSyntheticClick = evt->IsActivate() && evt->HasPosition() && evt->Matches( aEvent );
+
+        if( evt->IsCancelInteractive() )
+        {
+            m_frame->PopTool( aEvent );
+            break;
+        }
+        else if( evt->IsActivate() && !isSyntheticClick )
+        {
+            if( evt->IsPointEditor() )
+            {
+                // Don't exit: the point editor can run in the background.
+            }
+            else if( evt->IsMoveTool() )
+            {
+                m_frame->PopTool( aEvent );
+                break;
+            }
+            else
+            {
+                m_frame->PopTool( aEvent );
+                break;
+            }
+        }
+        else if( evt->IsClick( BUT_LEFT ) || evt->IsDblClick( BUT_LEFT )
+                || isSyntheticClick
+                || evt->IsAction( &ACTIONS::cursorClick ) || evt->IsAction( &ACTIONS::cursorDblClick ) )
+        {
+            SCH_SYMBOL* scope = makeScopeSymbol( schematic, m_frame->GetCurrentSheet(),
+                                                 cursorPos - SCH_SCOPE::FirstPinOffset() );
+            scope->SetFlags( IS_NEW );
+
+            m_frame->AddToScreen( scope, screen );
+            m_frame->SaveCopyForRepeatItem( scope );
+
+            SCH_COMMIT commit( m_toolMgr );
+            commit.Added( scope, screen );
+
+            m_toolMgr->RunAction( ACTIONS::selectionClear );
+            m_selectionTool->AddItemToSel( scope );
+
+            SCH_LINE_WIRE_BUS_TOOL* lwbTool = m_toolMgr->GetTool<SCH_LINE_WIRE_BUS_TOOL>();
+            lwbTool->TrimOverLappingWires( &commit, &m_selectionTool->GetSelection() );
+            lwbTool->AddJunctionsIfNeeded( &commit, &m_selectionTool->GetSelection() );
+
+            commit.Push( _( "Place Scope" ) );
+            m_toolMgr->PostAction( ACTIONS::activatePointEditor );
+
+            m_frame->PopTool( aEvent );
+            break;
+        }
+        else if( evt->IsClick( BUT_RIGHT ) )
+        {
+            m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
+        }
+        else if( evt->IsAction( &ACTIONS::refreshPreview ) || evt->IsMotion() )
+        {
+            updatePreview();
+        }
+        else
+        {
+            evt->SetPassEvent();
+        }
+    }
+
+    delete previewItem;
+    m_view->ClearPreview();
+
+    controls->SetAutoPan( false );
+    controls->CaptureCursor( false );
+    controls->ForceCursorPosition( false );
+    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
+
+    return 0;
+}
+
+
 int SCH_DRAWING_TOOLS::DrawRuleArea( const TOOL_EVENT& aEvent )
 {
     if( m_inDrawingTool )
@@ -3995,6 +4182,7 @@ void SCH_DRAWING_TOOLS::setTransitions()
     Go( &SCH_DRAWING_TOOLS::ImportSheet,           SCH_ACTIONS::importSheet.MakeEvent() );
     Go( &SCH_DRAWING_TOOLS::TwoClickPlace,         SCH_ACTIONS::placeSchematicText.MakeEvent() );
     Go( &SCH_DRAWING_TOOLS::DrawShape,             SCH_ACTIONS::drawRectangle.MakeEvent() );
+    Go( &SCH_DRAWING_TOOLS::PlaceScope,            SCH_ACTIONS::placeScope.MakeEvent() );
     Go( &SCH_DRAWING_TOOLS::DrawShape,             SCH_ACTIONS::drawCircle.MakeEvent() );
     Go( &SCH_DRAWING_TOOLS::DrawShape,             SCH_ACTIONS::drawEllipse.MakeEvent() );
     Go( &SCH_DRAWING_TOOLS::DrawShape,             SCH_ACTIONS::drawEllipseArc.MakeEvent() );

@@ -1126,8 +1126,8 @@ void DIALOG_SYMBOL_PROPERTIES::OnFindPart(wxCommandEvent& event){ //Executing an
             SCHEMATIC_SETTINGS& settings = m_symbol->Schematic()->Settings();
             int                 fieldID  = static_cast<int>( m_fields->size() );
 
-            SCH_FIELD newField( VECTOR2I(), fieldID, m_symbol, fieldName );
-            newField.SetTextAngle( m_fields->at( REFERENCE_FIELD ).GetTextAngle() );
+            SCH_FIELD newField( m_symbol, FIELD_T::USER, fieldName );
+            //newField.SetTextAngle( m_fields->at( FIELD_T::REFERENCE ).GetTextAngle() );
             newField.SetTextSize( VECTOR2I( settings.m_DefaultTextSize, settings.m_DefaultTextSize ) );
             newField.SetVisible( false );
             newField.SetText( fieldValue );

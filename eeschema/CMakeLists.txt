@@ -425,6 +425,7 @@ set( EESCHEMA_SRCS
     sch_render_settings.cpp
     sch_screen.cpp
     sch_shape.cpp
+    sch_scope.cpp
     sch_rule_area.cpp
     sch_sheet.cpp
     sch_sheet_path.cpp

@@ -26,6 +26,7 @@
 
 #include <bitmaps.h>
 #include <core/typeinfo.h>
+#include <hotkeys_basic.h>
 #include <layer_ids.h>
 #include <sch_bitmap.h>
 #include <sch_line_wire_bus_tool.h>
@@ -687,6 +688,15 @@ TOOL_ACTION SCH_ACTIONS::drawRectangle( TOOL_ACTION_ARGS()
         .Icon( BITMAPS::add_rectangle )
         .Flags( AF_ACTIVATE )
         .Parameter( SHAPE_T::RECTANGLE ) );
+
+TOOL_ACTION SCH_ACTIONS::placeScope( TOOL_ACTION_ARGS()
+        .Name( "eeschema.InteractiveDrawing.placeScope" )
+        .Scope( AS_GLOBAL )
+        .FriendlyName( _( "Place Scope" ) )
+        .Tooltip( _( "Place an interactive simulation scope block" ) )
+        .ToolbarState( TOOLBAR_STATE::TOGGLE )
+        .Icon( BITMAPS::add_scope )
+        .Flags( AF_ACTIVATE ) );
 
 TOOL_ACTION SCH_ACTIONS::drawCircle( TOOL_ACTION_ARGS()
         .Name( "eeschema.InteractiveDrawing.drawCircle" )
@@ -1386,6 +1396,14 @@ TOOL_ACTION SCH_ACTIONS::markSimExclusions( TOOL_ACTION_ARGS()
         .Tooltip( _( "Draw 'X's over items which have been excluded from simulation" ) )
         .ToolbarState( TOOLBAR_STATE::TOGGLE ) );
 
+TOOL_ACTION SCH_ACTIONS::hideSimExclusions( TOOL_ACTION_ARGS()
+        .Name( "eeschema.EditorControl.hideSimExclusions" )
+        .Scope( AS_GLOBAL )
+        .FriendlyName( _( "Hide excluded-from-simulation markers" ) )
+        .Tooltip( _( "Hide markers drawn over items which have been excluded from simulation" ) )
+        .ToolbarState( TOOLBAR_STATE::TOGGLE )
+        .Icon( BITMAPS::hide_excluded_from_simulation ) );
+
 TOOL_ACTION SCH_ACTIONS::toggleOPVoltages( TOOL_ACTION_ARGS()
         .Name( "eeschema.EditorControl.showOperatingPointVoltages" )
         .Scope( AS_GLOBAL )
@@ -1615,6 +1633,7 @@ TOOL_ACTION SCH_ACTIONS::move( TOOL_ACTION_ARGS()
         .Name( "eeschema.InteractiveMove.move" )
         .Scope( AS_GLOBAL )
         .DefaultHotkey( 'M' )
+        .DefaultHotkeyAlt( MD_ALT + PSEUDO_WXK_CLICK )
         .LegacyHotkeyName( "Move Item" )
         .FriendlyName( _( "Move" ) )
         .Icon( BITMAPS::move )

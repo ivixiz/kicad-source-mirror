@@ -561,7 +561,10 @@ bool PG_FPID_EDITOR::OnEvent( wxPropertyGrid* aGrid, wxPGProperty* aProperty, wx
         if( !m_frame )
             return true;
 
-        wxString fpid = aProperty->GetValue().GetString();
+        wxString fpid;
+
+        if( !aProperty->GetValue().IsNull() )
+            fpid = aProperty->GetValue().GetString();
 
         if( KIWAY_PLAYER* frame = m_frame->Kiway().Player( FRAME_FOOTPRINT_CHOOSER, true, m_frame ) )
         {

@@ -731,7 +731,9 @@ enum class BITMAPS : unsigned int
     constraint_absolute_length_2,
     constraint_permitted_layers,
     constraint_allowed_orientation,
-    constraint_vias_under_smd
+    constraint_vias_under_smd,
+    add_scope,
+    hide_excluded_from_simulation,
 };
 
 

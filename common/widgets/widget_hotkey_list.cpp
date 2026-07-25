@@ -145,6 +145,8 @@ public:
         panelDisplayCurrent->Bind( wxEVT_CHAR, &HK_PROMPT_DIALOG::OnChar, this );
         panelDisplayCurrent->Bind( wxEVT_CHAR_HOOK, &HK_PROMPT_DIALOG::OnCharHook, this );
         panelDisplayCurrent->Bind( wxEVT_KEY_UP, &HK_PROMPT_DIALOG::OnKeyUp, this );
+        panelDisplayCurrent->Bind( wxEVT_LEFT_DOWN, &HK_PROMPT_DIALOG::OnMouseDown, this );
+        Bind( wxEVT_LEFT_DOWN, &HK_PROMPT_DIALOG::OnMouseDown, this );
 
         resetButton->Bind( wxEVT_COMMAND_BUTTON_CLICKED, &HK_PROMPT_DIALOG::onResetButton, this );
 
@@ -161,6 +163,10 @@ public:
             if( dialog.m_resetkey )
             {
                 return std::make_optional( 0 );
+            }
+            else if( dialog.m_mouseKey.has_value() )
+            {
+                return dialog.m_mouseKey;
             }
             else
             {
@@ -237,6 +243,34 @@ protected:
         }
     }
 
+    void OnMouseDown( wxMouseEvent& aEvent )
+    {
+        long key = PSEUDO_WXK_CLICK;
+        int  mods = aEvent.GetModifiers();
+
+        if( mods & wxMOD_SHIFT )
+            key |= MD_SHIFT;
+
+        if( mods & wxMOD_CONTROL )
+            key |= MD_CTRL;
+
+        if( mods & wxMOD_ALT )
+            key |= MD_ALT;
+
+#ifdef wxMOD_META
+        if( mods & wxMOD_META )
+            key |= MD_META;
+#endif
+
+#ifdef wxMOD_WIN
+        if( mods & wxMOD_WIN )
+            key |= MD_SUPER;
+#endif
+
+        m_mouseKey = key;
+        wxPostEvent( this, wxCommandEvent( wxEVT_COMMAND_BUTTON_CLICKED, wxID_OK ) );
+    }
+
     void onResetButton( wxCommandEvent& aEvent )
     {
         m_resetkey = true;
@@ -244,8 +278,9 @@ protected:
     }
 
 private:
-    bool       m_resetkey = false;
-    wxKeyEvent m_event;
+    bool                m_resetkey = false;
+    wxKeyEvent          m_event;
+    std::optional<long> m_mouseKey;
 };
 
 

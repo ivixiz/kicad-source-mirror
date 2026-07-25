@@ -37,6 +37,7 @@
 #include <increment.h>
 #include <algorithm>
 #include <set>
+#include <vector>
 #include <string_utils.h>
 #include <sch_bitmap.h>
 #include <sch_bus_entry.h>
@@ -539,6 +540,30 @@ bool SCH_EDIT_TOOL::Init()
 
     const auto swapSelectionCondition = S_C::OnlyTypes( SwappableItems ) && SELECTION_CONDITIONS::MoreThan( 1 );
 
+    SELECTION_CONDITION footprintFieldCondition =
+            []( const SELECTION& aSel )
+            {
+                bool hasEditableSymbol = false;
+
+                if( aSel.GetSize() == 0 )
+                    return false;
+
+                for( EDA_ITEM* item : aSel )
+                {
+                    if( item->Type() != SCH_SYMBOL_T )
+                        return false;
+
+                    SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( item );
+
+                    if( !symbol->IsPower() )
+                        hasEditableSymbol = true;
+                }
+
+                return hasEditableSymbol;
+            };
+
+    SELECTION_CONDITION editFieldsCondition = S_C::SingleSymbol || footprintFieldCondition;
+
     auto propertiesCondition =
             [this]( const SELECTION& aSel )
             {
@@ -778,7 +803,7 @@ bool SCH_EDIT_TOOL::Init()
 
                 menu->AddItem( SCH_ACTIONS::editReference,    S_C::SingleSymbol, 200 );
                 menu->AddItem( SCH_ACTIONS::editValue,        S_C::SingleSymbol, 200 );
-                menu->AddItem( SCH_ACTIONS::editFootprint,    S_C::SingleSymbol, 200 );
+                menu->AddItem( SCH_ACTIONS::editFootprint,    footprintFieldCondition, 200 );
 
                 return menu;
             };
@@ -834,7 +859,7 @@ bool SCH_EDIT_TOOL::Init()
     moveMenu.AddMenu( makeAttributesMenu(),           S_C::HasTypes( attribTypes ), 200 );
     moveMenu.AddItem( SCH_ACTIONS::swap,              swapSelectionCondition, 200 );
     moveMenu.AddItem( SCH_ACTIONS::properties,        propertiesCondition, 200 );
-    moveMenu.AddMenu( makeEditFieldsMenu(),           S_C::SingleSymbol, 200 );
+    moveMenu.AddMenu( makeEditFieldsMenu(),           editFieldsCondition, 200 );
 
     moveMenu.AddSeparator();
     moveMenu.AddItem( ACTIONS::cut,                   S_C::IdleSelection );
@@ -860,7 +885,7 @@ bool SCH_EDIT_TOOL::Init()
     drawMenu.AddMenu( makeTransformMenu(),            orientCondition, 200 );
     drawMenu.AddMenu( makeAttributesMenu(),           S_C::HasTypes( attribTypes ), 200 );
     drawMenu.AddItem( SCH_ACTIONS::properties,        propertiesCondition, 200 );
-    drawMenu.AddMenu( makeEditFieldsMenu(),           S_C::SingleSymbol, 200 );
+    drawMenu.AddMenu( makeEditFieldsMenu(),           editFieldsCondition, 200 );
     drawMenu.AddItem( SCH_ACTIONS::autoplaceFields,   autoplaceCondition, 200 );
 
     drawMenu.AddItem( SCH_ACTIONS::editWithLibEdit,   S_C::SingleSymbolOrPower && S_C::Idle, 200 );
@@ -885,7 +910,7 @@ bool SCH_EDIT_TOOL::Init()
     selToolMenu.AddMenu( makeAttributesMenu(),         S_C::HasTypes( attribTypes ), 200 );
     selToolMenu.AddItem( SCH_ACTIONS::swap,            swapSelectionCondition, 200 );
     selToolMenu.AddItem( SCH_ACTIONS::properties,      propertiesCondition, 200 );
-    selToolMenu.AddMenu( makeEditFieldsMenu(),         S_C::SingleSymbol, 200 );
+    selToolMenu.AddMenu( makeEditFieldsMenu(),         editFieldsCondition, 200 );
     selToolMenu.AddItem( SCH_ACTIONS::autoplaceFields, autoplaceCondition, 200 );
 
     selToolMenu.AddItem( SCH_ACTIONS::editWithLibEdit, S_C::SingleSymbolOrPower && S_C::Idle, 200 );
@@ -2386,9 +2411,111 @@ void SCH_EDIT_TOOL::editFieldText( SCH_FIELD* aField )
 }
 
 
+bool SCH_EDIT_TOOL::editFootprintFields( const SCH_SELECTION& aSelection )
+{
+    std::set<SCH_SYMBOL*>     seen;
+    std::vector<SCH_SYMBOL*>  symbols;
+
+    auto addSymbol =
+            [&]( SCH_SYMBOL* aSymbol )
+            {
+                if( aSymbol && !aSymbol->IsPower() && seen.insert( aSymbol ).second )
+                    symbols.push_back( aSymbol );
+            };
+
+    for( EDA_ITEM* item : aSelection.Items() )
+    {
+        switch( item->Type() )
+        {
+        case SCH_SYMBOL_T:
+            addSymbol( static_cast<SCH_SYMBOL*>( item ) );
+            break;
+
+        case SCH_FIELD_T:
+            addSymbol( dynamic_cast<SCH_SYMBOL*>( static_cast<SCH_FIELD*>( item )->GetParentSymbol() ) );
+            break;
+
+        case SCH_PIN_T:
+            addSymbol( dynamic_cast<SCH_SYMBOL*>( item->GetParent() ) );
+            break;
+
+        default:
+            break;
+        }
+    }
+
+    if( symbols.empty() )
+        return false;
+
+    SCH_FIELD* firstField = symbols.front()->GetField( FIELD_T::FOOTPRINT );
+
+    if( !firstField )
+        return false;
+
+    wxString fieldName = GetDefaultFieldName( FIELD_T::FOOTPRINT, DO_TRANSLATE );
+    wxString caption;
+    caption.Printf( _( "Edit %s Field" ), TitleCaps( fieldName ) );
+
+    DIALOG_FIELD_PROPERTIES dlg( m_frame, caption, firstField );
+
+    if( dlg.ShowQuasiModal() != wxID_OK )
+        return true;
+
+    wxString        footprint = dlg.GetText();
+    SCH_COMMIT      commit( m_toolMgr );
+    SCH_SHEET_PATH& sheetPath = m_frame->GetCurrentSheet();
+    wxString        variantName = m_frame->Schematic().GetCurrentVariant();
+
+    for( SCH_SYMBOL* symbol : symbols )
+    {
+        SCH_FIELD* field = symbol->GetField( FIELD_T::FOOTPRINT );
+
+        if( !field )
+            continue;
+
+        commit.Modify( symbol, m_frame->GetScreen() );
+        symbol->SetFieldText( field->GetName(), footprint, &sheetPath, variantName );
+        m_frame->UpdateItem( symbol, false, true );
+
+        if( symbol->IsAnnotated( &sheetPath ) )
+        {
+            wxString ref = symbol->GetRef( &sheetPath );
+            int      unit = symbol->GetUnit();
+            LIB_ID   libId = symbol->GetLibId();
+
+            for( SCH_SHEET_PATH& sheet : m_frame->Schematic().Hierarchy() )
+            {
+                SCH_SCREEN*              screen = sheet.LastScreen();
+                std::vector<SCH_SYMBOL*> otherUnits;
+
+                CollectOtherUnits( ref, unit, libId, sheet, &otherUnits );
+
+                for( SCH_SYMBOL* otherUnit : otherUnits )
+                {
+                    commit.Modify( otherUnit, screen );
+                    otherUnit->GetField( FIELD_T::FOOTPRINT )->SetText( footprint );
+                    m_frame->UpdateItem( otherUnit, false, true );
+                }
+            }
+        }
+    }
+
+    if( !commit.Empty() )
+        commit.Push( caption );
+
+    return true;
+}
+
+
 int SCH_EDIT_TOOL::EditField( const TOOL_EVENT& aEvent )
 {
     SCH_SELECTION sel = m_selectionTool->RequestSelection( { SCH_FIELD_T, SCH_SYMBOL_T, SCH_PIN_T } );
+
+    if( aEvent.IsAction( &SCH_ACTIONS::editFootprint ) && sel.Size() > 1 )
+    {
+        editFootprintFields( sel );
+        return 0;
+    }
 
     if( sel.Size() != 1 )
         return 0;

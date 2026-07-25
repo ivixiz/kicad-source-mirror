@@ -1727,11 +1727,15 @@ void SCH_SYMBOL::SyncOtherUnits( const SCH_SHEET_PATH& aSourceSheet, SCH_COMMIT&
     bool updateExclFromPosFiles = true;
     bool updateDNP = true;
     bool updateOtherFields = true;
+    bool updateFootprint = false;
+    bool updateDatasheet = false;
     bool updatePins = true;
 
     if( aProperty )
     {
         updateValue = aProperty->Name() == _HKI( "Value" );
+        updateFootprint = aProperty->Name() == _HKI( "Footprint" );
+        updateDatasheet = aProperty->Name() == _HKI( "Datasheet" );
         updateExclFromBoard = aProperty->Name() == _HKI( "Exclude From Board" );
         updateExclFromBOM = aProperty->Name() == _HKI( "Exclude From Bill of Materials" );
         updateExclFromPosFiles = aProperty->Name() == _HKI( "Exclude From Position Files" );
@@ -1740,7 +1744,9 @@ void SCH_SYMBOL::SyncOtherUnits( const SCH_SHEET_PATH& aSourceSheet, SCH_COMMIT&
         updatePins = false;
     }
 
-    if( !updateValue && !updateExclFromBOM && !updateExclFromBoard && !updateExclFromPosFiles && !updateDNP && !updateOtherFields && !updatePins )
+    if( !updateValue && !updateFootprint && !updateDatasheet
+            && !updateExclFromBOM && !updateExclFromBoard && !updateExclFromPosFiles && !updateDNP
+            && !updateOtherFields && !updatePins )
     {
         return;
     }
@@ -1764,6 +1770,12 @@ void SCH_SYMBOL::SyncOtherUnits( const SCH_SHEET_PATH& aSourceSheet, SCH_COMMIT&
 
                 if( updateValue )
                     otherUnit->SetValueFieldText( GetField( FIELD_T::VALUE )->GetText() );
+
+                if( updateFootprint )
+                    otherUnit->GetField( FIELD_T::FOOTPRINT )->SetText( GetField( FIELD_T::FOOTPRINT )->GetText() );
+
+                if( updateDatasheet )
+                    otherUnit->GetField( FIELD_T::DATASHEET )->SetText( GetField( FIELD_T::DATASHEET )->GetText() );
 
                 if( updateOtherFields )
                 {

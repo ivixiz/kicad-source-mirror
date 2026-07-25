@@ -93,6 +93,7 @@ public:
     static TOOL_ACTION drawTextBox;
     static TOOL_ACTION drawTable;
     static TOOL_ACTION drawRectangle;
+    static TOOL_ACTION placeScope;
     static TOOL_ACTION drawCircle;
     static TOOL_ACTION drawEllipse;
     static TOOL_ACTION drawEllipseArc;
@@ -259,6 +260,7 @@ public:
     static TOOL_ACTION toggleERCErrors;
     static TOOL_ACTION toggleERCExclusions;
     static TOOL_ACTION markSimExclusions;
+    static TOOL_ACTION hideSimExclusions;
     static TOOL_ACTION toggleOPVoltages;
     static TOOL_ACTION toggleOPCurrents;
     static TOOL_ACTION togglePinAltIcons;

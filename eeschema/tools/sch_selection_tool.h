@@ -283,6 +283,11 @@ private:
                       bool* aSelectionCancelledFlag = nullptr, bool aAdd = false, bool aSubtract = false,
                       bool aExclusiveOr = false );
 
+    bool handleScopeControlAt( const SCH_COLLECTOR& aCollector, const VECTOR2I& aWhere );
+
+    bool dragOnlySelectedSymbolAt( const VECTOR2I& aWhere );
+    bool eventMatchesMoveClickHotkey( const TOOL_EVENT& aEvent ) const;
+
     /**
      * Handle drawing a selection box that allows one to select many items at the same time.
      *

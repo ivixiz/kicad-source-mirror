@@ -96,6 +96,7 @@ public:
 
 private:
     void editFieldText( SCH_FIELD* aField );
+    bool editFootprintFields( const SCH_SELECTION& aSelection );
 
     void collectUnits( const SCH_SELECTION& aSelection,
                        std::set<std::pair<SCH_SYMBOL*, SCH_SCREEN*>>& aCollectedUnits );

@@ -63,6 +63,13 @@ public:
 
     bool Writeable( INSPECTABLE* aObject ) const override
     {
+        if( m_name == GetCanonicalFieldName( FIELD_T::FOOTPRINT ) )
+        {
+            SCH_SYMBOL* symbol = dynamic_cast<SCH_SYMBOL*>( aObject );
+
+            return symbol && !symbol->IsPower() && PROPERTY_BASE::Writeable( aObject );
+        }
+
         return PROPERTY_BASE::Writeable( aObject );
     }
 
@@ -93,7 +100,7 @@ public:
         }
         else
         {
-            field->SetText( value, sheetPath, variantName );
+            symbol->SetFieldText( field->GetName(), value, sheetPath, variantName );
         }
     }
 
@@ -283,10 +290,11 @@ SCH_PROPERTIES_PANEL::SCH_PROPERTIES_PANEL( wxWindow* aParent, SCH_BASE_FRAME* a
             {
                 SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( item );
 
-                if( !libSymbol )
+                if( !symbol->IsPower() && symbol->GetLibSymbolRef() )
+                {
                     libSymbol = symbol->GetLibSymbolRef().get();
-                else if( libSymbol != symbol->GetLibSymbolRef().get() )
-                    return std::string( "" );
+                    break;
+                }
             }
         }
 

@@ -506,6 +506,7 @@ int SIMULATOR_CONTROL::Probe( const TOOL_EVENT& aEvent )
     if( blocking_dialog )
         blocking_dialog->Close( true );
 
+    m_simulatorFrame->SetAutoProbeTuneActive( false );
     m_schematicFrame->GetToolManager()->PostAction( SCH_ACTIONS::simProbe );
     m_schematicFrame->Raise();
 
@@ -523,6 +524,7 @@ int SIMULATOR_CONTROL::Tune( const TOOL_EVENT& aEvent )
     if( blocking_dialog )
         blocking_dialog->Close( true );
 
+    m_simulatorFrame->SetAutoProbeTuneActive( true );
     m_schematicFrame->GetToolManager()->PostAction( SCH_ACTIONS::simTune );
     m_schematicFrame->Raise();
 

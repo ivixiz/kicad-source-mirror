@@ -73,6 +73,11 @@ SIM_TRACE_TYPE SPICE_CIRCUIT_MODEL::VectorToSignal( const std::string& aVector,
             aSignal += internalDevParameter.GetMatch( vector, 1 ).Upper() + wxT( ")" );
             return SPT_CURRENT;
         }
+        else if( paramType.Lower() == wxS( "p" ) )
+        {
+            aSignal = wxT( "P(" ) + internalDevParameter.GetMatch( vector, 1 ).Upper() + wxT( ")" );
+            return SPT_POWER;
+        }
         else
         {
             return SPT_UNKNOWN;

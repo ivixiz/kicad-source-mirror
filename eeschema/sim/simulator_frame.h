@@ -127,11 +127,18 @@ public:
     void SetUserDefinedSignals( const std::map<int, wxString>& aSignals );
 
     /**
+     * Add a user-defined expression trace to the current plot.
+     *
+     * @param aExpression is an ngspice expression such as V(out)-V(in).
+     */
+    void AddUserDefinedTrace( const wxString& aExpression, bool aClearOthers = false );
+
+    /**
      * Add a voltage trace for a given net to the current plot.
      *
      * @param aNetName is the net name for which a voltage plot should be created.
      */
-    void AddVoltageTrace( const wxString& aNetName );
+    void AddVoltageTrace( const wxString& aNetName, bool aClearOthers = false );
 
     /**
      * Add a current trace for a given device to the current plot.
@@ -139,7 +146,14 @@ public:
      * @param aDeviceName is the device name (e.g. R1, C1).
      * @param aParam is the current type (e.g. I, Ic, Id).
      */
-    void AddCurrentTrace( const wxString& aDeviceName );
+    void AddCurrentTrace( const wxString& aDeviceName, bool aClearOthers = false );
+
+    /**
+     * Add a power trace for a given device to the current plot.
+     *
+     * @param aDeviceName is the power expression, e.g. P(R1).
+     */
+    void AddPowerTrace( const wxString& aDeviceName, bool aClearOthers = false );
 
     /**
      * Add a tuner for a symbol.
@@ -192,6 +206,15 @@ public:
 
     bool SimFinished() const { return m_simFinished; }
 
+    void SetAutoProbeTuneActive( bool aActive )
+    {
+        m_autoProbeTuneActive = aActive;
+
+        if( aActive )
+            m_autoProbeActive = false;
+    }
+    void NotifySchematicProbeFinished();
+
     // Simulator doesn't host a canvas
     wxWindow* GetToolCanvas() const override { return nullptr; }
 
@@ -215,6 +238,12 @@ private:
     bool canCloseWindow( wxCloseEvent& aEvent ) override;
     void doCloseWindow() override;
 
+    void bindSchematicCanvasHandlers();
+    void unbindSchematicCanvasHandlers();
+    void startAutoProbe();
+
+    void onSchematicCanvasEnter( wxMouseEvent& aEvent );
+
     void onUpdateSim( wxCommandEvent& aEvent );
     void onSimReport( wxCommandEvent& aEvent );
     void onSimStarted( wxCommandEvent& aEvent );
@@ -233,6 +262,9 @@ private:
 
     bool                                 m_simFinished;
     bool                                 m_workbookModified;
+    bool                                 m_autoProbeActive;
+    bool                                 m_autoProbeTuneActive;
+    bool                                 m_autoProbeHandlersBound;
 };
 
 // Commands

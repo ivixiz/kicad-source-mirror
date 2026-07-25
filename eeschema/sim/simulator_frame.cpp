@@ -60,6 +60,7 @@
 #include <advanced_config.h>
 #include <sim/toolbars_simulator_frame.h>
 #include <settings/settings_manager.h>
+#include <kiplatform/ui.h>
 
 #include <memory>
 
@@ -121,7 +122,10 @@ SIMULATOR_FRAME::SIMULATOR_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
         m_toolBar( nullptr ),
         m_ui( nullptr ),
         m_simFinished( false ),
-        m_workbookModified( false )
+        m_workbookModified( false ),
+        m_autoProbeActive( false ),
+        m_autoProbeTuneActive( false ),
+        m_autoProbeHandlersBound( false )
 {
     m_schematicFrame = (SCH_EDIT_FRAME*) Kiway().Player( FRAME_SCH, false );
     wxASSERT( m_schematicFrame );
@@ -182,6 +186,7 @@ SIMULATOR_FRAME::SIMULATOR_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
     Bind( EVT_SIM_REPORT, &SIMULATOR_FRAME::onSimReport, this );
     Bind( EVT_SIM_STARTED, &SIMULATOR_FRAME::onSimStarted, this );
     Bind( EVT_SIM_FINISHED, &SIMULATOR_FRAME::onSimFinished, this );
+    bindSchematicCanvasHandlers();
 
     // Ensure new items are taken in account by sizers:
     Layout();
@@ -205,6 +210,8 @@ SIMULATOR_FRAME::SIMULATOR_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
 SIMULATOR_FRAME::~SIMULATOR_FRAME()
 {
     NULL_REPORTER devnull;
+
+    unbindSchematicCanvasHandlers();
 
     m_simulator->Attach( nullptr, wxEmptyString, 0, wxEmptyString, devnull );
     m_simulator->SetReporter( nullptr );
@@ -515,15 +522,27 @@ void SIMULATOR_FRAME::SetUserDefinedSignals( const std::map<int, wxString>& aSig
 }
 
 
-void SIMULATOR_FRAME::AddVoltageTrace( const wxString& aNetName )
+void SIMULATOR_FRAME::AddUserDefinedTrace( const wxString& aExpression, bool aClearOthers )
 {
-    m_ui->AddTrace( aNetName, SPT_VOLTAGE );
+    m_ui->AddUserDefinedTrace( aExpression, aClearOthers );
 }
 
 
-void SIMULATOR_FRAME::AddCurrentTrace( const wxString& aDeviceName )
+void SIMULATOR_FRAME::AddVoltageTrace( const wxString& aNetName, bool aClearOthers )
 {
-    m_ui->AddTrace( aDeviceName, SPT_CURRENT );
+    m_ui->AddTrace( aNetName, SPT_VOLTAGE, aClearOthers );
+}
+
+
+void SIMULATOR_FRAME::AddCurrentTrace( const wxString& aDeviceName, bool aClearOthers )
+{
+    m_ui->AddTrace( aDeviceName, SPT_CURRENT, aClearOthers );
+}
+
+
+void SIMULATOR_FRAME::AddPowerTrace( const wxString& aDeviceName, bool aClearOthers )
+{
+    m_ui->AddTrace( aDeviceName, SPT_POWER, aClearOthers );
 }
 
 
@@ -651,6 +670,8 @@ bool SIMULATOR_FRAME::canCloseWindow( wxCloseEvent& aEvent )
 
 void SIMULATOR_FRAME::doCloseWindow()
 {
+    unbindSchematicCanvasHandlers();
+
     if( m_simulator->IsRunning() )
         m_simulator->Stop();
 
@@ -665,6 +686,66 @@ void SIMULATOR_FRAME::doCloseWindow()
     m_simulator->Settings().reset();
 
     Destroy();
+}
+
+
+void SIMULATOR_FRAME::bindSchematicCanvasHandlers()
+{
+    if( m_autoProbeHandlersBound || !m_schematicFrame || !m_schematicFrame->GetCanvas() )
+        return;
+
+    wxWindow* canvas = m_schematicFrame->GetCanvas();
+
+    canvas->Bind( wxEVT_ENTER_WINDOW, &SIMULATOR_FRAME::onSchematicCanvasEnter, this );
+
+    m_autoProbeHandlersBound = true;
+}
+
+
+void SIMULATOR_FRAME::unbindSchematicCanvasHandlers()
+{
+    if( !m_autoProbeHandlersBound || !m_schematicFrame )
+        return;
+
+    if( wxWindow* canvas = m_schematicFrame->GetCanvas() )
+    {
+        canvas->Unbind( wxEVT_ENTER_WINDOW, &SIMULATOR_FRAME::onSchematicCanvasEnter, this );
+    }
+
+    m_autoProbeHandlersBound = false;
+}
+
+
+void SIMULATOR_FRAME::startAutoProbe()
+{
+    if( m_autoProbeActive || m_autoProbeTuneActive || !m_simFinished || !m_schematicFrame )
+        return;
+
+    if( KIPLATFORM::UI::IsWindowActive( m_schematicFrame )
+        || !KIPLATFORM::UI::IsWindowActive( this ) )
+    {
+        return;
+    }
+
+    m_autoProbeActive = true;
+    m_schematicFrame->GetToolManager()->PostAction( SCH_ACTIONS::simProbe );
+    m_schematicFrame->Raise();
+
+    if( m_schematicFrame->GetCanvas() )
+        m_schematicFrame->GetCanvas()->SetFocus();
+}
+
+
+void SIMULATOR_FRAME::NotifySchematicProbeFinished()
+{
+    m_autoProbeActive = false;
+}
+
+
+void SIMULATOR_FRAME::onSchematicCanvasEnter( wxMouseEvent& aEvent )
+{
+    startAutoProbe();
+    aEvent.Skip();
 }
 
 

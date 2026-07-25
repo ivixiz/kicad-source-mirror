@@ -28,6 +28,7 @@
 #include <core/base64.h>
 #include <algorithm>
 #include <chrono>
+#include <memory>
 #include <confirm.h>
 #include <connection_graph.h>
 #include <design_block.h>
@@ -788,16 +789,190 @@ int SCH_EDITOR_CONTROL::SimProbe( const TOOL_EVENT& aEvent )
     picker->SetSnapping( false );
     picker->ClearHandlers();
 
-    picker->SetClickHandler(
-            [this]( const VECTOR2D& aPosition )
+    auto lastDiffSignal = std::make_shared<wxString>();
+
+    auto spiceNetAt =
+            [this]( const VECTOR2D& aPosition, wxString& aSpiceNet ) -> bool
+            {
+                SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+                EDA_ITEM*           item = selTool->GetNode( aPosition );
+                SCH_CONNECTION*     conn = nullptr;
+
+                if( !item )
+                    return false;
+
+                if( SCH_ITEM* schItem = dynamic_cast<SCH_ITEM*>( item ) )
+                {
+                    if( schItem->IsConnectivityDirty() )
+                        m_frame->RecalculateConnections( nullptr, NO_CLEANUP );
+                }
+
+                SCH_SYMBOL* symbol = dynamic_cast<SCH_SYMBOL*>( item );
+
+                if( symbol && symbol->GetLibSymbolRef() && symbol->GetLibSymbolRef()->IsPower() )
+                {
+                    std::vector<SCH_PIN*> pins = symbol->GetPins();
+
+                    if( pins.size() == 1 )
+                        conn = pins[0]->Connection();
+                }
+                else if( SCH_ITEM* schItem = dynamic_cast<SCH_ITEM*>( item ) )
+                {
+                    conn = schItem->Connection();
+                }
+
+                if( !conn || conn->IsBus() || conn->Name().IsEmpty() )
+                    return false;
+
+                aSpiceNet = UnescapeString( conn->Name() );
+                NETLIST_EXPORTER_SPICE::ConvertToSpiceMarkup( &aSpiceNet );
+
+                return !aSpiceNet.IsEmpty();
+            };
+
+    auto symbolAt =
+            [this]( const VECTOR2D& aPosition ) -> SCH_SYMBOL*
+            {
+                SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+                EDA_ITEM*           item = selTool->GetNode( aPosition );
+                SCH_SYMBOL*         symbol = nullptr;
+
+                if( SCH_PIN* pin = dynamic_cast<SCH_PIN*>( item ) )
+                    symbol = dynamic_cast<SCH_SYMBOL*>( pin->GetParentSymbol() );
+                else if( item )
+                {
+                    symbol = dynamic_cast<SCH_SYMBOL*>( item );
+
+                    if( !symbol )
+                        symbol = dynamic_cast<SCH_SYMBOL*>( item->GetParent() );
+                }
+
+                if( !symbol )
+                {
+                    SCH_COLLECTOR collector;
+                    collector.m_Threshold = KiROUND( getView()->ToWorld( HITTEST_THRESHOLD_PIXELS ) );
+                    collector.Collect( m_frame->GetScreen(), { SCH_SYMBOL_T, SCH_FIELD_T }, aPosition );
+
+                    EDA_ITEM* selectedItem = collector.GetCount() == 1 ? collector[0] : nullptr;
+
+                    if( selectedItem )
+                    {
+                        symbol = dynamic_cast<SCH_SYMBOL*>( selectedItem );
+
+                        if( !symbol )
+                            symbol = dynamic_cast<SCH_SYMBOL*>( selectedItem->GetParent() );
+                    }
+                }
+
+                return symbol;
+            };
+
+    auto powerSignalAt =
+            [this, symbolAt]( const VECTOR2D& aPosition, wxString& aPowerSignal ) -> bool
+            {
+                SCH_SYMBOL* symbol = symbolAt( aPosition );
+
+                if( !symbol )
+                    return false;
+
+                try
+                {
+                    WX_STRING_REPORTER reporter;
+                    SIM_LIB_MGR        mgr( &m_frame->Prj() );
+
+                    std::vector<EMBEDDED_FILES*> embeddedFilesStack;
+                    embeddedFilesStack.push_back( m_frame->Schematic().GetEmbeddedFiles() );
+
+                    if( EMBEDDED_FILES* symbolEmbeddedFile = symbol->GetEmbeddedFiles() )
+                        embeddedFilesStack.push_back( symbolEmbeddedFile );
+
+                    mgr.SetFilesStack( std::move( embeddedFilesStack ) );
+
+                    SCH_SHEET_PATH& sheet = m_frame->GetCurrentSheet();
+                    wxString        variant = m_frame->Schematic().GetCurrentVariant();
+                    SIM_MODEL&      model = mgr.CreateModel( &sheet, *symbol, true, 0, variant, reporter ).model;
+
+                    if( reporter.HasMessage() )
+                        THROW_IO_ERROR( reporter.GetMessages() );
+
+                    if( model.GetPinCount() < 2 )
+                        return false;
+
+                    SPICE_ITEM spiceItem;
+                    spiceItem.refName = symbol->GetRef( &sheet ).ToStdString();
+
+                    wxString itemName = model.SpiceGenerator().ItemName( spiceItem );
+
+                    if( itemName.IsEmpty() )
+                        return false;
+
+                    aPowerSignal = wxString::Format( wxS( "P(%s)" ), itemName );
+                    return true;
+                }
+                catch( const IO_ERROR& e )
+                {
+                    DisplayErrorMessage( m_frame, e.What() );
+                }
+
+                return false;
+            };
+
+    picker->SetDragReleaseHandler(
+            [this, picker, spiceNetAt, lastDiffSignal]( const VECTOR2D& aDragStart,
+                                                        const VECTOR2D& aDragEnd )
             {
                 KIWAY_PLAYER*       player = m_frame->Kiway().Player( FRAME_SIMULATOR, false );
                 SIMULATOR_FRAME*    simFrame = static_cast<SIMULATOR_FRAME*>( player );
                 SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+                wxString            startNet;
+                wxString            endNet;
+
+                selTool->ClearSelection();
+
+                if( !spiceNetAt( aDragStart, startNet ) || !spiceNetAt( aDragEnd, endNet ) )
+                    return true;
+
+                if( startNet == endNet )
+                    return true;
+
+                wxString diffSignal = wxString::Format( wxS( "V(%s)-V(%s)" ), startNet, endNet );
+                bool     clearOthers = picker->DragStartedWithDblClick() || *lastDiffSignal == diffSignal;
+
+                if( simFrame )
+                    simFrame->AddUserDefinedTrace( diffSignal, clearOthers );
+
+                *lastDiffSignal = diffSignal;
+
+                return true;
+            } );
+
+    auto plotProbeAt =
+            [this, picker, powerSignalAt, lastDiffSignal]( const VECTOR2D& aPosition,
+                                                           bool aClearOthers ) -> bool
+            {
+                KIWAY_PLAYER*       player = m_frame->Kiway().Player( FRAME_SIMULATOR, false );
+                SIMULATOR_FRAME*    simFrame = static_cast<SIMULATOR_FRAME*>( player );
+                SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
+                wxString            powerSignal;
+
+                lastDiffSignal->Clear();
 
                 // We do not really want to keep an item selected in schematic,
                 // so clear the current selection
                 selTool->ClearSelection();
+
+                if( picker->CurrentModifiers() & MD_ALT )
+                {
+                    if( powerSignalAt( aPosition, powerSignal ) )
+                    {
+                        if( simFrame )
+                            simFrame->AddPowerTrace( powerSignal, aClearOthers );
+
+                        return true;
+                    }
+
+                    return false;
+                }
 
                 EDA_ITEM*       item = selTool->GetNode( aPosition );
                 SCH_SHEET_PATH& sheet = m_frame->GetCurrentSheet();
@@ -844,7 +1019,7 @@ int SCH_EDITOR_CONTROL::SimProbe( const TOOL_EVENT& aEvent )
                         else if( currentNames.size() == 1 )
                         {
                             if( simFrame )
-                                simFrame->AddCurrentTrace( currentNames.at( 0 ) );
+                                simFrame->AddCurrentTrace( currentNames.at( 0 ), aClearOthers );
 
                             return true;
                         }
@@ -856,7 +1031,7 @@ int SCH_EDITOR_CONTROL::SimProbe( const TOOL_EVENT& aEvent )
                             wxString name = currentNames.at( modelPinIndex );
 
                             if( simFrame )
-                                simFrame->AddCurrentTrace( name );
+                                simFrame->AddCurrentTrace( name, aClearOthers );
                         }
                     }
                     catch( const IO_ERROR& e )
@@ -872,11 +1047,23 @@ int SCH_EDITOR_CONTROL::SimProbe( const TOOL_EVENT& aEvent )
                         NETLIST_EXPORTER_SPICE::ConvertToSpiceMarkup( &spiceNet );
 
                         if( simFrame )
-                            simFrame->AddVoltageTrace( wxString::Format( "V(%s)", spiceNet ) );
+                            simFrame->AddVoltageTrace( wxString::Format( "V(%s)", spiceNet ), aClearOthers );
                     }
                 }
 
                 return true;
+            };
+
+    picker->SetClickHandler(
+            [plotProbeAt]( const VECTOR2D& aPosition )
+            {
+                return plotProbeAt( aPosition, false );
+            } );
+
+    picker->SetDblClickHandler(
+            [plotProbeAt]( const VECTOR2D& aPosition )
+            {
+                return plotProbeAt( aPosition, true );
             } );
 
     picker->SetMotionHandler(
@@ -949,6 +1136,9 @@ int SCH_EDITOR_CONTROL::SimProbe( const TOOL_EVENT& aEvent )
                 SCH_SELECTION_TOOL* selectionTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
                 selectionTool->ClearSelection();
                 m_toolMgr->PostAction( ACTIONS::selectionActivate );
+
+                if( KIWAY_PLAYER* simFrame = m_frame->Kiway().Player( FRAME_SIMULATOR, false ) )
+                    static_cast<SIMULATOR_FRAME*>( simFrame )->NotifySchematicProbeFinished();
             } );
 
     m_toolMgr->RunAction( ACTIONS::pickerTool, &aEvent );
@@ -1043,6 +1233,9 @@ int SCH_EDITOR_CONTROL::SimTune( const TOOL_EVENT& aEvent )
                 SCH_SELECTION_TOOL* selectionTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
                 selectionTool->ClearSelection();
                 m_toolMgr->PostAction( ACTIONS::selectionActivate );
+
+                if( KIWAY_PLAYER* simFrame = m_frame->Kiway().Player( FRAME_SIMULATOR, false ) )
+                    static_cast<SIMULATOR_FRAME*>( simFrame )->SetAutoProbeTuneActive( false );
             } );
 
     m_toolMgr->RunAction( ACTIONS::pickerTool, &aEvent );
@@ -3997,6 +4190,7 @@ void SCH_EDITOR_CONTROL::setTransitions()
     Go( &SCH_EDITOR_CONTROL::ToggleERCErrors,         SCH_ACTIONS::toggleERCErrors.MakeEvent() );
     Go( &SCH_EDITOR_CONTROL::ToggleERCExclusions,     SCH_ACTIONS::toggleERCExclusions.MakeEvent() );
     Go( &SCH_EDITOR_CONTROL::MarkSimExclusions,       SCH_ACTIONS::markSimExclusions.MakeEvent() );
+    Go( &SCH_EDITOR_CONTROL::MarkSimExclusions,       SCH_ACTIONS::hideSimExclusions.MakeEvent() );
     Go( &SCH_EDITOR_CONTROL::ToggleOPVoltages,        SCH_ACTIONS::toggleOPVoltages.MakeEvent() );
     Go( &SCH_EDITOR_CONTROL::ToggleOPCurrents,        SCH_ACTIONS::toggleOPCurrents.MakeEvent() );
     Go( &SCH_EDITOR_CONTROL::TogglePinAltIcons,       SCH_ACTIONS::togglePinAltIcons.MakeEvent() );

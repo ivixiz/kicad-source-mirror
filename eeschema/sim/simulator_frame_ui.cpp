@@ -1816,7 +1816,7 @@ const SPICE_CIRCUIT_MODEL* SIMULATOR_FRAME_UI::GetExporter() const
 }
 
 
-void SIMULATOR_FRAME_UI::AddTrace( const wxString& aName, SIM_TRACE_TYPE aType )
+void SIMULATOR_FRAME_UI::AddTrace( const wxString& aName, SIM_TRACE_TYPE aType, bool aClearOthers )
 {
     if( !GetCurrentSimTab() )
     {
@@ -1842,6 +1842,17 @@ void SIMULATOR_FRAME_UI::AddTrace( const wxString& aName, SIM_TRACE_TYPE aType )
 
     if( SIM_PLOT_TAB* plotTab = dynamic_cast<SIM_PLOT_TAB*>( GetCurrentSimTab() ) )
     {
+        if( aClearOthers )
+        {
+            std::vector<TRACE*> traces;
+
+            for( const auto& [ name, trace ] : plotTab->GetTraces() )
+                traces.push_back( trace );
+
+            for( TRACE* trace : traces )
+                plotTab->DeleteTrace( trace );
+        }
+
         if( simType == ST_AC )
         {
             updateTrace( aName, aType | SPT_AC_GAIN, plotTab );
@@ -1936,6 +1947,66 @@ void SIMULATOR_FRAME_UI::SetUserDefinedSignals( const std::map<int, wxString>& a
 }
 
 
+void SIMULATOR_FRAME_UI::AddUserDefinedTrace( const wxString& aExpression, bool aClearOthers )
+{
+    int                 signalId = -1;
+    std::map<int, wxString> signals = m_userDefinedSignals;
+
+    for( const auto& [ id, signal ] : signals )
+    {
+        if( signal == aExpression )
+        {
+            signalId = id;
+            break;
+        }
+    }
+
+    if( signalId < 0 )
+    {
+        signalId = 0;
+
+        while( signals.count( signalId ) )
+            ++signalId;
+
+        signals[signalId] = aExpression;
+        SetUserDefinedSignals( signals );
+    }
+
+    wxString vectorName = vectorNameFromSignalId( signalId );
+
+    AddTrace( vectorName, SPT_VOLTAGE, aClearOthers );
+
+    if( SIM_PLOT_TAB* plotTab = dynamic_cast<SIM_PLOT_TAB*>( GetCurrentSimTab() ) )
+    {
+        if( plotTab->GetSimType() == ST_AC )
+        {
+            for( int subType : { SPT_AC_GAIN, SPT_AC_PHASE } )
+            {
+                if( TRACE* trace = plotTab->GetTrace( vectorName, SPT_VOLTAGE | subType ) )
+                    trace->SetName( aExpression );
+            }
+        }
+        else if( plotTab->GetSimType() == ST_SP )
+        {
+            for( int subType : { SPT_SP_AMP, SPT_AC_PHASE } )
+            {
+                if( TRACE* trace = plotTab->GetTrace( vectorName, SPT_VOLTAGE | subType ) )
+                    trace->SetName( aExpression );
+            }
+        }
+        else if( TRACE* trace = plotTab->GetTrace( vectorName, SPT_VOLTAGE ) )
+        {
+            trace->SetName( aExpression );
+        }
+    }
+
+    rebuildSignalsGrid( m_filter->GetValue() );
+    updateSignalsGrid();
+    updatePlotCursors();
+    OnModify();
+}
+
+
 void SIMULATOR_FRAME_UI::updateTrace( const wxString& aVectorName, int aTraceType, SIM_PLOT_TAB* aPlotTab,
                                       std::vector<double>* aDataX, bool aClearData )
 {
@@ -1952,8 +2023,135 @@ void SIMULATOR_FRAME_UI::updateTrace( const wxString& aVectorName, int aTraceTyp
 
     wxString simVectorName = aVectorName;
 
-    if( aTraceType & SPT_POWER )
-        simVectorName = simVectorName.AfterFirst( '(' ).BeforeLast( ')' ) + wxS( ":power" );
+    auto findExistingVectorByName =
+            [this]( const std::vector<wxString>& aCandidates ) -> wxString
+            {
+                std::vector<std::string> vectors = simulator()->AllVectors();
+
+                for( const wxString& candidate : aCandidates )
+                {
+                    for( const std::string& vector : vectors )
+                    {
+                        wxString existing( vector );
+
+                        if( existing == candidate )
+                            return existing;
+                    }
+                }
+
+                for( const wxString& candidate : aCandidates )
+                {
+                    for( const std::string& vector : vectors )
+                    {
+                        wxString existing( vector );
+
+                        if( existing.CmpNoCase( candidate ) == 0 )
+                            return existing;
+                    }
+                }
+
+                return wxEmptyString;
+            };
+
+    auto findExistingVectorBySignal =
+            [this]( const wxString& aSignalName, SIM_TRACE_TYPE aType ) -> wxString
+            {
+                auto currentSignalsMatch = []( const wxString& aRequested, const wxString& aExisting ) -> bool
+                {
+                    if( !aRequested.Upper().StartsWith( wxS( "I(" ) ) )
+                        return false;
+
+                    if( !aExisting.Upper().StartsWith( wxS( "I" ) ) )
+                        return false;
+
+                    wxString requestedDevice = aRequested.AfterFirst( '(' ).BeforeLast( ')' );
+                    wxString existingDevice = aExisting.AfterFirst( '(' ).BeforeLast( ')' );
+
+                    return !requestedDevice.IsEmpty()
+                           && requestedDevice.CmpNoCase( existingDevice ) == 0;
+                };
+
+                std::vector<std::string> vectors = simulator()->AllVectors();
+
+                for( const std::string& vector : vectors )
+                {
+                    wxString       signal;
+                    SIM_TRACE_TYPE vectorType = circuitModel()->VectorToSignal( vector, signal );
+
+                    if( vectorType != aType )
+                        continue;
+
+                    if( signal == aSignalName )
+                        return wxString( vector );
+                }
+
+                for( const std::string& vector : vectors )
+                {
+                    wxString       signal;
+                    SIM_TRACE_TYPE vectorType = circuitModel()->VectorToSignal( vector, signal );
+
+                    if( vectorType != aType )
+                        continue;
+
+                    if( signal.CmpNoCase( aSignalName ) == 0
+                            || ( aType == SPT_CURRENT && currentSignalsMatch( aSignalName, signal ) ) )
+                    {
+                        return wxString( vector );
+                    }
+                }
+
+                return wxEmptyString;
+            };
+
+    int yTraceType = aTraceType & SPT_Y_AXIS_MASK;
+
+    if( yTraceType == SPT_CURRENT || yTraceType == SPT_POWER )
+    {
+        wxString resolvedVector = findExistingVectorBySignal( simVectorName,
+                                                              static_cast<SIM_TRACE_TYPE>( yTraceType ) );
+
+        if( resolvedVector.IsEmpty() )
+        {
+            wxString deviceName = simVectorName.AfterFirst( '(' ).BeforeLast( ')' );
+            std::vector<wxString> candidates;
+
+            if( yTraceType == SPT_CURRENT )
+            {
+                candidates = {
+                    simVectorName,
+                    simVectorName.Lower(),
+                    simVectorName.Upper(),
+                    deviceName + wxS( "#branch" ),
+                    deviceName.Lower() + wxS( "#branch" ),
+                    deviceName.Upper() + wxS( "#branch" ),
+                    wxS( "@" ) + deviceName + wxS( "[i]" ),
+                    wxS( "@" ) + deviceName.Lower() + wxS( "[i]" ),
+                    wxS( "@" ) + deviceName.Upper() + wxS( "[i]" ),
+                    wxS( "@" ) + deviceName + wxS( "[id]" ),
+                    wxS( "@" ) + deviceName.Lower() + wxS( "[id]" ),
+                    wxS( "@" ) + deviceName.Upper() + wxS( "[id]" )
+                };
+            }
+            else
+            {
+                candidates = {
+                    deviceName + wxS( ":power" ),
+                    deviceName.Lower() + wxS( ":power" ),
+                    deviceName.Upper() + wxS( ":power" ),
+                    wxS( "@" ) + deviceName + wxS( "[p]" ),
+                    wxS( "@" ) + deviceName.Lower() + wxS( "[p]" ),
+                    wxS( "@" ) + deviceName.Upper() + wxS( "[p]" )
+                };
+            }
+
+            resolvedVector = findExistingVectorByName( candidates );
+        }
+
+        simVectorName = resolvedVector;
+
+        if( simVectorName.IsEmpty() )
+            return;
+    }
 
     if( !SIM_TAB::IsPlottable( simType ) )
     {

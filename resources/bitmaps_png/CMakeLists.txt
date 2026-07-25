@@ -197,6 +197,7 @@ set( BMAPS_MID
     add_power
     add_radial_dimension
     add_rectangle
+    add_scope
     add_symbol_to_schematic
     add_textbox
     add_tracks
@@ -335,6 +336,7 @@ set( BMAPS_MID
     help
     help_online
     hidden_pin
+    hide_excluded_from_simulation
     hide_ratsnest
     hierarchy_nav
     hotkeys

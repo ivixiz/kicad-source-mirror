@@ -35,7 +35,12 @@ void PICKER_TOOL_BASE::reset()
     m_snap   = true;
 
     m_picked = std::nullopt;
+    m_dragOrigin = std::nullopt;
+    m_dblClickDragArmed = false;
+    m_dragStartedWithDblClick = false;
     m_clickHandler = std::nullopt;
+    m_dblClickHandler = std::nullopt;
+    m_dragReleaseHandler = std::nullopt;
     m_motionHandler = std::nullopt;
     m_cancelHandler = std::nullopt;
     m_finalizeHandler = std::nullopt;
@@ -101,7 +106,7 @@ int PICKER_TOOL::Main( const TOOL_EVENT& aEvent )
     {
         setCursor();
         VECTOR2D cursorPos = controls->GetCursorPosition( m_snap && m_frame->IsGridVisible() );
-        m_modifiers = aEvent.Modifier();
+        m_modifiers = evt->Modifier();
 
         if( evt->IsCancelInteractive() || evt->IsActivate() )
         {
@@ -130,11 +135,48 @@ int PICKER_TOOL::Main( const TOOL_EVENT& aEvent )
 
             break;
         }
+        else if( evt->IsDblClick( BUT_LEFT ) )
+        {
+            if( m_dragReleaseHandler )
+                m_dblClickDragArmed = true;
+
+            if( m_dblClickHandler )
+            {
+                bool getNext = false;
+
+                m_picked = cursorPos;
+
+                try
+                {
+                    getNext = (*m_dblClickHandler)( *m_picked );
+                }
+                catch( std::exception& )
+                {
+                    finalize_state = EXCEPTION_CANCEL;
+                    break;
+                }
+
+                if( !getNext )
+                {
+                    finalize_state = CLICK_CANCEL;
+                    break;
+                }
+                else
+                {
+                    setControls();
+                }
+            }
+
+            // Not currently used by most pickers, but we don't want to pass it either.
+            evt->SetPassEvent( false );
+        }
         else if( evt->IsClick( BUT_LEFT ) )
         {
             bool getNext = false;
 
             m_picked = cursorPos;
+            m_dblClickDragArmed = false;
+            m_dragStartedWithDblClick = false;
 
             if( m_clickHandler )
             {
@@ -158,9 +200,13 @@ int PICKER_TOOL::Main( const TOOL_EVENT& aEvent )
             {
                 setControls();
             }
+
+            evt->SetPassEvent( false );
         }
         else if( evt->IsMotion() )
         {
+            m_dblClickDragArmed = false;
+
             if( m_motionHandler )
             {
                 try
@@ -172,9 +218,80 @@ int PICKER_TOOL::Main( const TOOL_EVENT& aEvent )
                 }
             }
         }
-        else if( evt->IsDblClick( BUT_LEFT ) || evt->IsDrag( BUT_LEFT ) )
+        else if( evt->IsDrag( BUT_LEFT ) )
         {
-            // Not currently used, but we don't want to pass them either
+            if( m_dragReleaseHandler )
+            {
+                if( !m_dragOrigin )
+                {
+                    m_dragOrigin = evt->DragOrigin();
+                    m_dragStartedWithDblClick = m_dblClickDragArmed;
+                    m_dblClickDragArmed = false;
+                }
+
+                if( m_motionHandler )
+                {
+                    try
+                    {
+                        (*m_motionHandler)( cursorPos );
+                    }
+                    catch( std::exception& )
+                    {
+                    }
+                }
+            }
+
+            // Not currently used by most pickers, but we don't want to pass it either.
+            evt->SetPassEvent( false );
+        }
+        else if( evt->IsMouseUp( BUT_LEFT ) )
+        {
+            if( m_dragReleaseHandler && m_dragOrigin )
+            {
+                bool     getNext = false;
+                VECTOR2D dragOrigin = *m_dragOrigin;
+
+                m_dragOrigin = std::nullopt;
+
+                try
+                {
+                    getNext = (*m_dragReleaseHandler)( dragOrigin, cursorPos );
+                }
+                catch( std::exception& )
+                {
+                    finalize_state = EXCEPTION_CANCEL;
+                    break;
+                }
+
+                if( !getNext )
+                {
+                    finalize_state = CLICK_CANCEL;
+                    break;
+                }
+                else
+                {
+                    setControls();
+                }
+
+                evt->SetPassEvent( false );
+                m_dragStartedWithDblClick = false;
+            }
+            else
+            {
+                m_dblClickDragArmed = false;
+
+                if( m_clickHandler || m_dblClickHandler || m_dragReleaseHandler )
+                    evt->SetPassEvent( false );
+                else
+                    evt->SetPassEvent();
+            }
+        }
+        else if( evt->IsMouseDown( BUT_LEFT ) )
+        {
+            if( m_clickHandler || m_dblClickHandler || m_dragReleaseHandler )
+                evt->SetPassEvent( false );
+            else
+                evt->SetPassEvent();
         }
         else if( evt->IsClick( BUT_RIGHT ) )
         {

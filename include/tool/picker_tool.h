@@ -38,6 +38,8 @@ class PICKER_TOOL_BASE
 public:
     /// Event handler types.
     typedef std::function<bool(const VECTOR2D&)> CLICK_HANDLER;
+    typedef std::function<bool(const VECTOR2D&)> DBL_CLICK_HANDLER;
+    typedef std::function<bool(const VECTOR2D&, const VECTOR2D&)> DRAG_RELEASE_HANDLER;
     typedef std::function<void(const VECTOR2D&)> MOTION_HANDLER;
     typedef std::function<void(void)> CANCEL_HANDLER;
     typedef std::function<void(const int&)> FINALIZE_HANDLER;
@@ -68,6 +70,8 @@ public:
     void ClearHandlers()
     {
         m_clickHandler.reset();
+        m_dblClickHandler.reset();
+        m_dragReleaseHandler.reset();
         m_motionHandler.reset();
         m_cancelHandler.reset();
         m_finalizeHandler.reset();
@@ -82,6 +86,29 @@ public:
     {
         wxASSERT( !m_clickHandler );
         m_clickHandler = aHandler;
+    }
+
+    /**
+     * Set a handler for mouse double-click event.
+     *
+     * The handler may decide to receive further double-clicks by returning true.
+     */
+    inline void SetDblClickHandler( DBL_CLICK_HANDLER aHandler )
+    {
+        wxASSERT( !m_dblClickHandler );
+        m_dblClickHandler = aHandler;
+    }
+
+    /**
+     * Set a handler for completing a left-button drag.
+     *
+     * The handler receives the drag origin and release position and may decide to receive
+     * further drags by returning true.
+     */
+    inline void SetDragReleaseHandler( DRAG_RELEASE_HANDLER aHandler )
+    {
+        wxASSERT( !m_dragReleaseHandler );
+        m_dragReleaseHandler = aHandler;
     }
 
     /**
@@ -117,6 +144,8 @@ public:
 
     int CurrentModifiers() const { return m_modifiers; }
 
+    bool DragStartedWithDblClick() const { return m_dragStartedWithDblClick; }
+
 protected:
     /// Reinitializes tool to its initial state.
     virtual void reset();
@@ -125,13 +154,18 @@ protected:
     KICURSOR        m_cursor;
     bool            m_snap;
     int             m_modifiers;
+    bool            m_dblClickDragArmed;
+    bool            m_dragStartedWithDblClick;
 
     std::optional<CLICK_HANDLER>    m_clickHandler;
+    std::optional<DBL_CLICK_HANDLER> m_dblClickHandler;
+    std::optional<DRAG_RELEASE_HANDLER> m_dragReleaseHandler;
     std::optional<MOTION_HANDLER>   m_motionHandler;
     std::optional<CANCEL_HANDLER>   m_cancelHandler;
     std::optional<FINALIZE_HANDLER> m_finalizeHandler;
 
     std::optional<VECTOR2D>         m_picked;
+    std::optional<VECTOR2D>         m_dragOrigin;
 };
 
 

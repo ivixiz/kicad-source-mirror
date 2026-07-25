@@ -86,6 +86,7 @@ public:
 
     const std::map<int, wxString>& UserDefinedSignals() { return m_userDefinedSignals; }
     void SetUserDefinedSignals( const std::map<int, wxString>& aSignals );
+    void AddUserDefinedTrace( const wxString& aExpression, bool aClearOthers = false );
 
     /**
      * Creates a column at the end of m_signalsGrid named "Cursor n" ( n = m_customCursorsCnt ),
@@ -108,7 +109,7 @@ public:
      * @param aName is the device/net name.
      * @param aType describes the type of trace.
      */
-    void AddTrace( const wxString& aName, SIM_TRACE_TYPE aType );
+    void AddTrace( const wxString& aName, SIM_TRACE_TYPE aType, bool aClearOthers = false );
 
     /**
      * Get/Set the number of significant digits and the range for formatting a cursor value.

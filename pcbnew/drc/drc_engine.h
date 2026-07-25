@@ -270,12 +270,20 @@ public:
 
     bool HasRulesForConstraintType( DRC_CONSTRAINT_T constraintID );
 
-    bool HasGeometryDependentRules() const { return m_hasGeometryDependentRules; }
+    bool HasGeometryDependentRules() const
+    {
+        std::shared_lock<std::shared_mutex> ruleDataReadLock( m_ruleDataMutex );
+        return m_hasGeometryDependentRules;
+    }
 
     bool GetReportAllTrackErrors() const { return m_reportAllTrackErrors; }
     bool GetTestFootprints() const { return m_testFootprints; }
 
-    bool RulesValid() { return m_rulesValid; }
+    bool RulesValid() const
+    {
+        std::shared_lock<std::shared_mutex> ruleDataReadLock( m_ruleDataMutex );
+        return m_rulesValid;
+    }
 
     void ReportViolation( const std::shared_ptr<DRC_ITEM>& aItem, const VECTOR2I& aPos,
                           int aMarkerLayer, const std::function<void( PCB_MARKER* )>& aPathGenerator = {} );
@@ -398,6 +406,11 @@ protected:
     // Mutex protecting clearance caches for thread-safe access.
     // Uses shared_mutex for reader-writer pattern (many concurrent reads, exclusive writes).
     mutable std::shared_mutex m_clearanceCacheMutex;
+
+    // Protects rule ownership and compiled constraint pointers.  Custom-rule reloads rebuild
+    // this data while render/inspection/router code may query constraints.
+    mutable std::shared_mutex m_ruleDataMutex;
+
     bool m_hasExplicitClearanceRules = false;
     bool m_hasGeometryDependentRules = false;
     bool m_hasDiffPairClearanceOverrides = false;

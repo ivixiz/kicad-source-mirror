@@ -883,6 +883,13 @@ void SCH_EDIT_FRAME::setupUIConditions()
                 return cfg && cfg->m_Appearance.mark_sim_exclusions;
             };
 
+    auto hideSimExclusionsCond =
+            [this]( const SELECTION& )
+            {
+                EESCHEMA_SETTINGS* cfg = eeconfig();
+                return cfg && !cfg->m_Appearance.mark_sim_exclusions;
+            };
+
     auto showOPVoltagesCond =
             [this]( const SELECTION& )
             {
@@ -944,6 +951,7 @@ void SCH_EDIT_FRAME::setupUIConditions()
     mgr->SetConditions( SCH_ACTIONS::toggleERCWarnings,     CHECK( showERCWarningsCond ) );
     mgr->SetConditions( SCH_ACTIONS::toggleERCExclusions,   CHECK( showERCExclusionsCond ) );
     mgr->SetConditions( SCH_ACTIONS::markSimExclusions,     CHECK( markSimExclusionsCond ) );
+    mgr->SetConditions( SCH_ACTIONS::hideSimExclusions,     CHECK( hideSimExclusionsCond ) );
     mgr->SetConditions( SCH_ACTIONS::toggleOPVoltages,      CHECK( showOPVoltagesCond ) );
     mgr->SetConditions( SCH_ACTIONS::toggleOPCurrents,      CHECK( showOPCurrentsCond ) );
     mgr->SetConditions( SCH_ACTIONS::togglePinAltIcons,     CHECK( showPinAltModeIconsCond ) );
@@ -958,6 +966,7 @@ void SCH_EDIT_FRAME::setupUIConditions()
     CURRENT_TOOL( ACTIONS::deleteTool );
     CURRENT_TOOL( SCH_ACTIONS::highlightNetTool );
     CURRENT_TOOL( SCH_ACTIONS::placeSymbol );
+    CURRENT_TOOL( SCH_ACTIONS::placeScope );
     CURRENT_TOOL( SCH_ACTIONS::placePower );
     CURRENT_TOOL( SCH_ACTIONS::placeDesignBlock );
     CURRENT_TOOL( SCH_ACTIONS::drawWire );

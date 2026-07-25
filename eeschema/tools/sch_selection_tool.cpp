@@ -27,6 +27,7 @@
 #include <core/kicad_algo.h>
 #include <gal/graphics_abstraction_layer.h>
 #include <geometry/shape_compound.h>
+#include <hotkeys_basic.h>
 #include <sch_actions.h>
 #include <sch_collectors.h>
 #include <sch_selection_tool.h>
@@ -50,6 +51,7 @@
 #include <sch_line.h>
 #include <sch_bus_entry.h>
 #include <sch_pin.h>
+#include <sch_scope.h>
 #include <sch_group.h>
 #include <sch_marker.h>
 #include <sch_no_connect.h>
@@ -904,7 +906,11 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
             rejected.SetAll( false );
             narrowSelection( collector, evt->Position(), false, false, &rejected );
 
-            if( m_selection.GetSize() != 0 && dynamic_cast<SCH_TABLECELL*>( m_selection.GetItem( 0 ) ) && m_additive
+            if( handleScopeControlAt( collector, evt->Position() ) )
+            {
+                selCancelled = true;
+            }
+            else if( m_selection.GetSize() != 0 && dynamic_cast<SCH_TABLECELL*>( m_selection.GetItem( 0 ) ) && m_additive
                 && collector.GetCount() == 1 && dynamic_cast<SCH_TABLECELL*>( collector[0] ) )
             {
                 SCH_TABLECELL* firstCell = static_cast<SCH_TABLECELL*>( m_selection.GetItem( 0 ) );
@@ -1084,6 +1090,27 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
                           || collector[0]->GetParent()->GetParentGroup() == m_enteredGroup ) )
             {
                 selectTableCells( static_cast<SCH_TABLE*>( collector[0]->GetParent() ) );
+            }
+            else if( !m_isSymbolEditor && evt->HasPosition()
+                     && eventMatchesMoveClickHotkey( *evt ) )
+            {
+                if( !m_selection.Empty() && selectionContains( evt->DragOrigin() ) )
+                {
+                    m_toolMgr->RunAction( SCH_ACTIONS::move );
+                }
+                else if( dragOnlySelectedSymbolAt( evt->DragOrigin() ) )
+                {
+                    // The action handler has started the move.
+                }
+                else if( m_selectionMode == SELECTION_MODE::INSIDE_LASSO
+                         || m_selectionMode == SELECTION_MODE::TOUCHING_LASSO )
+                {
+                    selectLasso();
+                }
+                else
+                {
+                    selectMultiple();
+                }
             }
             else if( hasModifier() || drag_action == MOUSE_DRAG_ACTION::SELECT )
             {
@@ -1845,6 +1872,74 @@ void SCH_SELECTION_TOOL::narrowSelection( SCH_COLLECTOR& collector, const VECTOR
     // Apply some ugly heuristics to avoid disambiguation menus whenever possible
     if( collector.GetCount() > 1 && !m_skip_heuristics )
         GuessSelectionCandidates( collector, aWhere );
+}
+
+
+bool SCH_SELECTION_TOOL::handleScopeControlAt( const SCH_COLLECTOR& aCollector,
+                                               const VECTOR2I& aWhere )
+{
+    if( m_isSymbolEditor || m_isSymbolViewer || hasModifier() )
+        return false;
+
+    SCH_SYMBOL*            scope = nullptr;
+    SCH_SCOPE::CONTROL_HIT hit;
+
+    for( int ii = 0; ii < aCollector.GetCount(); ++ii )
+    {
+        SCH_SYMBOL* candidate = dynamic_cast<SCH_SYMBOL*>( aCollector[ii] );
+
+        if( candidate && !candidate->IsLocked() )
+        {
+            SCH_SCOPE::CONTROL_HIT candidateHit = SCH_SCOPE::HitTestControl( candidate, aWhere );
+
+            if( candidateHit.control != SCH_SCOPE::CONTROL::NONE )
+            {
+                scope = candidate;
+                hit = candidateHit;
+                break;
+            }
+        }
+    }
+
+    if( !scope )
+        return false;
+
+    SCH_COMMIT commit( m_toolMgr );
+    commit.Modify( scope, m_frame->GetScreen() );
+
+    bool     changed = false;
+    wxString commitMessage;
+
+    switch( hit.control )
+    {
+    case SCH_SCOPE::CONTROL::CHANNEL_MODE:
+        changed = SCH_SCOPE::CycleChannelMode( scope, hit.channel );
+        commitMessage = _( "Change Scope Channel Mode" );
+        break;
+
+    case SCH_SCOPE::CONTROL::ADD_CHANNEL:
+        changed = SCH_SCOPE::AddChannel( scope );
+        commitMessage = _( "Add Scope Channel" );
+        break;
+
+    case SCH_SCOPE::CONTROL::REMOVE_CHANNEL:
+        changed = SCH_SCOPE::RemoveChannel( scope );
+        commitMessage = _( "Remove Scope Channel" );
+        break;
+
+    case SCH_SCOPE::CONTROL::NONE:
+        break;
+    }
+
+    if( !changed )
+        return false;
+
+    m_frame->UpdateItem( scope, false, hit.control != SCH_SCOPE::CONTROL::CHANNEL_MODE );
+    getView()->Update( scope, KIGFX::GEOMETRY | KIGFX::REPAINT );
+    getView()->Update( &m_selection, KIGFX::REPAINT );
+
+    commit.Push( commitMessage );
+    return true;
 }
 
 
@@ -3279,6 +3374,51 @@ int SCH_SELECTION_TOOL::SelectNode( const TOOL_EVENT& aEvent )
 
     SelectPoint( cursorPos, connectedTypes );
     return 0;
+}
+
+
+bool SCH_SELECTION_TOOL::dragOnlySelectedSymbolAt( const VECTOR2I& aWhere )
+{
+    if( m_isSymbolEditor )
+        return false;
+
+    SCH_COLLECTOR symbolCollector;
+    EDA_ITEM*     symbolItem = nullptr;
+
+    if( CollectHits( symbolCollector, aWhere, { SCH_SYMBOL_T, SCH_FIELD_T } ) )
+    {
+        for( EDA_ITEM* item : symbolCollector )
+        {
+            if( item->Type() == SCH_SYMBOL_T )
+            {
+                symbolItem = item;
+                break;
+            }
+            else if( item->Type() == SCH_FIELD_T && item->GetParent()
+                     && item->GetParent()->Type() == SCH_SYMBOL_T )
+            {
+                symbolItem = item->GetParent();
+            }
+        }
+    }
+
+    if( !symbolItem || !Selectable( symbolItem, &aWhere ) )
+        return false;
+
+    ClearSelection();
+    AddItemToSel( symbolItem );
+    m_toolMgr->RunAction( SCH_ACTIONS::move );
+    return true;
+}
+
+
+bool SCH_SELECTION_TOOL::eventMatchesMoveClickHotkey( const TOOL_EVENT& aEvent ) const
+{
+    const int clickHotkey = aEvent.Modifier() + PSEUDO_WXK_CLICK;
+
+    return clickHotkey == ( MD_ALT + PSEUDO_WXK_CLICK )
+           || clickHotkey == SCH_ACTIONS::move.GetHotKey()
+           || clickHotkey == SCH_ACTIONS::move.GetHotKeyAlt();
 }
 
 

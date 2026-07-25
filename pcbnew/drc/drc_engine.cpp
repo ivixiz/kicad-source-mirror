@@ -107,6 +107,8 @@ DRC_ENGINE::DRC_ENGINE( BOARD* aBoard, BOARD_DESIGN_SETTINGS *aSettings ) :
 
 DRC_ENGINE::~DRC_ENGINE()
 {
+    std::unique_lock<std::shared_mutex> ruleDataWriteLock( m_ruleDataMutex );
+
     m_rules.clear();
 
     for( std::pair<DRC_CONSTRAINT_T, std::vector<DRC_ENGINE_CONSTRAINT*>*> pair : m_constraintMap )
@@ -783,6 +785,8 @@ void DRC_ENGINE::compileRules()
 
 void DRC_ENGINE::InitEngine( const std::shared_ptr<DRC_RULE>& rule )
 {
+    std::unique_lock<std::shared_mutex> ruleDataWriteLock( m_ruleDataMutex );
+
     m_testProviders = DRC_SHOWMATCHES_PROVIDER_REGISTRY::Instance().GetShowMatchesProviders();
 
     for( DRC_TEST_PROVIDER* provider : m_testProviders )
@@ -799,8 +803,11 @@ void DRC_ENGINE::InitEngine( const std::shared_ptr<DRC_RULE>& rule )
     {
         for( PCB_MARKER* marker : m_board->Markers() )
         {
-            DRC_ITEM* drcItem = static_cast<DRC_ITEM*>( marker->GetRCItem().get() );
-            drcItem->SetViolatingRule( nullptr );
+            if( auto rcItem = marker->GetRCItem() )
+            {
+                DRC_ITEM* drcItem = static_cast<DRC_ITEM*>( rcItem.get() );
+                drcItem->SetViolatingRule( nullptr );
+            }
         }
     }
 
@@ -838,6 +845,8 @@ void DRC_ENGINE::InitEngine( const std::shared_ptr<DRC_RULE>& rule )
 
 void DRC_ENGINE::InitEngine( const wxFileName& aRulePath )
 {
+    std::unique_lock<std::shared_mutex> ruleDataWriteLock( m_ruleDataMutex );
+
     m_testProviders = DRC_TEST_PROVIDER_REGISTRY::Instance().GetTestProviders();
 
     for( DRC_TEST_PROVIDER* provider : m_testProviders )
@@ -854,8 +863,11 @@ void DRC_ENGINE::InitEngine( const wxFileName& aRulePath )
     {
         for( PCB_MARKER* marker : m_board->Markers() )
         {
-            DRC_ITEM* drcItem = static_cast<DRC_ITEM*>( marker->GetRCItem().get() );
-            drcItem->SetViolatingRule( nullptr );
+            if( auto rcItem = marker->GetRCItem() )
+            {
+                DRC_ITEM* drcItem = static_cast<DRC_ITEM*>( rcItem.get() );
+                drcItem->SetViolatingRule( nullptr );
+            }
         }
     }
 
@@ -1013,6 +1025,8 @@ DRC_CONSTRAINT DRC_ENGINE::EvalRules( DRC_CONSTRAINT_T aConstraintType, const BO
                                       const BOARD_ITEM* b, PCB_LAYER_ID aLayer,
                                       REPORTER* aReporter )
 {
+    std::shared_lock<std::shared_mutex> ruleDataReadLock( m_ruleDataMutex );
+
     /*
      * NOTE: all string manipulation MUST BE KEPT INSIDE the REPORT macro.  It absolutely
      * kills performance when running bulk DRC tests (where aReporter is nullptr).
@@ -2134,6 +2148,8 @@ void DRC_ENGINE::ProcessAssertions( const BOARD_ITEM* a,
                                     std::function<void( const DRC_CONSTRAINT* )> aFailureHandler,
                                     REPORTER* aReporter )
 {
+    std::shared_lock<std::shared_mutex> ruleDataReadLock( m_ruleDataMutex );
+
     /*
      * NOTE: all string manipulation MUST BE KEPT INSIDE the REPORT macro.  It absolutely
      * kills performance when running bulk DRC tests (where aReporter is nullptr).
@@ -2302,6 +2318,8 @@ bool DRC_ENGINE::IsCancelled() const
 
 bool DRC_ENGINE::HasRulesForConstraintType( DRC_CONSTRAINT_T constraintID )
 {
+    std::shared_lock<std::shared_mutex> ruleDataReadLock( m_ruleDataMutex );
+
     auto it = m_constraintMap.find( constraintID );
     return it != m_constraintMap.end() && !it->second->empty();
 }
@@ -2310,6 +2328,8 @@ bool DRC_ENGINE::HasRulesForConstraintType( DRC_CONSTRAINT_T constraintID )
 bool DRC_ENGINE::QueryWorstConstraint( DRC_CONSTRAINT_T aConstraintId, DRC_CONSTRAINT& aConstraint,
                                        bool aUnconditionalOnly )
 {
+    std::shared_lock<std::shared_mutex> ruleDataReadLock( m_ruleDataMutex );
+
     int  worst = 0;
     auto it = m_constraintMap.find( aConstraintId );
 
@@ -2336,6 +2356,8 @@ bool DRC_ENGINE::QueryWorstConstraint( DRC_CONSTRAINT_T aConstraintId, DRC_CONST
 
 bool DRC_ENGINE::HasUserDefinedPhysicalConstraint()
 {
+    std::shared_lock<std::shared_mutex> ruleDataReadLock( m_ruleDataMutex );
+
     for( DRC_CONSTRAINT_T type : { PHYSICAL_CLEARANCE_CONSTRAINT, PHYSICAL_HOLE_CLEARANCE_CONSTRAINT } )
     {
         auto it = m_constraintMap.find( type );
@@ -2358,6 +2380,8 @@ bool DRC_ENGINE::HasUserDefinedPhysicalConstraint()
 
 std::set<int> DRC_ENGINE::QueryDistinctConstraints( DRC_CONSTRAINT_T aConstraintId )
 {
+    std::shared_lock<std::shared_mutex> ruleDataReadLock( m_ruleDataMutex );
+
     std::set<int> distinctMinimums;
     auto          it = m_constraintMap.find( aConstraintId );
 

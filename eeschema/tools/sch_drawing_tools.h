@@ -58,6 +58,7 @@ public:
     int TwoClickPlace( const TOOL_EVENT& aEvent );
     int ImportSheet( const TOOL_EVENT& aEvent );
     int DrawShape( const TOOL_EVENT& aEvent );
+    int PlaceScope( const TOOL_EVENT& aEvent );
     int DrawRuleArea( const TOOL_EVENT& aEvent );
     int DrawTable( const TOOL_EVENT& aEvent );
     int DrawSheet( const TOOL_EVENT& aEvent );

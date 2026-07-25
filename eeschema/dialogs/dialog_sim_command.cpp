@@ -97,6 +97,9 @@ DIALOG_SIM_COMMAND::DIALOG_SIM_COMMAND( SIMULATOR_FRAME* aParent,
     m_transInitial->SetValidator( m_spiceEmptyValidator );
     m_transMaxStep->SetValidator( m_spiceEmptyValidator );
 
+    m_transStep->SetToolTip( _( "Enter 0 to let ngspice choose an adaptive timestep." ) );
+    m_transMaxStep->SetToolTip( _( "Leave empty or enter 0 for automatic maximum timestep." ) );
+
     m_inputSignalsFilter->SetDescriptiveText( _( "Filter" ) );
 
     wxChar type1 = getStringSelection( m_dcSourceType1 ).Upper().GetChar( 0 );
@@ -448,6 +451,7 @@ bool DIALOG_SIM_COMMAND::TransferDataFromWindow()
         const wxString    spc = wxS( " " );
         const SPICE_VALUE timeStep( m_transStep->GetValue() );
         const SPICE_VALUE finalTime( m_transFinal->GetValue() );
+        const bool        autoTimeStep = timeStep == SPICE_VALUE( 0 );
 
         SPICE_VALUE startTime( 0 );
 
@@ -463,7 +467,7 @@ bool DIALOG_SIM_COMMAND::TransferDataFromWindow()
         {
             optionals = SPICE_VALUE( m_transMaxStep->GetValue() ).ToSpiceString() + spc + optionals;
         }
-        else if( !optionals.IsEmpty() )
+        else if( !optionals.IsEmpty() && !autoTimeStep )
         {
             SPICE_VALUE maxStep = ( finalTime - startTime ) / 50.0;
 
