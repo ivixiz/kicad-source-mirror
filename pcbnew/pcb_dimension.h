@@ -15,11 +15,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef PCB_DIMENSION_H
@@ -33,6 +29,8 @@
 
 class LINE_READER;
 class MSG_PANEL_ITEM;
+
+enum class DIM_VALUE_MODE : int;   // defined in constraints/constraint_builder.h
 
 
 /// How to display the units in a dimension's text
@@ -126,16 +124,24 @@ public:
     /**
      * The dimension's origin is the first feature point for the dimension.  Every dimension has
      * one or more feature points, so every dimension has at least an origin.
-     * @return the origin point of this dimension
+     * @return the origin point of this dimension in board frame
      */
-    virtual const VECTOR2I& GetStart() const { return m_start; }
-    virtual void            SetStart( const VECTOR2I& aPoint ) { m_start = aPoint; }
+    virtual VECTOR2I GetStart() const;
+    virtual void     SetStart( const VECTOR2I& aPoint );
 
-    virtual const VECTOR2I& GetEnd() const { return m_end; }
-    virtual void            SetEnd( const VECTOR2I& aPoint ) { m_end = aPoint; }
+    virtual VECTOR2I GetEnd() const;
+    virtual void     SetEnd( const VECTOR2I& aPoint );
 
-    VECTOR2I GetPosition() const override { return m_start; }
-    void     SetPosition( const VECTOR2I& aPos ) override { m_start = aPos; }
+    VECTOR2I GetPosition() const override { return GetStart(); }
+    void     SetPosition( const VECTOR2I& aPos ) override { SetStart( aPos ); }
+
+    void OnFootprintRescaled( double aRatioX, double aRatioY, double aLinearFactor, const VECTOR2I& aAnchor,
+                              const EDA_ANGLE& aParentRotate ) override;
+
+    void OnFootprintTransformed() override;
+
+    const VECTOR2I& GetLibraryStart() const { return m_start; }
+    const VECTOR2I& GetLibraryEnd() const { return m_end; }
 
     bool GetOverrideTextEnabled() const { return m_overrideTextEnabled; }
     void SetOverrideTextEnabled( bool aOverride ) { m_overrideTextEnabled = aOverride; }
@@ -149,6 +155,27 @@ public:
         SetOverrideText( aValue );
         Update();
     }
+
+    /// Value mode from board state via DimensionValueMode
+    DIM_VALUE_MODE GetValueMode() const;
+
+    /**
+     * Property panel setter for value mode override text flag lives on dimension
+     * length constraint is board state staged via panel commit for shared undo step
+     */
+    void ChangeValueMode( DIM_VALUE_MODE aMode );
+
+    /**
+     * Mode aware value for panel driving shows constraint length arbitrary shows override text
+     * otherwise shows measured value
+     */
+    wxString GetValueFieldText() const;
+
+    /**
+     * Property panel setter for value arbitrary text owned by dimension
+     * driving edits board level constraint via panel driven mirrors geometry and is never written
+     */
+    void ChangeValueFieldText( const wxString& aText );
 
     int GetMeasuredValue() const { return m_measuredValue; }
 
@@ -308,6 +335,10 @@ public:
 
     const BOX2I ViewBBox() const override;
 
+    std::vector<int> ViewGetLayers() const override;
+
+    double ViewGetLOD( int aLayer, const KIGFX::VIEW* aView ) const override;
+
     void ClearRenderCache() override;
 
     void TransformShapeToPolygon( SHAPE_POLY_SET& aBuffer, PCB_LAYER_ID aLayer, int aClearance,
@@ -371,9 +402,10 @@ protected:
     bool                    m_keepTextAligned;  ///< Calculate text orientation to match dimension
 
     // Internal
-    int                     m_measuredValue;    ///< value of PCB dimensions
-    VECTOR2I                m_start;
-    VECTOR2I                m_end;
+    int m_measuredValue; ///< value of PCB dimensions
+
+    VECTOR2I m_start; ///< Start, FP-relative when in a footprint, board absolute otherwise.
+    VECTOR2I m_end;   ///< End, FP-relative when in a footprint, board absolute otherwise.
 
     ///< Internal cache of drawn shapes
     std::vector<std::shared_ptr<SHAPE>> m_shapes;
@@ -478,7 +510,7 @@ public:
      */
     double GetAngle() const
     {
-        VECTOR2I delta( m_end - m_start );
+        VECTOR2I delta( GetEnd() - GetStart() );
 
         return atan2( (double)delta.y, (double)delta.x );
     }

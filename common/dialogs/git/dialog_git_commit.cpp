@@ -14,11 +14,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/gpl-3.0.html
- * or you may search the http://www.gnu.org website for the version 3 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include "dialog_git_commit.h"
@@ -26,6 +22,11 @@
 #include <bitmaps/bitmaps_list.h>
 #include <bitmaps/bitmap_types.h>
 #include <git/kicad_git_common.h>
+#include <pgm_base.h>
+#include <settings/common_settings.h>
+#include <settings/common_settings_internals.h>
+
+#include <algorithm>
 
 #include <wx/button.h>
 #include <wx/checkbox.h>
@@ -33,6 +34,13 @@
 #include <wx/sizer.h>
 #include <wx/stattext.h>
 #include <wx/textctrl.h>
+
+
+static constexpr const char* DIALOG_GIT_COMMIT_SETTINGS_KEY = "DIALOG_GIT_COMMIT";
+static constexpr const char* LIST_COLUMN_WIDTHS_KEY = "listctrl_column_widths";
+static constexpr const char* FILENAME_COLUMN_WIDTH_KEY = "filename_col_width";
+static constexpr const char* STATUS_COLUMN_WIDTH_KEY = "status_col_width";
+
 
 DIALOG_GIT_COMMIT::DIALOG_GIT_COMMIT( wxWindow* parent, git_repository* repo,
                                       const wxString&                defaultAuthorName,
@@ -52,8 +60,24 @@ DIALOG_GIT_COMMIT::DIALOG_GIT_COMMIT( wxWindow* parent, git_repository* repo,
     m_listCtrl->AppendColumn( _( "Status" ) );
 
     // Set column widths
-    m_listCtrl->SetColumnWidth( 0, 200 );
-    m_listCtrl->SetColumnWidth( 1, 200 );
+    COMMON_SETTINGS* settings = Pgm().GetCommonSettings();
+    int              filesColWidth = 200;
+    int              statusWidthWidth = 200;
+    auto             dlgIt = settings->CsInternals().m_dialogControlValues.find( DIALOG_GIT_COMMIT_SETTINGS_KEY );
+
+    if( dlgIt != settings->CsInternals().m_dialogControlValues.end() )
+    {
+        auto widths = dlgIt->second.find( LIST_COLUMN_WIDTHS_KEY );
+        if( widths != dlgIt->second.end() && widths->second.is_object() )
+        {
+            filesColWidth = widths->second.value( FILENAME_COLUMN_WIDTH_KEY, 200 );
+            statusWidthWidth = widths->second.value( STATUS_COLUMN_WIDTH_KEY, 200 );
+        }
+    }
+
+    m_listCtrl->SetColumnWidth( 0, FromDIP( filesColWidth ) );
+    m_listCtrl->SetColumnWidth( 1, FromDIP( statusWidthWidth ) );
+
 
     // Set up image list for icons
 #ifdef __WXMAC__
@@ -171,21 +195,50 @@ DIALOG_GIT_COMMIT::DIALOG_GIT_COMMIT( wxWindow* parent, git_repository* repo,
     m_repo = repo;
     m_defaultAuthorName = defaultAuthorName;
     m_defaultAuthorEmail = defaultAuthorEmail;
+
+    updateOkButton();
+}
+
+
+DIALOG_GIT_COMMIT::~DIALOG_GIT_COMMIT()
+{
+    COMMON_SETTINGS*                       settings = Pgm().GetCommonSettings();
+    std::map<std::string, nlohmann::json>& dlgMap =
+            settings->CsInternals().m_dialogControlValues[DIALOG_GIT_COMMIT_SETTINGS_KEY];
+
+    nlohmann::json widths;
+    widths[FILENAME_COLUMN_WIDTH_KEY] = ToDIP( m_listCtrl->GetColumnWidth( 0 ) );
+    widths[STATUS_COLUMN_WIDTH_KEY] = ToDIP( m_listCtrl->GetColumnWidth( 1 ) );
+
+    dlgMap[LIST_COLUMN_WIDTHS_KEY] = widths;
+}
+
+void DIALOG_GIT_COMMIT::SetFileSelectionRequired( bool aRequired )
+{
+    m_requireFiles = aRequired;
+    updateOkButton();
+}
+
+
+void DIALOG_GIT_COMMIT::updateOkButton()
+{
+    bool hasMessage = !m_commitMessageTextCtrl->GetValue().IsEmpty();
+    bool needFiles = m_requireFiles && GetSelectedFiles().empty();
+
+    m_okButton->Enable( hasMessage && !needFiles );
+
+    if( !hasMessage )
+        m_okButton->SetToolTip( _( "Commit message cannot be empty" ) );
+    else if( needFiles )
+        m_okButton->SetToolTip( _( "Select at least one file to commit" ) );
+    else
+        m_okButton->SetToolTip( wxEmptyString );
 }
 
 
 void DIALOG_GIT_COMMIT::OnTextChanged( wxCommandEvent& aEvent )
 {
-    if( m_commitMessageTextCtrl->GetValue().IsEmpty() )
-    {
-        m_okButton->Disable();
-        m_okButton->SetToolTip( _( "Commit message cannot be empty" ) );
-    }
-    else
-    {
-        m_okButton->Enable();
-        m_okButton->SetToolTip( wxEmptyString );
-    }
+    updateOkButton();
 }
 
 
@@ -256,6 +309,8 @@ void DIALOG_GIT_COMMIT::OnItemChecked( wxListEvent& aEvent )
                 m_listCtrl->CheckItem( item, true );
         }
     }
+
+    updateOkButton();
 }
 
 
@@ -273,4 +328,6 @@ void DIALOG_GIT_COMMIT::OnItemUnchecked( wxListEvent& aEvent )
                 m_listCtrl->CheckItem( item, false );
         }
     }
+
+    updateOkButton();
 }

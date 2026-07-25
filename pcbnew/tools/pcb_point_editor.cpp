@@ -16,11 +16,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include <functional>
@@ -62,6 +58,9 @@ using namespace std::placeholders;
 #include <pad.h>
 #include <zone.h>
 #include <footprint.h>
+#include <board.h>
+#include <constraints/board_constraint_adapter.h>
+#include <constraints/constraint_builder.h>
 #include <footprint_editor_settings.h>
 #include <connectivity/connectivity_data.h>
 #include <progress_reporter.h>
@@ -1998,7 +1997,8 @@ std::shared_ptr<EDIT_POINTS> PCB_POINT_EDITOR::makePoints( EDA_ITEM* aItem )
 
         case SHAPE_T::ARC:
             m_editorBehavior = std::make_unique<EDA_ARC_POINT_EDIT_BEHAVIOR>( *shape, m_arcEditMode,
-                                                                              *getViewControls() );
+                                                                              *getViewControls(),
+                                                                              pcbIUScale );
             break;
 
         case SHAPE_T::CIRCLE:
@@ -2907,6 +2907,171 @@ void PCB_POINT_EDITOR::updateItem( BOARD_COMMIT& aCommit )
         m_editorBehavior->UpdateItem( *m_editedPoint, *m_editPoints, aCommit, updatedItems );
     }
 
+    // Re-derive any geometry constrained to the dragged segment endpoint (issue #2329).  The
+    // behavior above has already moved the dragged point to the cursor, so its current endpoint
+    // position is the pin target for the solver.
+    auto anyConstraints =
+            [&]() -> bool
+            {
+                if( !board() )
+                    return false;
+
+                if( !board()->Constraints().empty() )
+                    return true;
+
+                // In the footprint editor the constraints live on the footprint, not the board.
+                for( FOOTPRINT* fp : board()->Footprints() )
+                {
+                    if( !fp->Constraints().empty() )
+                        return true;
+                }
+
+                return false;
+            };
+
+    if( item->Type() == PCB_SHAPE_T && m_editedPoint && anyConstraints() )
+    {
+        PCB_SHAPE* shape = static_cast<PCB_SHAPE*>( item );
+        SHAPE_T    type = shape->GetShape();
+        VECTOR2I   cursor = m_editedPoint->GetPosition();
+
+        std::optional<CONSTRAINT_MEMBER>                      member;
+        std::optional<std::pair<CONSTRAINT_MEMBER, VECTOR2I>> coDragged;
+
+        // Match dragged point to a constraint anchor segment bezier and arc expose endpoints
+        // arc and circle also expose a centre bezier has none so centre test stays arc only
+        if( type == SHAPE_T::SEGMENT || type == SHAPE_T::ARC || type == SHAPE_T::BEZIER )
+        {
+            if( cursor == shape->GetStart() )
+                member = CONSTRAINT_MEMBER( shape->m_Uuid, CONSTRAINT_ANCHOR::START );
+            else if( cursor == shape->GetEnd() )
+                member = CONSTRAINT_MEMBER( shape->m_Uuid, CONSTRAINT_ANCHOR::END );
+            else if( type == SHAPE_T::ARC && cursor == shape->GetCenter() )
+                member = CONSTRAINT_MEMBER( shape->m_Uuid, CONSTRAINT_ANCHOR::CENTER );
+        }
+        else if( type == SHAPE_T::CIRCLE )
+        {
+            if( cursor == shape->GetCenter() )
+                member = CONSTRAINT_MEMBER( shape->m_Uuid, CONSTRAINT_ANCHOR::CENTER );
+        }
+        else if( type == SHAPE_T::RECTANGLE && m_editPoints->PointsSize() >= RECT_MAX_POINTS )
+        {
+            // Only corner handles map to vertex anchors centre radius and side handles reshape whole rect
+            // corners kept in min max order so ordinal equals vertex index solve target reads post clamp position
+            for( unsigned i = RECT_TOP_LEFT; i <= RECT_BOT_LEFT; ++i )
+            {
+                if( isModified( m_editPoints->Point( i ) ) )
+                {
+                    if( std::optional<CONSTRAINT_ANCHOR_POINT> corner = ConstraintShapeVertex( shape, (int) i ) )
+                    {
+                        member = CONSTRAINT_MEMBER( shape->m_Uuid, corner->anchor, corner->index );
+                        cursor = corner->pos;
+                    }
+
+                    break;
+                }
+            }
+
+            // Side handle drags one edge param aliased by both corners side i runs corner i to i plus 1 mod 4
+            // pinning corner i covers dragged plus one perpendicular param opposite corner hold covers the rest
+            if( !member.has_value() )
+            {
+                for( unsigned i = 0; i < m_editPoints->LinesSize() && i < 4; ++i )
+                {
+                    if( isModified( m_editPoints->Line( i ) ) )
+                    {
+                        if( std::optional<CONSTRAINT_ANCHOR_POINT> corner = ConstraintShapeVertex( shape, (int) i ) )
+                        {
+                            member = CONSTRAINT_MEMBER( shape->m_Uuid, corner->anchor, corner->index );
+                            cursor = corner->pos;
+                        }
+
+                        break;
+                    }
+                }
+            }
+        }
+        else if( type == SHAPE_T::POLY && ConstraintPolygonIsModelable( shape ) )
+        {
+            // Editor builds one edit point per outline vertex in order so dragged ordinal is vertex index
+            // holds even when a drag lands a vertex on top of another where position match would be ambiguous
+            for( unsigned i = 0; i < m_editPoints->PointsSize(); ++i )
+            {
+                if( isModified( m_editPoints->Point( i ) ) )
+                {
+                    if( std::optional<CONSTRAINT_ANCHOR_POINT> vertex = ConstraintShapeVertex( shape, (int) i ) )
+                    {
+                        member = CONSTRAINT_MEMBER( shape->m_Uuid, vertex->anchor, vertex->index );
+                        cursor = vertex->pos;
+                    }
+
+                    break;
+                }
+            }
+
+            // Edge handle moves two adjacent vertices one member cannot express both so second vertex
+            // rides as a co dragged pin line i runs vertex i to i plus 1 mod count positions read back post move
+            if( !member.has_value() )
+            {
+                for( unsigned i = 0; i < m_editPoints->LinesSize(); ++i )
+                {
+                    if( isModified( m_editPoints->Line( i ) ) )
+                    {
+                        int next = ( (int) i + 1 ) % (int) m_editPoints->PointsSize();
+
+                        std::optional<CONSTRAINT_ANCHOR_POINT> v0 = ConstraintShapeVertex( shape, (int) i );
+                        std::optional<CONSTRAINT_ANCHOR_POINT> v1 = ConstraintShapeVertex( shape, next );
+
+                        if( v0 && v1 )
+                        {
+                            member = CONSTRAINT_MEMBER( shape->m_Uuid, v0->anchor, v0->index );
+                            cursor = v0->pos;
+                            coDragged = { CONSTRAINT_MEMBER( shape->m_Uuid, v1->anchor, v1->index ), v1->pos };
+                        }
+
+                        break;
+                    }
+                }
+            }
+        }
+
+        bool isCurve = type == SHAPE_T::CIRCLE || type == SHAPE_T::ARC || type == SHAPE_T::ELLIPSE
+                       || type == SHAPE_T::ELLIPSE_ARC;
+
+        std::vector<PCB_SHAPE*> modified;
+
+        // Failed or diverged solve leaves neighbors untouched below so nothing is half moved this frame
+        // moved shapes report in modified moved dimensions do not so refresh view here or they freeze
+        auto stageNeighbor = [&]( BOARD_ITEM* aItem )
+        {
+            aCommit.Modify( aItem );
+
+            if( aItem->Type() != PCB_SHAPE_T )
+                updatedItems.push_back( aItem );
+        };
+
+        if( member.has_value() )
+        {
+            SolveCluster( board(), member.value(), cursor, &modified, stageNeighbor,
+                          /* aIncludeDragged */ false, /* aStabilize */ false, {}, coDragged );
+        }
+        else if( isCurve )
+        {
+            // Radius or axis handle not a constrained point resize hold keeps new radius but yields
+            // to a real radius constraint full dof hold below would fight it so curves use this instead
+            ReSolveAfterShapeResize( board(), shape, &modified, stageNeighbor );
+        }
+        else if( type == SHAPE_T::RECTANGLE || ( type == SHAPE_T::POLY && ConstraintPolygonIsModelable( shape ) ) )
+        {
+            // Only whole shape handles centre and corner radius grips land here side corner and edge
+            // drags pinned members above already treated like a properties edit new geometry wins neighbors follow
+            ReSolveShapeClustersHoldingEdited( board(), { shape }, &modified, stageNeighbor );
+        }
+
+        for( PCB_SHAPE* neighbor : modified )
+            updatedItems.push_back( neighbor );
+    }
+
     // Perform any post-edit actions that the item may require
 
     switch( item->Type() )
@@ -3286,6 +3451,15 @@ int PCB_POINT_EDITOR::addCorner( const TOOL_EVENT& aEvent )
 
         zoneOutline->InsertVertex( nextNearestIdx, nearestPoint );
 
+        // Zones cannot carry constraint members but shape polygons can insertion shifts ordinals at or
+        // past new vertex issue 2329 members only exist on hole free polys index past outline count is a hole vertex
+        if( graphicItem && nextNearestIdx < (unsigned) zoneOutline->COutline( 0 ).PointCount() )
+        {
+            RemapPolygonVertexMembers( frame->GetBoard(), graphicItem->m_Uuid, (int) nextNearestIdx, 1,
+                                       [&]( BOARD_ITEM* aConstraint ) { commit.Modify( aConstraint ); },
+                                       [&]( BOARD_ITEM* aConstraint ) { commit.Remove( aConstraint ); } );
+        }
+
         if( item->Type() == PCB_ZONE_T )
             static_cast<ZONE*>( item )->HatchBorder();
 
@@ -3390,6 +3564,15 @@ int PCB_POINT_EDITOR::removeCorner( const TOOL_EVENT& aEvent )
             // the usual case: remove just the corner when there are >3 vertices
             commit.Modify( item );
             polygon->RemoveVertex( vertexIdx );
+
+            // Members only exist on hole free shape polygons where contour relative ordinal is member
+            // index removed vertex member retires its constraint later ordinals shift down issue 2329
+            if( item->Type() == PCB_SHAPE_T && vertexIdx.m_contour == 0 )
+            {
+                RemapPolygonVertexMembers( frame->GetBoard(), item->m_Uuid, vertexIdx.m_vertex, -1,
+                                           [&]( BOARD_ITEM* aConstraint ) { commit.Modify( aConstraint ); },
+                                           [&]( BOARD_ITEM* aConstraint ) { commit.Remove( aConstraint ); } );
+            }
         }
         else
         {
@@ -3502,6 +3685,17 @@ int PCB_POINT_EDITOR::chamferCorner( const TOOL_EVENT& aEvent )
             // The two end points of the chamfer are the new corners
             polygon->InsertVertex( nearestIdx, chamferResult->m_updated_seg_b->B );
             polygon->InsertVertex( nearestIdx, chamferResult->m_updated_seg_a->B );
+
+            // Chamfered corner constraints retire members past it net one higher insert pass must run
+            // first threshold nearestIdx plus 1 deleting first nets negative one instead issue 2329
+            if( item->Type() == PCB_SHAPE_T && nearestIdx < (unsigned) polygon->COutline( 0 ).PointCount() )
+            {
+                auto modify = [&]( BOARD_ITEM* aConstraint ) { commit.Modify( aConstraint ); };
+                auto remove = [&]( BOARD_ITEM* aConstraint ) { commit.Remove( aConstraint ); };
+
+                RemapPolygonVertexMembers( frame->GetBoard(), item->m_Uuid, (int) nearestIdx + 1, 2, modify, remove );
+                RemapPolygonVertexMembers( frame->GetBoard(), item->m_Uuid, (int) nearestIdx, -1, modify, remove );
+            }
         }
     }
 

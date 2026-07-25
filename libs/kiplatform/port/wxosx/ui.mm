@@ -14,8 +14,8 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include <kiplatform/ui.h>
@@ -101,6 +101,12 @@ void KIPLATFORM::UI::EnsureVisible( wxWindow* aWindow )
                 NSWindowCollectionBehaviorCanJoinAllSpaces];
         }
     }
+}
+
+
+void KIPLATFORM::UI::StabilizeWindowPosition( wxWindow* aWindow )
+{
+    // Not needed on this platform
 }
 
 
@@ -259,4 +265,16 @@ void KIPLATFORM::UI::ReleaseChildWindow( wxNonOwnedWindow* aWindow )
 void KIPLATFORM::UI::AllowNetworkFileSystems( wxDialog* aDialog )
 {
     // Not needed on macOS - file dialogs show network filesystems by default
+}
+
+
+void KIPLATFORM::UI::CancelPendingScroll( wxDataViewCtrl* aCtrl )
+{
+    // Not needed on this platform; the native control does not race on model resets.
+}
+
+
+void KIPLATFORM::UI::SetWMClass( wxWindow* aWindow, const wxString& aClass )
+{
+    // Not applicable on macOS; the bundle identifier provides the application identity.
 }

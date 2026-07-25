@@ -14,11 +14,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include <preview_items/arc_assistant.h>
@@ -39,7 +35,8 @@ ARC_ASSISTANT::ARC_ASSISTANT( const ARC_GEOM_MANAGER& aManager, const EDA_IU_SCA
         EDA_ITEM( NOT_USED ),
         m_constructMan( aManager ),
         m_iuScale( aIuScale ),
-        m_units( aUnits )
+        m_units( aUnits ),
+        m_drawArc( false )
 {
 }
 
@@ -87,8 +84,11 @@ void ARC_ASSISTANT::ViewDraw( int aLayer, KIGFX::VIEW* aView ) const
 
         EDA_ANGLE initAngle = m_constructMan.GetStartAngle();
 
-        // draw the radius guide circle
-        preview_ctx.DrawCircle( origin, m_constructMan.GetRadius(), true );
+        // Draw the radius guide circle if wanted
+        if( m_drawArc )
+        {
+            preview_ctx.DrawCircle( origin, m_constructMan.GetRadius(), true );
+        }
 
         initAngle.Normalize720();
 

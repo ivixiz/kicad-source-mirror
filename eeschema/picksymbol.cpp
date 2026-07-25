@@ -16,11 +16,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include <pgm_base.h>
@@ -45,12 +41,13 @@
 #include <project_sch.h>
 
 #include <dialog_symbol_chooser.h>
+#include <widgets/panel_symbol_chooser.h>
 
 PICKED_SYMBOL SCH_BASE_FRAME::PickSymbolFromLibrary( const SYMBOL_LIBRARY_FILTER* aFilter,
                                                      std::vector<PICKED_SYMBOL>&  aHistoryList,
                                                      std::vector<PICKED_SYMBOL>&  aAlreadyPlaced,
                                                      bool aShowFootprints, const LIB_ID* aHighlight,
-                                                     bool aAllowFields )
+                                                     bool aAllowFields, SYMBOL_COMPAT_FUNC aCompatFunc )
 {
     std::unique_lock<std::mutex> dialogLock( DIALOG_SYMBOL_CHOOSER::g_Mutex, std::defer_lock );
 
@@ -62,6 +59,9 @@ PICKED_SYMBOL SCH_BASE_FRAME::PickSymbolFromLibrary( const SYMBOL_LIBRARY_FILTER
 
     DIALOG_SYMBOL_CHOOSER dlg( this, aHighlight, aFilter, aHistoryList, aAlreadyPlaced,
                                aAllowFields, aShowFootprints, aCancelled );
+
+    if( aCompatFunc )
+        dlg.GetChooserPanel()->SetCompatibilityCallback( std::move( aCompatFunc ) );
 
     if( aCancelled || dlg.ShowModal() == wxID_CANCEL )
         return PICKED_SYMBOL();

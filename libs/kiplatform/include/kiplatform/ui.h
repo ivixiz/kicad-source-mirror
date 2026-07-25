@@ -14,8 +14,8 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef KIPLATFORM_UI_H_
@@ -24,6 +24,7 @@
 #include <wx/cursor.h>
 
 class wxChoice;
+class wxDataViewCtrl;
 class wxDialog;
 class wxNonOwnedWindow;
 class wxTopLevelWindow;
@@ -196,6 +197,18 @@ namespace KIPLATFORM
         void EnsureVisible( wxWindow* aWindow );
 
         /**
+         * Prepare a top-level window for reliable position round-tripping.
+         *
+         * On GTK/X11, default window gravity lets window-manager decorations affect the
+         * coordinates returned by wxWindow::GetPosition().  Some window managers, notably
+         * i3, can then shift a restored top-level window each time it is shown.  Other
+         * platforms are nops.
+         *
+         * @param aWindow window to prepare
+         */
+        void StabilizeWindowPosition( wxWindow* aWindow );
+
+        /**
          * Intended to set the floating window level in macOS on a window
          */
         void SetFloatLevel( wxWindow* aWindow );
@@ -228,6 +241,39 @@ namespace KIPLATFORM
          * @param aDialog is the file dialog to configure
          */
         void AllowNetworkFileSystems( wxDialog* aDialog );
+
+        /**
+         * Cancel any pending scroll-to-item request on @p aCtrl.
+         *
+         * GtkTreeView keeps a "scroll_to_path" reference that survives across model
+         * resets.  If the path becomes invalid (because the underlying rows were
+         * rebuilt or removed) the next frame-clock tick crashes in
+         * gtk_tree_view_get_row_height(NULL) from validate_visible_area.  Calling
+         * this helper before a model reset replaces the queued row reference with
+         * a column-only scroll request, which GtkTreeView frees on the way through
+         * its deferred-scroll branch.  No-op on MSW and macOS where the native
+         * controls do not exhibit this race.
+         */
+        void CancelPendingScroll( wxDataViewCtrl* aCtrl );
+
+        /**
+         * Tag a top-level window with the freedesktop application id of its installed
+         * launcher, setting the X11 WM_CLASS and, on Wayland, the surface application id.
+         *
+         * wxGTK derives the X11 res_class from the human-facing application display name and
+         * only feeds the Wayland application id (from the class name) on wx >= 3.3.1.  Neither
+         * matches the installed .desktop launcher, so a taskbar that groups by WM_CLASS
+         * mis-associates the windows with an unrelated application (wrong icon, name, and
+         * group).  Setting the id explicitly restores the association.  No-op on MSW and macOS,
+         * where the application identity comes from the AppUserModelID / bundle identifier.
+         *
+         * May be called before the window is realized; the GTK backend defers applying the hint
+         * to the realize/map signals, and also applies it immediately if already realized.
+         *
+         * @param aWindow is the top-level window to tag
+         * @param aClass is the desktop application id, e.g. org.kicad.kicad
+         */
+        void SetWMClass( wxWindow* aWindow, const wxString& aClass );
     }
 }
 

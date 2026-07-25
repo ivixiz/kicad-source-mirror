@@ -15,11 +15,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef SYMBOL_EDITOR_DRAWING_TOOLS_H
@@ -49,25 +45,14 @@ public:
     bool Init() override;
 
     int TwoClickPlace( const TOOL_EVENT& aEvent );
-    int DrawShape( const TOOL_EVENT& aEvent );
-    int DrawSymbolTextBox( const TOOL_EVENT& aEvent );
     int PlaceAnchor( const TOOL_EVENT& aEvent );
-    int ImportGraphics( const TOOL_EVENT& aEvent );
 
     int RepeatDrawItem( const TOOL_EVENT& aEvent );
 
     void SetLastTextAngle( const EDA_ANGLE& aAngle ) { m_lastTextAngle = aAngle; }
     EDA_ANGLE GetLastTextAngle() const { return m_lastTextAngle; }
 
-    void SetDrawSpecificBodyStyle( bool aSpecific ) { m_drawSpecificBodyStyle = aSpecific; }
-    bool GetDrawSpecificBodyStyle() const { return m_drawSpecificBodyStyle; }
-
-    void SetDrawSpecificUnit( bool aSpecific ) { m_drawSpecificUnit = aSpecific; }
-    bool GetDrawSpecificUnit() const { return m_drawSpecificUnit; }
-
 private:
-    int doDrawShape( const TOOL_EVENT& aEvent, std::optional<SHAPE_T> aDrawingShape );
-
     void setTransitions() override;
 
 private:
@@ -75,11 +60,6 @@ private:
     bool              m_lastTextItalic;
     EDA_ANGLE         m_lastTextAngle;
     GR_TEXT_H_ALIGN_T m_lastTextJust;
-    FILL_T            m_lastFillStyle;
-    COLOR4D           m_lastFillColor;
-    STROKE_PARAMS     m_lastStroke;
-    bool              m_drawSpecificBodyStyle;
-    bool              m_drawSpecificUnit;
 
     ///< Re-entrancy guards
     bool              m_inDrawShape;

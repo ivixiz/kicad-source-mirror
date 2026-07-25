@@ -15,11 +15,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 /**
@@ -39,8 +35,11 @@
 #include <pcb_lexer.h>
 #include <kiid.h>
 #include <math/box2.h>
+#include <optional>
+#include <constraints/pcb_constraint.h>
 #include <string_any_map.h>
 #include <padstack.h>
+#include <pcb_io/common/plugin_common_layer_mapping.h>
 
 #include <chrono>
 #include <unordered_map>
@@ -144,6 +143,9 @@ public:
      */
     const std::vector<wxString>& GetParseWarnings() const { return m_parseWarnings; }
 
+    /// Handler to remap an appended board's layers onto the destination board, used on mismatch.
+    void SetLayerMappingHandler( LAYER_MAPPING_HANDLER aHandler ) { m_layerMappingHandler = std::move( aHandler ); }
+
 private:
 
     // Group membership info refers to other Uuids in the file.
@@ -167,6 +169,18 @@ private:
         PCB_LAYER_ID   layer;
         wxString       genType;
         STRING_ANY_MAP properties;
+    };
+
+    /// Deferred constraint, resolved against the parsed items once the whole file is read,
+    /// mirroring GROUP_INFO (members reference items by KIID).
+    struct CONSTRAINT_INFO
+    {
+        BOARD_ITEM*                    parent = nullptr;
+        KIID                           uuid;
+        PCB_CONSTRAINT_TYPE            type = PCB_CONSTRAINT_TYPE::UNDEFINED;
+        std::vector<CONSTRAINT_MEMBER> members;
+        std::optional<double>          value;
+        bool                           driving = true;
     };
 
     ///< Convert net code using the mapping table if available,
@@ -220,6 +234,10 @@ private:
     void parseTITLE_BLOCK();
 
     void parseLayers();
+
+    /// Remap the appended layers onto the destination using m_layerMappingHandler, on mismatch.
+    void remapAppendedLayers( const std::vector<LAYER>& aSourceLayers, const LSET& aDestInitialEnabled,
+                              int aDestInitialCopperCount );
     void parseLayer( LAYER* aLayer );
 
     void parseBoardStackup();
@@ -234,6 +252,8 @@ private:
     void parseTEARDROP_PARAMETERS( TEARDROP_PARAMETERS* tdParams );
 
     void parseTextBoxContent( PCB_TEXTBOX* aTextBox );
+
+    void bakeTextBoxLib( PCB_TEXTBOX* aTextBox );
 
     PCB_SHAPE*           parsePCB_SHAPE( BOARD_ITEM* aParent );
     PCB_TEXT*            parsePCB_TEXT( BOARD_ITEM* aParent, PCB_TEXT* aBaseText = nullptr );
@@ -267,6 +287,7 @@ private:
     BOARD*      parseBOARD();
     void        parseGROUP_members( GROUP_INFO& aGroupInfo );
     void        parseGROUP( BOARD_ITEM* aParent );
+    void        parseCONSTRAINT( BOARD_ITEM* aParent );
     void        parseGENERATOR( BOARD_ITEM* aParent );
 
     // Parse a board, but do not replace PARSE_ERROR with FUTURE_FORMAT_ERROR automatically.
@@ -427,6 +448,7 @@ private:
      * lists.
      */
     void resolveGroups( BOARD_ITEM* aParent );
+    void resolveConstraints( BOARD_ITEM* aParent );
 
     ///< The type of progress bar timeout
     using TIMEOUT = std::chrono::milliseconds;
@@ -447,6 +469,7 @@ private:
     wxString            m_generatorVersion; ///< Set to the generator version this board requires
     bool                m_appendToExisting; ///< reading into an existing board; reset UUIDs
     bool                m_preserveDestinationStackup; ///< append keeps destination stackup
+    LAYER_MAPPING_HANDLER m_layerMappingHandler;        ///< optional remap of appended layers onto dest
 
     ///< if resetting UUIDs, record new ones to update groups with.
     KIID_MAP            m_resetKIIDMap;
@@ -458,8 +481,9 @@ private:
     TIME_PT             m_lastProgressTime;  ///< for progress reporting
     unsigned            m_lineCount;         ///< for progress reporting
 
-    std::vector<GROUP_INFO>     m_groupInfos;
-    std::vector<GENERATOR_INFO> m_generatorInfos;
+    std::vector<GROUP_INFO>      m_groupInfos;
+    std::vector<GENERATOR_INFO>  m_generatorInfos;
+    std::vector<CONSTRAINT_INFO> m_constraintInfos;
 
     std::function<bool( wxString aTitle, int aIcon, wxString aMsg, wxString aAction )> m_queryUserCallback;
 

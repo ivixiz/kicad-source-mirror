@@ -14,11 +14,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef PREVIEW_ITEMS_ARC_GEOMETRY_MANAGER_H
@@ -66,8 +62,6 @@ public:
         return static_cast<ARC_STEPS>( getStep() );
     }
 
-    bool acceptPoint( const VECTOR2I& aPt ) override;
-
     ///< The arc to be clockwise from start
     void SetClockwise( bool aCw );
 
@@ -102,8 +96,10 @@ public:
     ///< Get the angle of the vector leading to the end point (valid if step >= SET_ANGLE)
     EDA_ANGLE GetSubtended() const;
 
-private:
+protected:
+    bool acceptPoint( const VECTOR2I& aPt ) override;
 
+private:
     /*
      * Point acceptor functions
      */

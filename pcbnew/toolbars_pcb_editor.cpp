@@ -17,11 +17,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include <memory>
@@ -171,7 +167,8 @@ std::optional<TOOLBAR_CONFIGURATION> PCB_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
             .AppendGroup( TOOLBAR_GROUP_CONFIG( _( "Line modes" ) )
                         .AddAction( PCB_ACTIONS::lineModeFree )
                         .AddAction( PCB_ACTIONS::lineMode90 )
-                        .AddAction( PCB_ACTIONS::lineMode45 ) );
+                        .AddAction( PCB_ACTIONS::lineMode45 ) )
+            .AppendAction( PCB_ACTIONS::toggleAutoConstraints );
 
         config.AppendSeparator()
               .AppendAction( PCB_ACTIONS::showRatsnest )
@@ -236,6 +233,7 @@ std::optional<TOOLBAR_CONFIGURATION> PCB_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
                             .AddAction( PCB_ACTIONS::tuneSingleTrack )
                             .AddAction( PCB_ACTIONS::tuneDiffPair )
                             .AddAction( PCB_ACTIONS::tuneSkew ) )
+              .AppendAction( PCB_ACTIONS::showDiffPhaseSkew )
               .AppendAction( PCB_ACTIONS::drawVia )
               .AppendAction( PCB_ACTIONS::drawZone )
               .WithContextMenu(
@@ -276,11 +274,30 @@ std::optional<TOOLBAR_CONFIGURATION> PCB_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
               .AppendGroup( TOOLBAR_GROUP_CONFIG( _( "Circle" ) )
                             .AddAction( PCB_ACTIONS::drawCircle )
                             .AddAction( PCB_ACTIONS::drawEllipse ) )
+              .AppendGroup( TOOLBAR_GROUP_CONFIG( _( "Constraints" ) )
+                            .AddAction( PCB_ACTIONS::addConstraintCoincident )
+                            .AddAction( PCB_ACTIONS::addConstraintPointOnLine )
+                            .AddAction( PCB_ACTIONS::addConstraintMidpoint )
+                            .AddAction( PCB_ACTIONS::addConstraintSymmetric )
+                            .AddAction( PCB_ACTIONS::addConstraintParallel )
+                            .AddAction( PCB_ACTIONS::addConstraintPerpendicular )
+                            .AddAction( PCB_ACTIONS::addConstraintCollinear )
+                            .AddAction( PCB_ACTIONS::addConstraintHorizontal )
+                            .AddAction( PCB_ACTIONS::addConstraintVertical )
+                            .AddAction( PCB_ACTIONS::addConstraintTangent )
+                            .AddAction( PCB_ACTIONS::addConstraintEqualLength )
+                            .AddAction( PCB_ACTIONS::addConstraintEqualRadius )
+                            .AddAction( PCB_ACTIONS::addConstraintConcentric )
+                            .AddAction( PCB_ACTIONS::addConstraintFixedLength )
+                            .AddAction( PCB_ACTIONS::addConstraintFixedRadius )
+                            .AddAction( PCB_ACTIONS::addConstraintArcAngle )
+                            .AddAction( PCB_ACTIONS::addConstraintAngular ) )
               .AppendAction( PCB_ACTIONS::drawPolygon )
               .AppendAction( PCB_ACTIONS::drawBezier )
               .AppendAction( PCB_ACTIONS::placeReferenceImage )
-              .AppendAction( PCB_ACTIONS::placeText )
-              .AppendAction( PCB_ACTIONS::drawTextBox )
+              .AppendGroup( TOOLBAR_GROUP_CONFIG( _( "Text objects" ) )
+                            .AddAction( PCB_ACTIONS::placeText )
+                            .AddAction( PCB_ACTIONS::drawTextBox ) )
               .AppendAction( PCB_ACTIONS::drawTable )
               .AppendGroup( TOOLBAR_GROUP_CONFIG( _( "Dimension objects" ) )
                             .AddAction( PCB_ACTIONS::drawOrthogonalDimension )
@@ -459,12 +476,8 @@ void PCB_EDIT_FRAME::configureToolbars()
     auto pluginControlFactory =
             [this]( ACTION_TOOLBAR* aToolbar )
             {
-#ifdef KICAD_IPC_API
                 bool haveApiPlugins = Pgm().GetCommonSettings()->m_Api.enable_server
                                         && !Pgm().GetPluginManager().GetActionsForScope( PluginActionScope() ).empty();
-#else
-                bool haveApiPlugins = false;
-#endif
 
                 if( haveApiPlugins )
                 {
@@ -830,6 +843,13 @@ void PCB_EDIT_FRAME::ToggleSearch()
 }
 
 
+void PCB_EDIT_FRAME::ReCreateAuxiliaryToolbar()
+{
+    UpdateTrackWidthSelectBox( m_SelTrackWidthBox, true, true );
+    UpdateViaSizeSelectBox( m_SelViaSizeBox, true, true );
+}
+
+
 void PCB_EDIT_FRAME::OnUpdateSelectTrackWidth( wxUpdateUIEvent& aEvent )
 {
     if( aEvent.GetId() == ID_AUX_TOOLBAR_PCB_TRACK_WIDTH )
@@ -886,7 +906,7 @@ void PCB_EDIT_FRAME::ToggleLibraryTree()
                                           cfg->m_AuiPanels.design_blocks_panel_float_height );
             m_auimgr.Update();
         }
-        else if( cfg->m_AuiPanels.design_blocks_panel_docked_width > 0 )
+        else
         {
             // SetAuiPaneSize also updates m_auimgr
             SetAuiPaneSize( m_auimgr, db_library_pane, cfg->m_AuiPanels.design_blocks_panel_docked_width, -1 );

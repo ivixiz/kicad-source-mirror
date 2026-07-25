@@ -14,11 +14,7 @@
 * GNU General Public License for more details.
 *
 * You should have received a copy of the GNU General Public License
-* along with this program; if not, you may find one here:
-* http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
-* or you may search the http://www.gnu.org website for the version 2 license,
-* or you may write to the Free Software Foundation, Inc.,
-* 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+* along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
 #include <common.h>
@@ -44,29 +40,30 @@
 const int pcbnewSchemaVersion = 5;
 
 
-PCBNEW_SETTINGS::PCBNEW_SETTINGS()
-        : PCB_VIEWERS_SETTINGS_BASE( "pcbnew", pcbnewSchemaVersion ),
-          m_AuiPanels(),
-          m_FootprintChooser(),
-          m_FootprintViewer(),
-          m_FootprintWizard(),
-          m_Display(),
-          m_TrackDragAction( TRACK_DRAG_ACTION::DRAG ),
-          m_ArcEditMode( ARC_EDIT_MODE::KEEP_CENTER_ADJUST_ANGLE_RADIUS ),
-          m_CtrlClickHighlight( false ),
-          m_AngleSnapMode( LEADER_MODE::DIRECT ),
-          m_FlipDirection( FLIP_DIRECTION::TOP_BOTTOM ),
-          m_ESCClearsNetHighlight( true ),
-          m_PolarCoords( false ),
-          m_RotationAngle( ANGLE_90 ),
-          m_ShowPageLimits( true ),
-          m_ShowCourtyardCollisions( true ),
-          m_AutoRefillZones( false ),
-          m_AllowFreePads( false ),
-          m_ImportKeepKiCadLayerNames( false ),
-          m_PnsSettings( nullptr ),
-          m_FootprintViewerLibListWidth( 200 ),
-          m_FootprintViewerFPListWidth( 300 )
+PCBNEW_SETTINGS::PCBNEW_SETTINGS() :
+        PCB_VIEWERS_SETTINGS_BASE( "pcbnew", pcbnewSchemaVersion ),
+        m_AuiPanels(),
+        m_FootprintChooser(),
+        m_FootprintViewer(),
+        m_FootprintWizard(),
+        m_Display(),
+        m_TrackDragAction( TRACK_DRAG_ACTION::DRAG ),
+        m_ArcEditMode( ARC_EDIT_MODE::KEEP_CENTER_ADJUST_ANGLE_RADIUS ),
+        m_CtrlClickHighlight( false ),
+        m_AngleSnapMode( LEADER_MODE::DIRECT ),
+        m_FlipDirection( FLIP_DIRECTION::TOP_BOTTOM ),
+        m_AutoConstraints( true ),
+        m_ESCClearsNetHighlight( true ),
+        m_PolarCoords( false ),
+        m_RotationAngle( ANGLE_90 ),
+        m_ShowPageLimits( true ),
+        m_ShowCourtyardCollisions( true ),
+        m_AutoRefillZones( false ),
+        m_AllowFreePads( false ),
+        m_ImportKeepKiCadLayerNames( false ),
+        m_PnsSettings( nullptr ),
+        m_FootprintViewerLibListWidth( 200 ),
+        m_FootprintViewerFPListWidth( 300 )
 {
     m_MagneticItems.pads      = MAGNETIC_OPTIONS::CAPTURE_CURSOR_IN_TRACK_TOOL;
     m_MagneticItems.tracks    = MAGNETIC_OPTIONS::CAPTURE_CURSOR_IN_TRACK_TOOL;
@@ -189,6 +186,8 @@ PCBNEW_SETTINGS::PCBNEW_SETTINGS()
             reinterpret_cast<int*>( &m_AngleSnapMode ),
             static_cast<int>( LEADER_MODE::DIRECT ) ) );
 
+    m_params.emplace_back( new PARAM<bool>( "editing.auto_constraints", &m_AutoConstraints, true ) );
+
     m_params.emplace_back( new PARAM<bool>( "editing.auto_fill_zones",
             &m_AutoRefillZones, false ) );
 
@@ -249,6 +248,8 @@ PCBNEW_SETTINGS::PCBNEW_SETTINGS()
 
     m_params.emplace_back( new PARAM<bool>( "pcb_display.ratsnest_global",
             &m_Display.m_ShowGlobalRatsnest, true ) );
+
+    m_params.emplace_back( new PARAM<bool>( "pcb_display.show_constraints", &m_Display.m_ShowConstraints, false ) );
 
     m_params.emplace_back( new PARAM<bool>( "pcb_display.ratsnest_footprint",
             &m_Display.m_ShowModuleRatsnest, true ) );
@@ -320,6 +321,21 @@ PCBNEW_SETTINGS::PCBNEW_SETTINGS()
 
     m_params.emplace_back( new PARAM<bool>( "DRC.scroll_on_crossprobe",
             &m_DRCDialog.scroll_on_crossprobe, true ) );
+
+    m_params.emplace_back( new PARAM<COLOR4D>( "diff_phase_skew.zero_color", &m_DiffPhaseSkewSettings.m_ZeroSkewColor,
+                                               COLOR4D( 1.0, 1.0, 1.0, 1.0 ) ) );
+
+    m_params.emplace_back( new PARAM<COLOR4D>( "diff_phase_skew.positive_color",
+                                               &m_DiffPhaseSkewSettings.m_PositiveSkewColor,
+                                               COLOR4D( 0.0, 0.0, 1.0, 1.0 ) ) );
+
+    m_params.emplace_back( new PARAM<COLOR4D>( "diff_phase_skew.negative_color",
+                                               &m_DiffPhaseSkewSettings.m_NegativeSkewColor,
+                                               COLOR4D( 1.0, 0.0, 0.0, 1.0 ) ) );
+
+    m_params.emplace_back( new PARAM<COLOR4D>( "diff_phase_skew.unknown_color",
+                                               &m_DiffPhaseSkewSettings.m_UnknownSkewColor,
+                                               COLOR4D( 0.5, 0.5, 0.5, 1.0 ) ) );
 
     registerMigration( 0, 1,
             [&]()

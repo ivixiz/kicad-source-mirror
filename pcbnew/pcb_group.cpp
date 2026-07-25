@@ -15,11 +15,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 #include "pcb_group.h"
 
@@ -215,17 +211,53 @@ PCB_GROUP* PCB_GROUP::DeepClone() const
 }
 
 
-PCB_GROUP* PCB_GROUP::DeepDuplicate( bool addToParentGroup, BOARD_COMMIT* aCommit ) const
+PCB_GROUP* PCB_GROUP::DeepDuplicate( bool addToParentGroup, BOARD_COMMIT* aCommit,
+                                    std::map<KIID, KIID>* aKIIDMap ) const
 {
     PCB_GROUP* newGroup = static_cast<PCB_GROUP*>( Duplicate( addToParentGroup, aCommit ) );
     newGroup->m_items.clear();
 
+    if( aKIIDMap )
+        ( *aKIIDMap )[m_Uuid] = newGroup->m_Uuid;
+
     for( EDA_ITEM* member : m_items )
     {
-        if( member->Type() == PCB_GROUP_T )
-            newGroup->AddItem( static_cast<PCB_GROUP*>( member )->DeepDuplicate( IGNORE_PARENT_GROUP ) );
+        // A PCB_GENERATOR owns member items that are not in this group's m_items, so a shallow
+        // copy would leave the duplicate referencing the original's members.
+        if( member->Type() == PCB_GROUP_T || member->Type() == PCB_GENERATOR_T )
+        {
+            newGroup->AddItem( static_cast<PCB_GROUP*>( member )->DeepDuplicate( IGNORE_PARENT_GROUP,
+                                                                                nullptr, aKIIDMap ) );
+        }
         else
-            newGroup->AddItem( static_cast<BOARD_ITEM*>( member )->Duplicate( IGNORE_PARENT_GROUP ) );
+        {
+            BOARD_ITEM* orig = static_cast<BOARD_ITEM*>( member );
+            BOARD_ITEM* memberDupe = orig->Duplicate( IGNORE_PARENT_GROUP );
+
+            if( aKIIDMap )
+            {
+                ( *aKIIDMap )[orig->m_Uuid] = memberDupe->m_Uuid;
+
+                // Children from ordered vectors so lockstep walk pairs reliably
+                // only unordered group membership above needs clone-time capture
+                std::vector<BOARD_ITEM*> dupeChildren;
+                memberDupe->RunOnChildren( [&]( BOARD_ITEM* aChild ) { dupeChildren.push_back( aChild ); },
+                                           RECURSE_MODE::RECURSE );
+
+                std::size_t index = 0;
+                orig->RunOnChildren(
+                        [&]( BOARD_ITEM* aChild )
+                        {
+                            if( index < dupeChildren.size() )
+                                ( *aKIIDMap )[aChild->m_Uuid] = dupeChildren[index]->m_Uuid;
+
+                            index++;
+                        },
+                        RECURSE_MODE::RECURSE );
+            }
+
+            newGroup->AddItem( memberDupe );
+        }
     }
 
     return newGroup;
@@ -388,6 +420,21 @@ void PCB_GROUP::Flip( const VECTOR2I& aCentre, FLIP_DIRECTION aFlipDirection )
 
 void PCB_GROUP::Mirror( const VECTOR2I& aCentre, FLIP_DIRECTION aFlipDirection )
 {
+    // Footprints have no mirror, only flip. If the group holds one, leave the whole group alone
+    // rather than mirror the rest and tear it apart.
+    bool hasFootprint = false;
+
+    RunOnChildren(
+            [&]( BOARD_ITEM* aChild )
+            {
+                if( aChild->Type() == PCB_FOOTPRINT_T )
+                    hasFootprint = true;
+            },
+            RECURSE_MODE::RECURSE );
+
+    if( hasFootprint )
+        return;
+
     for( EDA_ITEM* item : m_items )
         static_cast<BOARD_ITEM*>( item )->Mirror( aCentre, aFlipDirection );
 }

@@ -14,8 +14,8 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef _COLOR_SETTINGS_H
@@ -154,8 +154,13 @@ public:
         if( std::optional<COLOR4D> optval = aSettings.Get<COLOR4D>( m_path ) )
             return m_map->count( m_key ) && ( *optval == m_map->at( m_key ) );
 
-        // If the JSON doesn't exist, the map shouldn't exist either
-        return !m_map->count( m_key );
+        // Load inserts the default when the key is absent, so an absent key still matches when the
+        // mapped value is that default and missing keys reset on load; otherwise incomplete themes
+        // rewrite merely to inject default colors
+        if( !aSettings.ResetsParamsIfMissing() )
+            return !m_map->count( m_key );
+
+        return !m_map->count( m_key ) || m_map->at( m_key ) == m_default;
     }
 
 private:

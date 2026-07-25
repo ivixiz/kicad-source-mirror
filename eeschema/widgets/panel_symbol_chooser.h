@@ -15,16 +15,13 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 #ifndef PANEL_SYMBOL_CHOOSER_H
 #define PANEL_SYMBOL_CHOOSER_H
 
 #include <template_fieldnames.h>
+#include <variant_symbol_utils.h>
 #include <widgets/lib_tree.h>
 #include <symbol_tree_model_adapter.h>
 #include <footprint_info.h>
@@ -104,6 +101,8 @@ public:
 
     void ShutdownCanvases();
 
+    void SetCompatibilityCallback( SYMBOL_COMPAT_FUNC aFunc );
+
     wxObjectDataPtr<LIB_TREE_MODEL_ADAPTER> Adapter() const { return m_adapter; }
 
     void Regenerate();
@@ -181,6 +180,8 @@ protected:
     wxString                  m_fp_override;
 
     std::vector<std::pair<FIELD_T, wxString>>  m_field_edits;
+
+    SYMBOL_COMPAT_FUNC  m_compatCallback;
 };
 
 #endif /* PANEL_SYMBOL_CHOOSER_H */

@@ -15,11 +15,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 /**
@@ -30,6 +26,7 @@
 #include "layer_ids.h"
 #include <cerrno>
 #include <charconv>
+#include <cmath>
 #include <confirm.h>
 #include <macros.h>
 #include <fmt/format.h>
@@ -1028,6 +1025,7 @@ FP_3DMODEL* PCB_IO_KICAD_SEXPR_PARSER::parse3DModel( bool aFileNameAlreadyParsed
 bool PCB_IO_KICAD_SEXPR_PARSER::IsValidBoardHeader()
 {
     m_groupInfos.clear();
+    m_constraintInfos.clear();
 
     // See Parse() - FOOTPRINTS can be prefixed with an initial block of single line comments,
     // eventually BOARD might be the same
@@ -1049,6 +1047,7 @@ BOARD_ITEM* PCB_IO_KICAD_SEXPR_PARSER::Parse()
     BOARD_ITEM*     item;
 
     m_groupInfos.clear();
+    m_constraintInfos.clear();
 
     // FOOTPRINTS can be prefixed with an initial block of single line comments and these are
     // kept for Format() so they round trip in s-expression form.  BOARDs might  eventually do
@@ -1097,6 +1096,7 @@ BOARD_ITEM* PCB_IO_KICAD_SEXPR_PARSER::Parse()
             RECURSE_MODE::RECURSE );
 
     resolveGroups( item );
+    resolveConstraints( item );
 
     return item;
 }
@@ -1304,6 +1304,10 @@ BOARD* PCB_IO_KICAD_SEXPR_PARSER::parseBOARD_unchecked()
             parseGROUP( m_board );
             break;
 
+        case T_constraint:
+            parseCONSTRAINT( m_board );
+            break;
+
         case T_generated:
             parseGENERATOR( m_board );
             break;
@@ -1450,13 +1454,18 @@ BOARD* PCB_IO_KICAD_SEXPR_PARSER::parseBOARD_unchecked()
             {
                 LSET layers = curr_item.GetLayerSet();
 
-                if( layers.test( Rescue ) )
-                {
-                    layers.set( destLayer );
-                    layers.reset( Rescue );
-                }
+                if( !layers.test( Rescue ) )
+                    return;
 
-                curr_item.SetLayerSet( layers );
+                layers.set( destLayer );
+                layers.reset( Rescue );
+
+                // Single-layer items (shapes, text) ignore non-copper layers in SetLayerSet, so
+                // move them with SetLayer. Multi-layer items keep their full set.
+                if( layers.count() == 1 )
+                    curr_item.SetLayer( destLayer );
+                else
+                    curr_item.SetLayerSet( layers );
             };
 
             for( PCB_TRACK* track : m_board->Tracks() )
@@ -1507,11 +1516,16 @@ BOARD* PCB_IO_KICAD_SEXPR_PARSER::parseBOARD_unchecked()
             }
 
             m_undefinedLayers.clear();
+
+            // Rescued items make the board differ from disk. Mark modified so it gets re-saved.
+            m_board->SetModified();
         }
         else
         {
-            THROW_IO_ERROR( wxT( "One or more undefined undefinedLayerNames was found; "
-                                 "open the board in the PCB Editor to resolve." ) );
+            THROW_IO_ERROR( wxString::Format( _( "One or more items were found on undefined "
+                                                 "layers (%s). Open the board in the PCB Editor "
+                                                 "to resolve." ),
+                                              undefinedLayerNames ) );
         }
     }
 
@@ -1991,6 +2005,11 @@ void PCB_IO_KICAD_SEXPR_PARSER::parseBoardStackup()
     // Remove existing stack or we end up just appending to the existing stackup
     stackup.RemoveAll();
 
+    // Board appends in older versions could duplicate the whole stackup.  Stop adding items once
+    // a board layer id repeats; still parse the duplicates to keep the token stream consistent.
+    std::set<PCB_LAYER_ID> seenBrdLayers;
+    bool                   duplicatedStackup = false;
+
     for( token = NextTok(); token != T_RIGHT; token = NextTok() )
     {
         if( CurTok() != T_LEFT )
@@ -2052,8 +2071,18 @@ void PCB_IO_KICAD_SEXPR_PARSER::parseBoardStackup()
         NeedSYMBOL();
         name = FromUTF8();
 
-        // init the layer id. For dielectric, layer id = UNDEFINED_LAYER
-        PCB_LAYER_ID layerId = m_board->GetLayerID( name );
+        // Match the canonical names that we write, not GetLayerID() because the user-name matching
+        // could end up being the same as a canonical name and corrupt the stack.
+        PCB_LAYER_ID layerId = UNDEFINED_LAYER;
+
+        for( PCB_LAYER_ID candidate : m_board->GetEnabledLayers().Seq() )
+        {
+            if( LSET::Name( candidate ) == name )
+            {
+                layerId = candidate;
+                break;
+            }
+        }
 
         // Init the type
         BOARD_STACKUP_ITEM_TYPE type = BS_ITEM_TYPE_UNDEFINED;
@@ -2072,6 +2101,9 @@ void PCB_IO_KICAD_SEXPR_PARSER::parseBoardStackup()
         std::unique_ptr<BOARD_STACKUP_ITEM> itemOwner;
         BOARD_STACKUP_ITEM*                 item = nullptr;
 
+        if( layerId != UNDEFINED_LAYER && !seenBrdLayers.insert( layerId ).second )
+            duplicatedStackup = true;
+
         if( type != BS_ITEM_TYPE_UNDEFINED )
         {
             // A 32-copper-layer board has at most 69 stackup items (32 copper +
@@ -2087,7 +2119,7 @@ void PCB_IO_KICAD_SEXPR_PARSER::parseBoardStackup()
             if( type == BS_ITEM_TYPE_DIELECTRIC )
                 item->SetDielectricLayerId( dielectric_idx++ );
 
-            if( stackup.GetCount() < MAX_STACKUP_ITEMS )
+            if( !duplicatedStackup && stackup.GetCount() < MAX_STACKUP_ITEMS )
                 stackup.Add( itemOwner.release() );
         }
         else
@@ -2309,6 +2341,11 @@ void PCB_IO_KICAD_SEXPR_PARSER::parseLayers()
     std::unordered_map< std::string, std::string > v3_layer_names;
     std::vector<LAYER>  cu;
 
+    // Destination layers before the appended board is applied, used to detect a remap need
+    const LSET         destInitialEnabled = m_appendToExisting ? m_board->GetEnabledLayers() : LSET();
+    const int          destInitialCopperCount = m_appendToExisting ? m_board->GetCopperLayerCount() : 0;
+    std::vector<LAYER> appendedLayers;
+
     createOldLayerMapping( v3_layer_names );
 
     for( token = NextTok();  token != T_RIGHT;  token = NextTok() )
@@ -2353,12 +2390,17 @@ void PCB_IO_KICAD_SEXPR_PARSER::parseLayers()
             else
                 anyHidden = true;
 
-            m_board->SetLayerDescr( PCB_LAYER_ID( cu_layer.m_number ), cu_layer );
+            if( !m_preserveDestinationStackup || !m_board->IsLayerEnabled( PCB_LAYER_ID( cu_layer.m_number ) ) )
+            {
+                m_board->SetLayerDescr( PCB_LAYER_ID( cu_layer.m_number ), cu_layer );
+            }
 
             UTF8 name = cu_layer.m_name;
 
             m_layerIndices[ name ] = PCB_LAYER_ID( cu_layer.m_number );
             m_layerMasks[ name ] = LSET( { PCB_LAYER_ID( cu_layer.m_number ) } );
+
+            appendedLayers.push_back( cu_layer );
         }
 
         copperLayerCount = cu.size();
@@ -2403,7 +2445,10 @@ void PCB_IO_KICAD_SEXPR_PARSER::parseLayers()
         else
             anyHidden = true;
 
-        m_board->SetLayerDescr( it->second, layer );
+        if( !m_preserveDestinationStackup || !m_board->IsLayerEnabled( it->second ) )
+            m_board->SetLayerDescr( it->second, layer );
+
+        appendedLayers.push_back( layer );
 
         token = NextTok();
 
@@ -2421,13 +2466,122 @@ void PCB_IO_KICAD_SEXPR_PARSER::parseLayers()
         THROW_PARSE_ERROR( err, CurSource(), CurLine(), CurLineNumber(), CurOffset() );
     }
 
-    m_board->SetCopperLayerCount( copperLayerCount );
-    m_board->SetEnabledLayers( enabledLayers );
+    if( m_preserveDestinationStackup )
+    {
+        m_board->SetCopperLayerCount( std::max( copperLayerCount, m_board->GetCopperLayerCount() ) );
+        m_board->SetEnabledLayers( enabledLayers | m_board->GetEnabledLayers() );
+    }
+    else
+    {
+        m_board->SetCopperLayerCount( copperLayerCount );
+        m_board->SetEnabledLayers( enabledLayers );
 
-    // Only set this if any layers were explicitly marked as hidden.  Otherwise, we want to leave
-    // this alone; default visibility will show everything
-    if( anyHidden )
-        m_board->m_LegacyVisibleLayers = visibleLayers;
+        // Only set this if any layers were explicitly marked as hidden.  Otherwise, we want to leave
+        // this alone; default visibility will show everything
+        if( anyHidden )
+            m_board->m_LegacyVisibleLayers = visibleLayers;
+    }
+
+    if( m_appendToExisting && m_layerMappingHandler )
+        remapAppendedLayers( appendedLayers, destInitialEnabled, destInitialCopperCount );
+}
+
+
+void PCB_IO_KICAD_SEXPR_PARSER::remapAppendedLayers( const std::vector<LAYER>& aSourceLayers,
+                                                     const LSET& aDestInitialEnabled, int aDestInitialCopperCount )
+{
+    // Only prompt when an appended layer is new to the destination or a named appended layer would
+    // land on a differently-named destination layer
+    int  srcCopperCount = 0;
+    bool mismatch = false;
+
+    for( const LAYER& src : aSourceLayers )
+    {
+        PCB_LAYER_ID id = PCB_LAYER_ID( src.m_number );
+
+        if( IsCopperLayer( src.m_number ) )
+            srcCopperCount++;
+
+        if( !aDestInitialEnabled.Contains( id ) )
+            mismatch = true;
+        else if( !src.m_userName.IsEmpty() && src.m_userName != m_board->GetLayerName( id ) )
+            mismatch = true;
+    }
+
+    if( !mismatch )
+        return;
+
+    std::vector<INPUT_LAYER_DESC> descs;
+
+    for( const LAYER& src : aSourceLayers )
+    {
+        INPUT_LAYER_DESC desc;
+        desc.Name = src.m_userName.IsEmpty() ? src.m_name : src.m_userName;
+        desc.AutoMapLayer = PCB_LAYER_ID( src.m_number );
+        desc.Required = false;
+
+        if( IsCopperLayer( src.m_number ) )
+            desc.PermittedLayers = LSET::AllCuMask( std::max( srcCopperCount, aDestInitialCopperCount ) );
+        else
+            desc.PermittedLayers = LSET( { PCB_LAYER_ID( src.m_number ) } );
+
+        // Prefer a destination layer with the same name as the auto-map suggestion
+        for( PCB_LAYER_ID hid : aDestInitialEnabled.Seq() )
+        {
+            if( m_board->GetLayerName( hid ) == desc.Name )
+            {
+                desc.AutoMapLayer = hid;
+                break;
+            }
+        }
+
+        descs.push_back( desc );
+    }
+
+    // Hide the load progress reporter while the (modal) mapping dialog is up
+    wxWindow* progressWindow = dynamic_cast<wxWindow*>( m_progressReporter );
+
+    if( progressWindow )
+        progressWindow->Hide();
+
+    std::map<wxString, PCB_LAYER_ID> remap = m_layerMappingHandler( descs );
+
+    if( progressWindow )
+        progressWindow->Show();
+
+    LSET enabled = m_board->GetEnabledLayers();
+
+    for( const LAYER& src : aSourceLayers )
+    {
+        wxString     key = src.m_userName.IsEmpty() ? src.m_name : src.m_userName;
+        auto         it = remap.find( key );
+        PCB_LAYER_ID target = ( it != remap.end() ) ? it->second : PCB_LAYER_ID( src.m_number );
+
+        UTF8 name = src.m_name;
+
+        if( target == UNDEFINED_LAYER )
+        {
+            // Not imported, items on it fall through to Rescue
+            m_layerIndices.erase( name );
+            m_layerMasks.erase( name );
+            continue;
+        }
+
+        m_layerIndices[name] = target;
+        m_layerMasks[name] = LSET( { target } );
+
+        // New layer on the destination keeps the appended descriptor
+        if( !aDestInitialEnabled.Contains( target ) )
+        {
+            LAYER descr = src;
+            descr.m_number = target;
+            m_board->SetLayerDescr( target, descr );
+        }
+
+        enabled.set( target );
+    }
+
+    m_board->SetEnabledLayers( enabled );
 }
 
 
@@ -3403,6 +3557,13 @@ PCB_SHAPE* PCB_IO_KICAD_SEXPR_PARSER::parsePCB_SHAPE( BOARD_ITEM* aParent )
     STROKE_PARAMS              stroke( 0, LINE_STYLE::SOLID );
     std::unique_ptr<PCB_SHAPE> shape = std::make_unique<PCB_SHAPE>( aParent );
 
+    VECTOR2I  ellipseCenter( 0, 0 );
+    int       ellipseMajor = 0;
+    int       ellipseMinor = 0;
+    EDA_ANGLE ellipseRotation = ANGLE_0;
+    EDA_ANGLE ellipseStart = ANGLE_0;
+    EDA_ANGLE ellipseEnd = ANGLE_0;
+
     switch( CurTok() )
     {
     case T_gr_arc:
@@ -3785,34 +3946,33 @@ PCB_SHAPE* PCB_IO_KICAD_SEXPR_PARSER::parsePCB_SHAPE( BOARD_ITEM* aParent )
             break;
 
         case T_center:
-            pt.x = parseBoardUnits( "X coordinate" );
-            pt.y = parseBoardUnits( "Y coordinate" );
-            shape->SetEllipseCenter( pt );
+            ellipseCenter.x = parseBoardUnits( "X coordinate" );
+            ellipseCenter.y = parseBoardUnits( "Y coordinate" );
             NeedRIGHT();
             break;
 
         case T_major_radius:
-            shape->SetEllipseMajorRadius( parseBoardUnits( "major radius" ) );
+            ellipseMajor = parseBoardUnits( "major radius" );
             NeedRIGHT();
             break;
 
         case T_minor_radius:
-            shape->SetEllipseMinorRadius( parseBoardUnits( "minor radius" ) );
+            ellipseMinor = parseBoardUnits( "minor radius" );
             NeedRIGHT();
             break;
 
         case T_rotation_angle:
-            shape->SetEllipseRotation( EDA_ANGLE( parseDouble( "rotation angle" ), DEGREES_T ) );
+            ellipseRotation = EDA_ANGLE( parseDouble( "rotation angle" ), DEGREES_T );
             NeedRIGHT();
             break;
 
         case T_start_angle:
-            shape->SetEllipseStartAngle( EDA_ANGLE( parseDouble( "start angle" ), DEGREES_T ) );
+            ellipseStart = EDA_ANGLE( parseDouble( "start angle" ), DEGREES_T );
             NeedRIGHT();
             break;
 
         case T_end_angle:
-            shape->SetEllipseEndAngle( EDA_ANGLE( parseDouble( "end angle" ), DEGREES_T ) );
+            ellipseEnd = EDA_ANGLE( parseDouble( "end angle" ), DEGREES_T );
             NeedRIGHT();
             break;
 
@@ -3848,10 +4008,32 @@ PCB_SHAPE* PCB_IO_KICAD_SEXPR_PARSER::parsePCB_SHAPE( BOARD_ITEM* aParent )
 
     shape->SetStroke( stroke );
 
-    if( FOOTPRINT* parentFP = shape->GetParentFootprint() )
+    if( shape->GetParentFootprint() )
+        shape->SetLibStrokeWidth( stroke.GetWidth() );
+
+    if( shape->GetShape() == SHAPE_T::ELLIPSE || shape->GetShape() == SHAPE_T::ELLIPSE_ARC )
     {
-        shape->Rotate( { 0, 0 }, parentFP->GetOrientation() );
-        shape->Move( parentFP->GetPosition() );
+        shape->SetLibraryEllipse( ellipseCenter, ellipseMajor, ellipseMinor, ellipseRotation, ellipseStart,
+                                  ellipseEnd );
+
+        if( shape->GetParentFootprint() )
+            shape->RebakeFromLib();
+    }
+    else if( shape->GetParentFootprint() )
+    {
+        const VECTOR2I libStart = shape->GetStart();
+        const VECTOR2I libEnd = shape->GetEnd();
+        const VECTOR2I libArcMid = shape->GetShape() == SHAPE_T::ARC ? shape->GetArcMid() : VECTOR2I( 0, 0 );
+
+        shape->OverrideLibCoords( libStart, libEnd, libArcMid );
+
+        if( shape->GetShape() == SHAPE_T::BEZIER )
+            shape->OverrideLibBezier( shape->GetBezierC1(), shape->GetBezierC2() );
+
+        if( shape->GetShape() == SHAPE_T::POLY )
+            shape->OverrideLibPoly( shape->GetPolyShape() );
+
+        shape->RebakeFromLib();
     }
 
     return shape.release();
@@ -3952,26 +4134,35 @@ PCB_REFERENCE_IMAGE* PCB_IO_KICAD_SEXPR_PARSER::parsePCB_REFERENCE_IMAGE( BOARD_
         }
     }
 
+    // Before 20260623 the PPI was computed from the embedded resolution but pixels/cm was
+    // truncated to an integer, so the stored scale compensated for the wrong PPI.  Re-scale
+    // to the corrected PPI to preserve the rendered size of existing boards.
+    if( m_requiredVersion < 20260623 )
+    {
+        REFERENCE_IMAGE&   refImage = bitmap->GetReferenceImage();
+        const BITMAP_BASE& image = refImage.GetImage();
+        int                legacyPPI = image.GetLegacyPPI();
+
+        if( legacyPPI > 0 && image.GetPPI() != legacyPPI )
+            refImage.SetImageScale( refImage.GetImageScale() * image.GetPPI() / legacyPPI );
+    }
+
     return bitmap.release();
 }
 
 
 PCB_TEXT* PCB_IO_KICAD_SEXPR_PARSER::parsePCB_TEXT( BOARD_ITEM* aParent, PCB_TEXT* aBaseText )
 {
+    std::unique_ptr<PCB_TEXT> text( aBaseText );
+
     wxCHECK_MSG( CurTok() == T_gr_text || CurTok() == T_fp_text, nullptr,
                  wxT( "Cannot parse " ) + GetTokenString( CurTok() ) + wxT( " as PCB_TEXT." ) );
 
-    FOOTPRINT*                parentFP = dynamic_cast<FOOTPRINT*>( aParent );
-    std::unique_ptr<PCB_TEXT> text;
+    FOOTPRINT* parentFP = dynamic_cast<FOOTPRINT*>( aParent );
 
     T token = NextTok();
 
-    // If a base text is provided, we have a derived text already parsed and just need to update it
-    if( aBaseText )
-    {
-        text = std::unique_ptr<PCB_TEXT>( aBaseText );
-    }
-    else if( parentFP )
+    if( !text && parentFP )
     {
         switch( token )
         {
@@ -3994,7 +4185,7 @@ PCB_TEXT* PCB_IO_KICAD_SEXPR_PARSER::parsePCB_TEXT( BOARD_ITEM* aParent, PCB_TEX
 
         token = NextTok();
     }
-    else
+    else if( !text )
     {
         text = std::make_unique<PCB_TEXT>( aParent );
     }
@@ -4062,7 +4253,11 @@ void PCB_IO_KICAD_SEXPR_PARSER::parsePCB_TEXT_effects( PCB_TEXT* aText, PCB_TEXT
             hasPos = true;
             pt.x = parseBoardUnits( "X coordinate" );
             pt.y = parseBoardUnits( "Y coordinate" );
-            aText->SetTextPos( pt );
+
+            if( parentFP && m_requiredVersion >= FIRST_FP_AFFINE_TRANSFORM )
+                aText->SetLibTextPos( pt );
+            else
+                aText->SetTextPos( pt );
             token = NextTok();
 
             if( CurTok() == T_NUMBER )
@@ -4158,22 +4353,27 @@ void PCB_IO_KICAD_SEXPR_PARSER::parsePCB_TEXT_effects( PCB_TEXT* aText, PCB_TEXT
     if( !hasAngle )
         aText->SetTextAngle( ANGLE_0 );
 
-    if( parentFP && !dynamic_cast<PCB_DIMENSION_BASE*>( aBaseText ) )
+    if( parentFP && !dynamic_cast<PCB_DIMENSION_BASE*>( aBaseText ) && m_requiredVersion < FIRST_FP_AFFINE_TRANSFORM )
     {
-        // make PCB_TEXT rotation relative to the parent footprint.
-        // It was read as absolute rotation from file
-        // Note: this is not rue for PCB_DIMENSION items that use the board
-        // coordinates
+        // Legacy files stored an absolute board-frame angle and an FP-relative
+        // position with the parent FP transform un-applied. Rotate and move
+        // the text into board coordinates.
         aText->SetTextAngle( aText->GetTextAngle() - parentFP->GetOrientation() );
-
-        // Move and rotate the text to its board coordinates
         aText->Rotate( { 0, 0 }, parentFP->GetOrientation() );
 
         // Only move offset from parent position if we read a position from the file.
         // These positions are relative to the parent footprint. If we don't have a position
         // then the text defaults to the parent position and moving again will double it.
-        if (hasPos)
+        if( hasPos )
             aText->Move( parentFP->GetPosition() );
+    }
+
+    if( parentFP && !dynamic_cast<PCB_DIMENSION_BASE*>( aBaseText ) && m_requiredVersion >= FIRST_FP_AFFINE_TRANSFORM )
+    {
+        aText->SetLibTextSize( aText->GetTextSize() );
+
+        if( !aText->GetAutoThickness() )
+            aText->SetLibTextThickness( aText->GetTextThickness() );
     }
 }
 
@@ -4321,6 +4521,27 @@ PCB_BARCODE* PCB_IO_KICAD_SEXPR_PARSER::parsePCB_BARCODE( BOARD_ITEM* aParent )
 }
 
 
+/**
+ * Lift disk-parsed values into PCB_TEXTBOX lib storage for new format files.
+ * Legacy files use a separate compat path in parseTextBoxContent.
+ */
+void PCB_IO_KICAD_SEXPR_PARSER::bakeTextBoxLib( PCB_TEXTBOX* aTextBox )
+{
+    aTextBox->SetLibTextAngle( aTextBox->EDA_TEXT::GetTextAngle() );
+
+    if( aTextBox->GetShape() == SHAPE_T::RECTANGLE )
+        aTextBox->OverrideLibCoords( aTextBox->GetStart(), aTextBox->GetEnd() );
+    else if( aTextBox->GetShape() == SHAPE_T::POLY )
+        aTextBox->OverrideLibPoly( aTextBox->GetPolyShape() );
+
+    if( aTextBox->GetParentFootprint() )
+        aTextBox->OnFootprintTransformed();
+
+    // Sync the EDA_TEXT angle cache to the absolute board angle.
+    aTextBox->EDA_TEXT::SetTextAngle( aTextBox->GetTextAngle() );
+}
+
+
 PCB_TEXTBOX* PCB_IO_KICAD_SEXPR_PARSER::parsePCB_TEXTBOX( BOARD_ITEM* aParent )
 {
     wxCHECK_MSG( CurTok() == T_gr_text_box || CurTok() == T_fp_text_box, nullptr,
@@ -4329,6 +4550,7 @@ PCB_TEXTBOX* PCB_IO_KICAD_SEXPR_PARSER::parsePCB_TEXTBOX( BOARD_ITEM* aParent )
     std::unique_ptr<PCB_TEXTBOX> textbox = std::make_unique<PCB_TEXTBOX>( aParent );
 
     parseTextBoxContent( textbox.get() );
+    bakeTextBoxLib( textbox.get() );
 
     return textbox.release();
 }
@@ -4342,6 +4564,7 @@ PCB_TABLECELL* PCB_IO_KICAD_SEXPR_PARSER::parsePCB_TABLECELL( BOARD_ITEM* aParen
     std::unique_ptr<PCB_TABLECELL> cell = std::make_unique<PCB_TABLECELL>( aParent );
 
     parseTextBoxContent( cell.get() );
+    bakeTextBoxLib( cell.get() );
 
     return cell.release();
 }
@@ -4453,16 +4676,7 @@ void PCB_IO_KICAD_SEXPR_PARSER::parseTextBoxContent( PCB_TEXTBOX* aTextBox )
             break;
 
         case T_knockout:
-            if( [[maybe_unused]] PCB_TABLECELL* cell = dynamic_cast<PCB_TABLECELL*>( aTextBox ) )
-            {
-                Expecting( "locked, start, pts, angle, width, margins, layer, effects, span, "
-                           "render_cache, uuid or tstamp" );
-            }
-            else
-            {
-                aTextBox->SetIsKnockout( parseBool() );
-            }
-
+            aTextBox->SetIsKnockout( parseBool() );
             NeedRIGHT();
             break;
 
@@ -4499,8 +4713,8 @@ void PCB_IO_KICAD_SEXPR_PARSER::parseTextBoxContent( PCB_TEXTBOX* aTextBox )
         default:
             if( dynamic_cast<PCB_TABLECELL*>( aTextBox ) != nullptr )
             {
-                Expecting( "locked, start, pts, angle, width, margins, layer, effects, span, "
-                           "render_cache, uuid or tstamp" );
+                Expecting( "locked, start, pts, angle, width, margins, knockout, layer, effects, "
+                           "span, render_cache, uuid or tstamp" );
             }
             else
             {
@@ -4522,12 +4736,6 @@ void PCB_IO_KICAD_SEXPR_PARSER::parseTextBoxContent( PCB_TEXTBOX* aTextBox )
         aTextBox->SetMarginTop( margin );
         aTextBox->SetMarginRight( margin );
         aTextBox->SetMarginBottom( margin );
-    }
-
-    if( FOOTPRINT* parentFP = aTextBox->GetParentFootprint() )
-    {
-        aTextBox->Rotate( { 0, 0 }, parentFP->GetOrientation() );
-        aTextBox->Move( parentFP->GetPosition() );
     }
 }
 
@@ -4797,7 +5005,7 @@ PCB_DIMENSION_BASE* PCB_IO_KICAD_SEXPR_PARSER::parseDIMENSION( BOARD_ITEM* aPare
                 dim->SetKeepTextAligned( false );
             }
 
-            parsePCB_TEXT( m_board, dim.get() );
+            dim.reset( static_cast<PCB_DIMENSION_BASE*>( parsePCB_TEXT( m_board, dim.release() ) ) );
 
             if( isLegacyDimension )
             {
@@ -5196,6 +5404,8 @@ FOOTPRINT* PCB_IO_KICAD_SEXPR_PARSER::parseFOOTPRINT_unchecked( wxArrayString* a
     T        token;
     LIB_ID   fpid;
     int      attributes = 0;
+    double   parsedScaleX = 1.0;
+    double   parsedScaleY = 1.0;
 
     std::unique_ptr<FOOTPRINT> footprint = std::make_unique<FOOTPRINT>( m_board );
 
@@ -5326,6 +5536,57 @@ FOOTPRINT* PCB_IO_KICAD_SEXPR_PARSER::parseFOOTPRINT_unchecked( wxArrayString* a
             }
 
             break;
+
+        case T_transform:
+        {
+            VECTOR2I  trsTranslate( 0, 0 );
+            EDA_ANGLE trsRotate = ANGLE_0;
+
+            for( token = NextTok(); token != T_RIGHT; token = NextTok() )
+            {
+                if( token != T_LEFT )
+                    Expecting( T_LEFT );
+
+                token = NextTok();
+
+                switch( token )
+                {
+                case T_translate:
+                    trsTranslate.x = parseBoardUnits( "translate X" );
+                    trsTranslate.y = parseBoardUnits( "translate Y" );
+                    NeedRIGHT();
+                    break;
+
+                case T_rotate:
+                    trsRotate = EDA_ANGLE( parseDouble( "rotate angle" ), DEGREES_T );
+                    NeedRIGHT();
+                    break;
+
+                case T_scale:
+                    parsedScaleX = parseDouble( "scale X" );
+                    parsedScaleY = parseDouble( "scale Y" );
+
+                    // Guard against corrupt files: a zero, negative, or non-finite
+                    // scale would make the footprint transform degenerate.
+                    if( !std::isfinite( parsedScaleX ) || parsedScaleX <= 0.0 )
+                        parsedScaleX = 1.0;
+
+                    if( !std::isfinite( parsedScaleY ) || parsedScaleY <= 0.0 )
+                        parsedScaleY = 1.0;
+
+                    NeedRIGHT();
+                    break;
+
+                default:
+                    Expecting( "translate, rotate, or scale" );
+                }
+            }
+
+            footprint->SetPosition( trsTranslate );
+            footprint->SetOrientation( trsRotate );
+            footprint->SetTransformScale( parsedScaleX, parsedScaleY );
+            break;
+        }
 
         case T_descr:
             NeedSYMBOLorNUMBER(); // some symbols can be 0508, so a number is also a symbol here
@@ -5965,12 +6226,30 @@ FOOTPRINT* PCB_IO_KICAD_SEXPR_PARSER::parseFOOTPRINT_unchecked( wxArrayString* a
                 break;
             }
 
+            // Legacy footprint zone outlines were in board frame. Convert to lib.
+            if( m_requiredVersion < FIRST_FP_AFFINE_TRANSFORM && zone->Outline() )
+            {
+                const TRANSFORM_TRS& xform = footprint->GetTransform();
+                SHAPE_POLY_SET&      poly = *zone->Outline();
+
+                for( auto it = poly.IterateWithHoles(); it; it++ )
+                    poly.SetVertex( it.GetIndex(), xform.InverseApply( *it ) );
+
+                // Hatch lines were cached in board frame; rebuild in lib frame so the
+                // footprint transform is not applied to them twice on render.
+                zone->HatchBorder();
+            }
+
             footprint->Add( zone, ADD_MODE::APPEND, true );
             break;
         }
 
         case T_group:
             parseGROUP( footprint.get() );
+            break;
+
+        case T_constraint:
+            parseCONSTRAINT( footprint.get() );
             break;
 
         case T_point:
@@ -6271,7 +6550,7 @@ PAD* PCB_IO_KICAD_SEXPR_PARSER::parsePAD( FOOTPRINT* aParent )
         case T_size:
             sz.x = parseBoardUnits( "width value" );
             sz.y = parseBoardUnits( "height value" );
-            pad->SetSize( PADSTACK::ALL_LAYERS, sz );
+            pad->SetLibSize( PADSTACK::ALL_LAYERS, sz );
             NeedRIGHT();
             break;
 
@@ -6281,12 +6560,19 @@ PAD* PCB_IO_KICAD_SEXPR_PARSER::parsePAD( FOOTPRINT* aParent )
             pad->SetFPRelativePosition( pt );
             token = NextTok();
 
+            // The pad angle in the file is a board frame absolute value. If it is
+            // missing, the pad is axis aligned regardless of the parent footprint
+            // orientation, matching the pre affine transform behavior.
             if( token == T_NUMBER )
             {
                 pad->SetOrientation( EDA_ANGLE( parseDouble(), DEGREES_T ) );
                 NeedRIGHT();
             }
-            else if( token != T_RIGHT )
+            else if( token == T_RIGHT )
+            {
+                pad->SetOrientation( ANGLE_0 );
+            }
+            else
             {
                 Expecting( ") or angle value" );
             }
@@ -6338,7 +6624,7 @@ PAD* PCB_IO_KICAD_SEXPR_PARSER::parsePAD( FOOTPRINT* aParent )
                 case T_offset:
                     pt.x = parseBoardUnits( "drill offset x" );
                     pt.y = parseBoardUnits( "drill offset y" );
-                    pad->SetOffset( PADSTACK::ALL_LAYERS, pt );
+                    pad->SetLibOffset( PADSTACK::ALL_LAYERS, pt );
                     NeedRIGHT();
                     break;
 
@@ -6352,9 +6638,9 @@ PAD* PCB_IO_KICAD_SEXPR_PARSER::parsePAD( FOOTPRINT* aParent )
             // through hole pad.  Wouldn't a though hole pad with no drill be a surface mount
             // pad (or a conn pad which is a smd pad with no solder paste)?
             if( pad->GetAttribute() != PAD_ATTRIB::SMD && pad->GetAttribute() != PAD_ATTRIB::CONN )
-                pad->SetDrillSize( drillSize );
+                pad->SetLibDrillSize( drillSize );
             else
-                pad->SetDrillSize( VECTOR2I( 0, 0 ) );
+                pad->SetLibDrillSize( VECTOR2I( 0, 0 ) );
 
             break;
         }
@@ -6523,6 +6809,21 @@ PAD* PCB_IO_KICAD_SEXPR_PARSER::parsePAD( FOOTPRINT* aParent )
             pad->SetPinType( FromUTF8() );
             NeedRIGHT();
             break;
+
+        case T_sim_electrical_type:
+        {
+            token = NextTok();
+
+            switch( token )
+            {
+            case T_source: pad->SetSimElectricalType( PAD_SIM_ELECTRICAL_TYPE::SOURCE ); break;
+            case T_sink: pad->SetSimElectricalType( PAD_SIM_ELECTRICAL_TYPE::SINK ); break;
+            default: Expecting( "sink or source" );
+            }
+
+            NeedRIGHT();
+            break;
+        }
 
         case T_die_length:
             pad->SetPadToDieLength( parseBoardUnits( T_die_length ) );
@@ -7049,7 +7350,7 @@ void PCB_IO_KICAD_SEXPR_PARSER::parsePadstack( PAD* aPad )
             }
 
             // Reset layer properties to default that are omitted when default in the formatter
-            aPad->SetOffset( curLayer, VECTOR2I( 0, 0 ) );
+            aPad->SetLibOffset( curLayer, VECTOR2I( 0, 0 ) );
             aPad->SetDelta( curLayer, VECTOR2I( 0, 0 ) );
 
             for( token = NextTok(); token != T_RIGHT; token = NextTok() )
@@ -7104,7 +7405,7 @@ void PCB_IO_KICAD_SEXPR_PARSER::parsePadstack( PAD* aPad )
                     VECTOR2I sz;
                     sz.x = parseBoardUnits( "width value" );
                     sz.y = parseBoardUnits( "height value" );
-                    aPad->SetSize( curLayer, sz );
+                    aPad->SetLibSize( curLayer, sz );
                     NeedRIGHT();
                     break;
                 }
@@ -7114,7 +7415,7 @@ void PCB_IO_KICAD_SEXPR_PARSER::parsePadstack( PAD* aPad )
                     VECTOR2I pt;
                     pt.x = parseBoardUnits( "drill offset x" );
                     pt.y = parseBoardUnits( "drill offset y" );
-                    aPad->SetOffset( curLayer, pt );
+                    aPad->SetLibOffset( curLayer, pt );
                     NeedRIGHT();
                     break;
                 }
@@ -7437,6 +7738,191 @@ void PCB_IO_KICAD_SEXPR_PARSER::parseGROUP( BOARD_ITEM* aParent )
         default:
             Expecting( "uuid, locked, lib_id, or members" );
         }
+    }
+}
+
+
+void PCB_IO_KICAD_SEXPR_PARSER::parseCONSTRAINT( BOARD_ITEM* aParent )
+{
+    wxCHECK_RET( CurTok() == T_constraint,
+                 wxT( "Cannot parse " ) + GetTokenString( CurTok() ) + wxT( " as PCB_CONSTRAINT." ) );
+
+    m_constraintInfos.push_back( CONSTRAINT_INFO() );
+    CONSTRAINT_INFO& info = m_constraintInfos.back();
+    info.parent = aParent;
+
+    for( T token = NextTok(); token != T_RIGHT; token = NextTok() )
+    {
+        if( token != T_LEFT )
+            Expecting( T_LEFT );
+
+        token = NextTok();
+
+        switch( token )
+        {
+        case T_type:
+            NextTok();
+            info.type = ConstraintTypeFromToken( FromUTF8() );
+            NeedRIGHT();
+            break;
+
+        case T_uuid:
+            NextTok();
+            info.uuid = CurStrToKIID();
+            NeedRIGHT();
+            break;
+
+        case T_members:
+            for( token = NextTok(); token != T_RIGHT; token = NextTok() )
+            {
+                if( token != T_LEFT )
+                    Expecting( T_LEFT );
+
+                if( NextTok() != T_member )
+                    Expecting( "member" );
+
+                NextTok();   // member uuid; resolved (and remapped on append) in resolveConstraints
+                KIID memberId( CurStr() );
+
+                NextTok();   // anchor token
+                CONSTRAINT_ANCHOR anchor = ConstraintAnchorFromToken( FromUTF8() );
+
+                // Only VERTEX may carry an ordinal and even then optional
+                // writer never emits one elsewhere so accepting one there breaks round-trip
+                int index = -1;
+
+                if( anchor == CONSTRAINT_ANCHOR::VERTEX )
+                {
+                    token = NextTok();
+
+                    if( token != T_RIGHT )
+                    {
+                        if( token != T_NUMBER )
+                            Expecting( "vertex index" );
+
+                        index = parseInt();
+                        NeedRIGHT();
+                    }
+                }
+                else
+                {
+                    NeedRIGHT();
+                }
+
+                info.members.emplace_back( memberId, anchor, index );
+            }
+
+            break;
+
+        case T_value:
+            NextTok();
+            info.value = parseDouble();
+            NeedRIGHT();
+            break;
+
+        case T_driving:
+            info.driving = parseBool();
+            NeedRIGHT();
+            break;
+
+        default:
+            Expecting( "type, uuid, members, value, or driving" );
+        }
+    }
+
+    // The value is written in mm for length/radius types; convert back to IU now that the type is
+    // known (independent of token order within the block).
+    if( info.value.has_value() && ConstraintValueIsLength( info.type ) )
+        info.value = *info.value * pcbIUScale.IU_PER_MM;
+}
+
+
+void PCB_IO_KICAD_SEXPR_PARSER::resolveConstraints( BOARD_ITEM* aParent )
+{
+    // Mirror resolveGroups: resolve every deferred constraint against the parsed items, adding
+    // each to its own recorded parent (a board parse also sees footprint-scoped constraints, so
+    // the resolution must not assume aParent owns them).
+    BOARD*     board = dynamic_cast<BOARD*>( aParent );
+    FOOTPRINT* footprint = board ? nullptr : dynamic_cast<FOOTPRINT*>( aParent );
+
+    std::unordered_map<KIID, BOARD_ITEM*> fpItemMap;
+
+    if( footprint )
+    {
+        footprint->RunOnChildren(
+                [&]( BOARD_ITEM* child )
+                {
+                    fpItemMap.insert( { child->m_Uuid, child } );
+                },
+                RECURSE_MODE::NO_RECURSE );
+    }
+
+    auto getItem =
+            [&]( const KIID& aId ) -> BOARD_ITEM*
+            {
+                if( board )
+                {
+                    const auto& cache = board->GetItemByIdCache();
+                    auto        it = cache.find( aId );
+
+                    return it != cache.end() ? it->second : nullptr;
+                }
+                else if( footprint )
+                {
+                    auto it = fpItemMap.find( aId );
+
+                    return it != fpItemMap.end() ? it->second : nullptr;
+                }
+
+                return nullptr;
+            };
+
+    for( const CONSTRAINT_INFO& info : m_constraintInfos )
+    {
+        std::unique_ptr<PCB_CONSTRAINT> constraint =
+                std::make_unique<PCB_CONSTRAINT>( info.parent, info.type );
+
+        constraint->SetUuidDirect( info.uuid );
+        constraint->SetValue( info.value );
+        constraint->SetDriving( info.driving );
+
+        for( const CONSTRAINT_MEMBER& member : info.members )
+        {
+            KIID resolvedId = member.m_item;
+
+            if( m_appendToExisting )
+            {
+                // Use the remapped uuid if this member's item was part of the appended content;
+                // otherwise keep the original (it will dangle as an error state).  find(), not
+                // operator[], so a miss does not pollute the remap with a nil entry.
+                auto remap = m_resetKIIDMap.find( member.m_item.AsString() );
+
+                if( remap != m_resetKIIDMap.end() )
+                    resolvedId = remap->second;
+            }
+
+            BOARD_ITEM* item = getItem( resolvedId );
+
+            // A member that resolves to an item in a different footprint scope is genuinely
+            // invalid and dropped.  A member that does not resolve at all (its item was deleted)
+            // is kept as a dangling reference: the constraint persists in an error state for the
+            // user to repair, rather than silently losing it (Zulip "Geometry Constraint Solver",
+            // 2026-06-18; supersedes the plan's drop-on-missing rule).
+            if( item )
+            {
+                if( item->GetParentFootprint() == constraint->GetParentFootprint() )
+                    constraint->AddMember( item->m_Uuid, member.m_anchor, member.m_index );
+            }
+            else
+            {
+                constraint->AddMember( resolvedId, member.m_anchor, member.m_index );
+            }
+        }
+
+        if( info.parent->Type() == PCB_FOOTPRINT_T )
+            static_cast<FOOTPRINT*>( info.parent )->Add( constraint.release(), ADD_MODE::INSERT, true );
+        else
+            static_cast<BOARD*>( info.parent )->Add( constraint.release(), ADD_MODE::INSERT, true );
     }
 }
 
@@ -8270,6 +8756,16 @@ ZONE* PCB_IO_KICAD_SEXPR_PARSER::parseZONE( BOARD_ITEM_CONTAINER* aParent )
 
     // This is the default for board files:
     zone->SetIslandRemovalMode( ISLAND_REMOVAL_MODE::ALWAYS );
+
+    // The ZONE ctor copies the board's default zone settings, but these tokens are
+    // omitted from the file when at their defaults. Reset them so appending into a
+    // live board (design block, paste) doesn't pick up its session defaults.
+    zone->SetPadConnection( ZONE_CONNECTION::THERMAL );
+    zone->SetFillMode( ZONE_FILL_MODE::POLYGONS );
+    zone->SetCornerSmoothingType( ZONE_SETTINGS::SMOOTHING_NONE );
+    zone->SetCornerRadius( 0 );
+    zone->SetHatchSmoothingLevel( 0 );
+    zone->SetLocked( false );
 
     for( token = NextTok();  token != T_RIGHT;  token = NextTok() )
     {

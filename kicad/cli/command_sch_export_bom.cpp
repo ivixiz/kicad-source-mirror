@@ -14,8 +14,8 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include "command_sch_export_bom.h"
@@ -114,6 +114,10 @@ CLI::SCH_EXPORT_BOM_COMMAND::SCH_EXPORT_BOM_COMMAND() : COMMAND( "bom" )
     m_argParser.add_argument( ARG_KEEP_LINE_BREAKS )
             .help( UTF8STDSTR( _( ARG_KEEP_LINE_BREAKS_DESC ) ) )
             .flag();
+
+    m_argParser.add_argument( ARG_INCLUDE_BYTE_ORDER_MARK )
+            .help( UTF8STDSTR( _( ARG_INCLUDE_BYTE_ORDER_MARK_DESC ) ) )
+            .flag();
 }
 
 
@@ -151,6 +155,7 @@ int CLI::SCH_EXPORT_BOM_COMMAND::doPerform( KIWAY& aKiway )
     bomJob->m_refRangeDelimiter = From_UTF8( m_argParser.get<std::string>( ARG_REF_RANGE_DELIMITER ).c_str() );
     bomJob->m_keepTabs = m_argParser.get<bool>( ARG_KEEP_TABS );
     bomJob->m_keepLineBreaks = m_argParser.get<bool>( ARG_KEEP_LINE_BREAKS );
+    bomJob->m_includeByteOrderMark = m_argParser.get<bool>( ARG_INCLUDE_BYTE_ORDER_MARK );
 
     // Output fields options
     bomJob->m_fieldsOrdered = convertStringList( From_UTF8( m_argParser.get<std::string>( ARG_FIELDS ).c_str() ) );

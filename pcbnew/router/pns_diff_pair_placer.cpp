@@ -15,8 +15,8 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include "pns_walkaround.h"
@@ -609,8 +609,7 @@ bool DIFF_PAIR_PLACER::FindDpPrimitivePair( NODE* aWorld, const VECTOR2I& aP, IT
 
 int DIFF_PAIR_PLACER::viaGap() const
 {
-    return std::max( m_sizes.DiffPairViaGap(),
-                     m_sizes.GetDiffPairHoleToHole() + m_sizes.ViaDrill() - m_sizes.ViaDiameter() );
+    return m_sizes.EffectiveDiffPairViaGap();
 }
 
 

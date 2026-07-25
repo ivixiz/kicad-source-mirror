@@ -15,11 +15,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 /*
@@ -42,6 +38,7 @@
 #include <pcb_shape.h>
 #include <macros.h>
 #include <algorithm>
+#include <cstdlib>
 #include <widgets/unit_binder.h>
 
 #include <tools/drawing_tool.h>
@@ -200,6 +197,10 @@ public:
 
         return true;
     }
+
+    int GetRectangleWidth() const { return std::abs( GetIntValue( END_X ) - GetIntValue( START_X ) ); }
+
+    int GetRectangleHeight() const { return std::abs( GetIntValue( END_Y ) - GetIntValue( START_Y ) ); }
 
     void updateAll() override
     {
@@ -1455,7 +1456,8 @@ bool DIALOG_SHAPE_PROPERTIES::Validate()
         if( m_fillCtrl->GetSelection() != UI_FILL_MODE::SOLID && m_thickness.GetValue() <= 0 )
             errors.Add( _( "Line width must be greater than zero for an unfilled rectangle." ) );
 
-        int shortSide = std::min( m_item->GetRectangleWidth(), m_item->GetRectangleHeight() );
+        const RECTANGLE_GEOM_SYNCER* rectGeomSync = static_cast<RECTANGLE_GEOM_SYNCER*>( m_geomSync.get() );
+        int shortSide = std::min( rectGeomSync->GetRectangleWidth(), rectGeomSync->GetRectangleHeight() );
 
         if( m_cbRoundRect->GetValue() && m_cornerRadius.GetIntValue() * 2 > shortSide )
         {

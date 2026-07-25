@@ -15,11 +15,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include <kiway.h>
@@ -48,6 +44,7 @@
 #include <sch_marker.h>
 #include <sch_rule_area.h>
 #include <sch_pin.h>
+#include <sch_sheet_path.h>
 #include <sch_sheet_pin.h>
 #include <sch_textbox.h>
 #include <sch_table.h>
@@ -75,6 +72,10 @@
 #include <wx/textdlg.h>
 #include <wx/msgdlg.h>
 #include <project/net_settings.h>
+#include <project_sch.h>
+#include <libraries/symbol_library_adapter.h>
+#include <symbol_library_common.h>
+#include <variant_symbol_utils.h>
 #include <tools/sch_tool_utils.h>
 
 
@@ -502,6 +503,27 @@ bool SCH_EDIT_TOOL::Init()
                 return checked > 0 && unchecked == 0;
             };
 
+    auto attribExcludeFromPosFilesCond = [this]( const SELECTION& aSel )
+    {
+        SCH_SHEET_PATH* sheet = &m_frame->GetCurrentSheet();
+        wxString        variant = m_frame->Schematic().GetCurrentVariant();
+        int             checked = 0;
+        int             unchecked = 0;
+
+        for( EDA_ITEM* item : aSel )
+        {
+            if( item->Type() == SCH_SYMBOL_T )
+            {
+                if( static_cast<const SCH_SYMBOL*>( item )->GetExcludedFromPosFiles( sheet, variant ) )
+                    checked++;
+                else
+                    unchecked++;
+            }
+        }
+
+        return checked > 0 && unchecked == 0;
+    };
+
     auto haveHighlight =
             [this]( const SELECTION& sel )
             {
@@ -731,6 +753,37 @@ bool SCH_EDIT_TOOL::Init()
 
     auto singleSheetCondition = S_C::Count( 1 ) && S_C::OnlyTypes( sheetTypes );
 
+    auto variantActiveCondition =
+            [this]( const SELECTION& aSel )
+            {
+                return !m_frame->Schematic().GetCurrentVariant().IsEmpty();
+            };
+
+    auto noVariantActiveCondition =
+            [this]( const SELECTION& aSel )
+            {
+                return m_frame->Schematic().GetCurrentVariant().IsEmpty();
+            };
+
+    auto symbolHasVariantSymbol =
+            [this]( const SELECTION& aSel )
+            {
+                if( m_frame->Schematic().GetCurrentVariant().IsEmpty() || aSel.GetSize() != 1 )
+                    return false;
+
+                SCH_SYMBOL* sym = dynamic_cast<SCH_SYMBOL*>( aSel.Front() );
+
+                if( !sym )
+                    return false;
+
+                SCH_SHEET_PATH& sheet = m_frame->GetCurrentSheet();
+
+                std::optional<SCH_SYMBOL_VARIANT> variant =
+                        sym->GetVariant( sheet, m_frame->Schematic().GetCurrentVariant() );
+
+                return variant.has_value() && variant->m_SymbolOverride.has_value();
+            };
+
     auto makeSymbolUnitMenu =
             [&]( TOOL_INTERACTIVE* tool )
             {
@@ -787,10 +840,11 @@ bool SCH_EDIT_TOOL::Init()
                 CONDITIONAL_MENU* menu = new CONDITIONAL_MENU( moveTool );
                 menu->SetUntranslatedTitle( _HKI( "Attributes" ) );
 
-                menu->AddCheckItem( SCH_ACTIONS::setExcludeFromSim,   S_C::ShowAlways );
-                menu->AddCheckItem( SCH_ACTIONS::setExcludeFromBOM,   S_C::ShowAlways );
+                menu->AddCheckItem( SCH_ACTIONS::setExcludeFromSim, S_C::ShowAlways );
+                menu->AddCheckItem( SCH_ACTIONS::setExcludeFromBOM, S_C::ShowAlways );
                 menu->AddCheckItem( SCH_ACTIONS::setExcludeFromBoard, S_C::ShowAlways );
-                menu->AddCheckItem( SCH_ACTIONS::setDNP,              S_C::ShowAlways );
+                menu->AddCheckItem( SCH_ACTIONS::setExcludeFromPosFiles, S_C::HasType( SCH_SYMBOL_T ) );
+                menu->AddCheckItem( SCH_ACTIONS::setDNP, S_C::ShowAlways );
 
                 return menu;
             };
@@ -914,11 +968,18 @@ bool SCH_EDIT_TOOL::Init()
     selToolMenu.AddItem( SCH_ACTIONS::autoplaceFields, autoplaceCondition, 200 );
 
     selToolMenu.AddItem( SCH_ACTIONS::editWithLibEdit, S_C::SingleSymbolOrPower && S_C::Idle, 200 );
-    selToolMenu.AddItem( SCH_ACTIONS::changeSymbol,    S_C::SingleSymbolOrPower, 200 );
-    selToolMenu.AddItem( SCH_ACTIONS::updateSymbol,    S_C::SingleSymbolOrPower, 200 );
-    selToolMenu.AddItem( SCH_ACTIONS::changeSymbols,   S_C::MultipleSymbolsOrPower, 200 );
-    selToolMenu.AddItem( SCH_ACTIONS::updateSymbols,   S_C::MultipleSymbolsOrPower, 200 );
-    selToolMenu.AddMenu( makeConvertToMenu(),          toChangeCondition, 200 );
+    selToolMenu.AddItem( SCH_ACTIONS::changeSymbol,
+                         S_C::SingleSymbolOrPower && noVariantActiveCondition, 200 );
+    selToolMenu.AddItem( SCH_ACTIONS::updateSymbol, S_C::SingleSymbolOrPower, 200 );
+    selToolMenu.AddItem( SCH_ACTIONS::changeSymbols,
+                         S_C::MultipleSymbolsOrPower && noVariantActiveCondition, 200 );
+    selToolMenu.AddItem( SCH_ACTIONS::updateSymbols, S_C::MultipleSymbolsOrPower, 200 );
+
+    selToolMenu.AddItem( SCH_ACTIONS::setVariantSymbol,
+                         S_C::SingleSymbolOrPower && variantActiveCondition, 200 );
+    selToolMenu.AddItem( SCH_ACTIONS::clearVariantSymbol,
+                         symbolHasVariantSymbol, 200 );
+    selToolMenu.AddMenu( makeConvertToMenu(), toChangeCondition, 200 );
 
     selToolMenu.AddItem( SCH_ACTIONS::cleanupSheetPins, sheetHasUndefinedPins, 250 );
     selToolMenu.AddMenu( makeLockMenu( m_selectionTool ), S_C::NotEmpty, 250 );
@@ -938,10 +999,12 @@ bool SCH_EDIT_TOOL::Init()
 
     ACTION_MANAGER* mgr = m_toolMgr->GetActionManager();
 
-    mgr->SetConditions( SCH_ACTIONS::setDNP,              ACTION_CONDITIONS().Check( attribDNPCond ) );
-    mgr->SetConditions( SCH_ACTIONS::setExcludeFromSim,   ACTION_CONDITIONS().Check( attribExcludeFromSimCond ) );
-    mgr->SetConditions( SCH_ACTIONS::setExcludeFromBOM,   ACTION_CONDITIONS().Check( attribExcludeFromBOMCond ) );
+    mgr->SetConditions( SCH_ACTIONS::setDNP, ACTION_CONDITIONS().Check( attribDNPCond ) );
+    mgr->SetConditions( SCH_ACTIONS::setExcludeFromSim, ACTION_CONDITIONS().Check( attribExcludeFromSimCond ) );
+    mgr->SetConditions( SCH_ACTIONS::setExcludeFromBOM, ACTION_CONDITIONS().Check( attribExcludeFromBOMCond ) );
     mgr->SetConditions( SCH_ACTIONS::setExcludeFromBoard, ACTION_CONDITIONS().Check( attribExcludeFromBoardCond ) );
+    mgr->SetConditions( SCH_ACTIONS::setExcludeFromPosFiles,
+                        ACTION_CONDITIONS().Check( attribExcludeFromPosFilesCond ) );
 
     return true;
 }
@@ -2235,21 +2298,23 @@ int SCH_EDIT_TOOL::RepeatDrawItem( const TOOL_EVENT& aEvent )
         else
         {
             newItems.Add( newItem );
-
-            SCH_LINE_WIRE_BUS_TOOL* lwbTool = m_toolMgr->GetTool<SCH_LINE_WIRE_BUS_TOOL>();
-            lwbTool->TrimOverLappingWires( &commit, &newItems );
-            lwbTool->AddJunctionsIfNeeded( &commit, &newItems );
-
-            m_frame->Schematic().CleanUp( &commit );
-            commit.Push( _( "Repeat Item" ) );
         }
     }
 
     if( !newItems.Empty() )
+    {
+        SCH_LINE_WIRE_BUS_TOOL* lwbTool = m_toolMgr->GetTool<SCH_LINE_WIRE_BUS_TOOL>();
+        lwbTool->TrimOverLappingWires( &commit, &newItems );
+        lwbTool->AddJunctionsIfNeeded( &commit, &newItems );
+
+        m_frame->Schematic().CleanUp( &commit );
+        commit.Push( _( "Repeat Item" ) );
+
         m_frame->SaveCopyForRepeatItem( static_cast<SCH_ITEM*>( newItems[0] ) );
 
-    for( size_t ii = 1; ii < newItems.GetSize(); ++ii )
-        m_frame->AddCopyForRepeatItem( static_cast<SCH_ITEM*>( newItems[ii] ) );
+        for( size_t ii = 1; ii < newItems.GetSize(); ++ii )
+            m_frame->AddCopyForRepeatItem( static_cast<SCH_ITEM*>( newItems[ii] ) );
+    }
 
     return 0;
 }
@@ -2659,12 +2724,188 @@ int SCH_EDIT_TOOL::ChangeSymbols( const TOOL_EVENT& aEvent )
     DIALOG_CHANGE_SYMBOLS::MODE mode = DIALOG_CHANGE_SYMBOLS::MODE::UPDATE;
 
     if( aEvent.IsAction( &SCH_ACTIONS::changeSymbol ) || aEvent.IsAction( &SCH_ACTIONS::changeSymbols ) )
+    {
+        // Exchanging the base symbol under an active variant would rewrite all variants
+        // while the canvas shows variant-resolved values, so require the default variant.
+        if( !m_frame->Schematic().GetCurrentVariant().IsEmpty() )
+        {
+            DisplayInfoMessage( m_frame,
+                    _( "Change Symbol is not available when a design variant is active. "
+                       "Use Set Variant Symbol or switch to the default variant first." ) );
+            return 0;
+        }
+
         mode = DIALOG_CHANGE_SYMBOLS::MODE::CHANGE;
+    }
 
     DIALOG_CHANGE_SYMBOLS dlg( m_frame, selectedSymbol, mode );
 
     // QuasiModal required to invoke symbol browser
     dlg.ShowQuasiModal();
+
+    if( selection.IsHover() )
+        m_toolMgr->RunAction( ACTIONS::selectionClear );
+
+    return 0;
+}
+
+
+int SCH_EDIT_TOOL::SetVariantSymbol( const TOOL_EVENT& aEvent )
+{
+    SCH_SELECTION& selection = m_selectionTool->RequestSelection( { SCH_SYMBOL_T } );
+
+    if( selection.Empty() )
+        return 0;
+
+    SCH_SYMBOL* symbol = dynamic_cast<SCH_SYMBOL*>( selection.Front() );
+
+    if( !symbol )
+        return 0;
+
+    wxString variantName = m_frame->Schematic().GetCurrentVariant();
+
+    if( variantName.IsEmpty() )
+        return 0;
+
+    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &m_frame->Prj() );
+
+    if( !adapter )
+        return 0;
+
+    const LIB_SYMBOL*           baseSymbol = symbol->GetLibSymbolRef().get();
+    std::shared_ptr<LIB_SYMBOL> baseFlat;
+    SYMBOL_COMPAT_FUNC          compatFunc;
+
+    if( baseSymbol )
+    {
+        // The flattened copy is shared with the callback so its lifetime cannot be cut
+        // short by schematic changes while the chooser is open.
+        baseFlat = baseSymbol->Flatten();
+
+        compatFunc =
+                [baseFlat, adapter]( const LIB_ID& aCandidate )
+                        -> std::vector<VARIANT_COMPAT_RESULT>
+                {
+                    try
+                    {
+                        if( LIB_SYMBOL* raw = adapter->LoadSymbol( aCandidate ) )
+                        {
+                            std::unique_ptr<LIB_SYMBOL> flat = raw->Flatten();
+                            return ValidateVariantSymbolCompatibility( *baseFlat, *flat );
+                        }
+                    }
+                    catch( const IO_ERROR& )
+                    {
+                    }
+
+                    return {};
+                };
+    }
+
+    SYMBOL_LIBRARY_FILTER         filter;
+    std::vector<PICKED_SYMBOL>    historyList;
+    std::vector<PICKED_SYMBOL>    alreadyPlaced;
+
+    PICKED_SYMBOL picked = m_frame->PickSymbolFromLibrary( &filter, historyList, alreadyPlaced, true,
+                                                           &symbol->GetLibId(), false, compatFunc );
+
+    if( !picked.LibId.IsValid() )
+        return 0;
+
+    LIB_SYMBOL* candidateRaw = nullptr;
+
+    try
+    {
+        candidateRaw = adapter->LoadSymbol( picked.LibId );
+    }
+    catch( const IO_ERROR& )
+    {
+        wxString symLabel =
+                picked.LibId.Format().empty() ? picked.LibId.GetLibItemName().wx_str() : picked.LibId.Format().wx_str();
+
+        DisplayErrorMessage( m_frame, wxString::Format(
+                _( "Could not load symbol '%s' from library." ), symLabel ) );
+        return 0;
+    }
+
+    if( !candidateRaw )
+        return 0;
+
+    std::unique_ptr<LIB_SYMBOL> candidateFlat = candidateRaw->Flatten();
+
+    if( baseFlat )
+    {
+        std::vector<VARIANT_COMPAT_RESULT> issues =
+                ValidateVariantSymbolCompatibility( *baseFlat, *candidateFlat );
+
+        if( !issues.empty() )
+        {
+            wxString msg = wxString::Format(
+                    _( "The selected symbol '%s' is not pin-compatible with the base symbol "
+                       "'%s'.\n\n" ),
+                    picked.LibId.Format().wx_str(),
+                    symbol->GetLibId().Format().wx_str() );
+
+            for( const VARIANT_COMPAT_RESULT& issue : issues )
+                msg += wxS( "\u2022 " ) + issue.detail + wxS( "\n" );
+
+            msg += wxS( "\n" ) + _( "Choose a symbol with equivalent pins and pin positions." );
+            wxMessageBox( msg, _( "Variant Symbol Compatibility" ), wxOK | wxICON_ERROR, m_frame );
+            return 0;
+        }
+    }
+
+    SCH_COMMIT      commit( m_toolMgr );
+    SCH_SHEET_PATH& currentSheet = m_frame->GetCurrentSheet();
+
+    commit.Modify( symbol, m_frame->GetScreen() );
+
+    symbol->SetVariantSymbolOverride( currentSheet, variantName, picked.LibId );
+    symbol->ClearCaches();
+
+    commit.Push( _( "Set Variant Symbol" ) );
+    m_frame->GetCanvas()->Refresh();
+
+    if( selection.IsHover() )
+        m_toolMgr->RunAction( ACTIONS::selectionClear );
+
+    return 0;
+}
+
+
+int SCH_EDIT_TOOL::ClearVariantSymbol( const TOOL_EVENT& aEvent )
+{
+    SCH_SELECTION& selection = m_selectionTool->RequestSelection( { SCH_SYMBOL_T } );
+
+    if( selection.Empty() )
+        return 0;
+
+    SCH_SYMBOL* symbol = dynamic_cast<SCH_SYMBOL*>( selection.Front() );
+
+    if( !symbol )
+        return 0;
+
+    wxString variantName = m_frame->Schematic().GetCurrentVariant();
+
+    if( variantName.IsEmpty() )
+        return 0;
+
+    SCH_SHEET_PATH& currentSheet = m_frame->GetCurrentSheet();
+
+    std::optional<SCH_SYMBOL_VARIANT> existingVariant =
+            symbol->GetVariant( currentSheet, variantName );
+
+    if( !existingVariant || !existingVariant->m_SymbolOverride.has_value() )
+        return 0;
+
+    SCH_COMMIT commit( m_toolMgr );
+    commit.Modify( symbol, m_frame->GetScreen() );
+
+    symbol->ClearVariantSymbolOverride( currentSheet, variantName );
+    symbol->ClearCaches();
+
+    commit.Push( _( "Clear Variant Symbol" ) );
+    m_frame->GetCanvas()->Refresh();
 
     if( selection.IsHover() )
         m_toolMgr->RunAction( ACTIONS::selectionClear );
@@ -2907,6 +3148,14 @@ void SCH_EDIT_TOOL::EditProperties( EDA_ITEM* aItem )
             DIALOG_CHANGE_SYMBOLS dlg( m_frame, symbol, DIALOG_CHANGE_SYMBOLS::MODE::CHANGE );
             dlg.ShowQuasiModal();
         }
+        else if( retval == SYMBOL_PROPS_WANT_SET_VARIANT_SYMBOL )
+        {
+            m_toolMgr->RunAction( SCH_ACTIONS::setVariantSymbol );
+        }
+        else if( retval == SYMBOL_PROPS_WANT_CLEAR_VARIANT_SYMBOL )
+        {
+            m_toolMgr->RunAction( SCH_ACTIONS::clearVariantSymbol );
+        }
 
         break;
     }
@@ -2938,6 +3187,9 @@ void SCH_EDIT_TOOL::EditProperties( EDA_ITEM* aItem )
             }
             else
             {
+                // The sheet file change invalidated the undo/redo list.
+                m_frame->ClearUndoRedoList();
+
                 std::vector<SCH_ITEM*> items;
 
                 items.emplace_back( sheet );
@@ -2947,12 +3199,6 @@ void SCH_EDIT_TOOL::EditProperties( EDA_ITEM* aItem )
                 m_frame->Schematic().RefreshHierarchy();
                 m_frame->UpdateHierarchyNavigator();
             }
-        }
-        else
-        {
-            // If we are renaming files, the undo/redo list becomes invalid and must be cleared.
-            m_frame->ClearUndoRedoList();
-            m_frame->OnModify();
         }
 
         // If the sheet file is changed and new sheet contents are loaded then we have to
@@ -3671,7 +3917,10 @@ int SCH_EDIT_TOOL::DdAddImage( const TOOL_EVENT& aEvent )
 
 int SCH_EDIT_TOOL::SetAttribute( const TOOL_EVENT& aEvent )
 {
-    SCH_SELECTION& selection = m_selectionTool->RequestSelection( { SCH_SYMBOL_T, SCH_SHEET_T, SCH_RULE_AREA_T } );
+    SCH_SELECTION& selection =
+            aEvent.IsAction( &SCH_ACTIONS::setExcludeFromPosFiles )
+                    ? m_selectionTool->RequestSelection( { SCH_SYMBOL_T } )
+                    : m_selectionTool->RequestSelection( { SCH_SYMBOL_T, SCH_SHEET_T, SCH_RULE_AREA_T } );
     std::set<std::pair<SCH_ITEM*, SCH_SCREEN*>> collectedItems;
 
     for( EDA_ITEM* item : selection )
@@ -3717,10 +3966,12 @@ int SCH_EDIT_TOOL::SetAttribute( const TOOL_EVENT& aEvent )
 
     for( const auto& [item, _] : collectedItems )
     {
-        if( ( aEvent.IsAction( &SCH_ACTIONS::setDNP )              && !item->GetDNP( sheet, variant ) )
-         || ( aEvent.IsAction( &SCH_ACTIONS::setExcludeFromSim )   && !item->GetExcludedFromSim( sheet, variant ) )
-         || ( aEvent.IsAction( &SCH_ACTIONS::setExcludeFromBOM )   && !item->GetExcludedFromBOM( sheet, variant ) )
-         || ( aEvent.IsAction( &SCH_ACTIONS::setExcludeFromBoard ) && !item->GetExcludedFromBoard( sheet, variant ) ) )
+        if( ( aEvent.IsAction( &SCH_ACTIONS::setDNP ) && !item->GetDNP( sheet, variant ) )
+            || ( aEvent.IsAction( &SCH_ACTIONS::setExcludeFromSim ) && !item->GetExcludedFromSim( sheet, variant ) )
+            || ( aEvent.IsAction( &SCH_ACTIONS::setExcludeFromBOM ) && !item->GetExcludedFromBOM( sheet, variant ) )
+            || ( aEvent.IsAction( &SCH_ACTIONS::setExcludeFromBoard ) && !item->GetExcludedFromBoard( sheet, variant ) )
+            || ( aEvent.IsAction( &SCH_ACTIONS::setExcludeFromPosFiles )
+                 && !item->GetExcludedFromPosFiles( sheet, variant ) ) )
         {
             new_state = true;
             break;
@@ -3742,6 +3993,9 @@ int SCH_EDIT_TOOL::SetAttribute( const TOOL_EVENT& aEvent )
 
         if( aEvent.IsAction( &SCH_ACTIONS::setExcludeFromBoard ) )
             item->SetExcludedFromBoard( new_state, sheet, variant );
+
+        if( aEvent.IsAction( &SCH_ACTIONS::setExcludeFromPosFiles ) )
+            item->SetExcludedFromPosFiles( new_state, sheet, variant );
     }
 
     if( !commit.Empty() )
@@ -3779,6 +4033,10 @@ wxString SCH_EDIT_TOOL::FixERCErrorMenuText( const std::shared_ptr<RC_ITEM>& aER
     {
         return _( "Edit Netclasses..." );
     }
+    else if( aERCItem->GetErrorCode() == ERCE_EMPTY_LABEL_NAME )
+    {
+        return _( "Remove Empty Label" );
+    }
 
     return wxEmptyString;
 }
@@ -3807,7 +4065,7 @@ void SCH_EDIT_TOOL::FixERCError( const std::shared_ptr<RC_ITEM>& aERCItem )
 
         if( SCH_SYMBOL* symbol = dynamic_cast<SCH_SYMBOL*>( item ) )
         {
-            DIALOG_CHANGE_SYMBOLS dlg( frame, symbol, DIALOG_CHANGE_SYMBOLS::MODE::CHANGE );
+            DIALOG_CHANGE_SYMBOLS dlg( frame, symbol, DIALOG_CHANGE_SYMBOLS::MODE::UPDATE );
             dlg.ShowQuasiModal();
         }
     }
@@ -3819,6 +4077,20 @@ void SCH_EDIT_TOOL::FixERCError( const std::shared_ptr<RC_ITEM>& aERCItem )
     else if( aERCItem->GetErrorCode() == ERCE_UNDEFINED_NETCLASS )
     {
         frame->ShowSchematicSetupDialog( _( "Net Classes" ) );
+    }
+    else if( aERCItem->GetErrorCode() == ERCE_EMPTY_LABEL_NAME )
+    {
+        SCH_SHEET_PATH sheetPath;
+        SCH_ITEM*      item = frame->Schematic().ResolveItem( aERCItem->GetMainItemID(), &sheetPath, true );
+
+        if( SCH_LABEL_BASE* label = dynamic_cast<SCH_LABEL_BASE*>( item ) )
+        {
+            m_toolMgr->RunAction( ACTIONS::selectionClear );
+
+            SCH_COMMIT commit( m_toolMgr );
+            commit.Remove( label, sheetPath.LastScreen() );
+            commit.Push( _( "Remove Empty Label" ) );
+        }
     }
 }
 
@@ -3925,6 +4197,8 @@ void SCH_EDIT_TOOL::setTransitions()
     Go( &SCH_EDIT_TOOL::ChangeSymbols,      SCH_ACTIONS::updateSymbols.MakeEvent() );
     Go( &SCH_EDIT_TOOL::ChangeSymbols,      SCH_ACTIONS::changeSymbol.MakeEvent() );
     Go( &SCH_EDIT_TOOL::ChangeSymbols,      SCH_ACTIONS::updateSymbol.MakeEvent() );
+    Go( &SCH_EDIT_TOOL::SetVariantSymbol,   SCH_ACTIONS::setVariantSymbol.MakeEvent() );
+    Go( &SCH_EDIT_TOOL::ClearVariantSymbol, SCH_ACTIONS::clearVariantSymbol.MakeEvent() );
     Go( &SCH_EDIT_TOOL::CycleBodyStyle,     SCH_ACTIONS::cycleBodyStyle.MakeEvent() );
     Go( &SCH_EDIT_TOOL::ChangeTextType,     SCH_ACTIONS::toLabel.MakeEvent() );
     Go( &SCH_EDIT_TOOL::ChangeTextType,     SCH_ACTIONS::toHLabel.MakeEvent() );
@@ -3940,6 +4214,7 @@ void SCH_EDIT_TOOL::setTransitions()
     Go( &SCH_EDIT_TOOL::SetAttribute,       SCH_ACTIONS::setDNP.MakeEvent() );
     Go( &SCH_EDIT_TOOL::SetAttribute,       SCH_ACTIONS::setExcludeFromBOM.MakeEvent() );
     Go( &SCH_EDIT_TOOL::SetAttribute,       SCH_ACTIONS::setExcludeFromBoard.MakeEvent() );
+    Go( &SCH_EDIT_TOOL::SetAttribute,       SCH_ACTIONS::setExcludeFromPosFiles.MakeEvent() );
     Go( &SCH_EDIT_TOOL::SetAttribute,       SCH_ACTIONS::setExcludeFromSim.MakeEvent() );
 
     Go( &SCH_EDIT_TOOL::ToggleLock,         SCH_ACTIONS::toggleLock.MakeEvent() );

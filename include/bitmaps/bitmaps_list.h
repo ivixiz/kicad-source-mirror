@@ -15,11 +15,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef BITMAPS_PNG_BITMAPS_LIST__H
@@ -732,6 +728,26 @@ enum class BITMAPS : unsigned int
     constraint_permitted_layers,
     constraint_allowed_orientation,
     constraint_vias_under_smd,
+
+    constraint_coincident,
+    constraint_horizontal,
+    constraint_vertical,
+    constraint_parallel,
+    constraint_perpendicular,
+    constraint_collinear,
+    constraint_symmetric,
+    constraint_equal_length,
+    constraint_equal_radius,
+    constraint_point_on_line,
+    constraint_midpoint,
+    constraint_fixed_position,
+    constraint_fixed_length,
+    constraint_concentric,
+    constraint_fixed_radius,
+    constraint_angular_dimension,
+    constraint_tangent,
+    constraint_arc_angle,
+    constraint_auto,
     add_scope,
     hide_excluded_from_simulation,
 };

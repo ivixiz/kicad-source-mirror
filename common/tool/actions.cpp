@@ -15,11 +15,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include <bitmaps.h>
@@ -606,6 +602,22 @@ TOOL_ACTION ACTIONS::pointEditorArcKeepRadius( TOOL_ACTION_ARGS()
         .FriendlyName( _( "Keep Arc Radius and Center, adjust angle" ) )
         .Tooltip( _( "Switch arc editing mode to maintaining radius when endpoint are moved" ) )
         .Parameter( ARC_EDIT_MODE::KEEP_CENTER_ENDS_ADJUST_ANGLE ) );
+
+TOOL_ACTION ACTIONS::arcPosture( TOOL_ACTION_ARGS()
+        .Name( "common.InteractiveDrawing.arcPosture" )
+        .Scope( AS_GLOBAL )
+        .DefaultHotkey( '/' )
+        .LegacyHotkeyName( "Switch Track Posture" )
+        .FriendlyName( _( "Switch Arc Posture" ) )
+        .Tooltip( _( "Switch arc posture between clockwise and counter-clockwise" ) ) );
+
+TOOL_ACTION ACTIONS::deleteLastPoint( TOOL_ACTION_ARGS()
+        .Name( "common.InteractiveDrawing.deleteLastPoint" )
+        .Scope( AS_GLOBAL )
+        .DefaultHotkey( WXK_BACK )
+        .FriendlyName( _( "Delete Last Point" ) )
+        .Tooltip( _( "Delete the last point added to the current item" ) )
+        .Icon( BITMAPS::undo ) );
 
 TOOL_ACTION ACTIONS::cycleArcEditMode( TOOL_ACTION_ARGS()
         .Name( "common.Interactive.cycleArcEditMode" )

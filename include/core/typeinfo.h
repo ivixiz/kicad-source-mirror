@@ -16,11 +16,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef __KICAD_TYPEINFO_H
@@ -239,6 +235,7 @@ enum KICAD_T
     // (IPC clients with stale protobuf-generated headers depend on stable values).
     PCB_SHAPE_LOCATE_ELLIPSE_T,
     PCB_SHAPE_LOCATE_ELLIPSE_ARC_T,
+    PCB_CONSTRAINT_T,      ///< class PCB_CONSTRAINT, a geometric constraint between board items
 
     // End value
     MAX_STRUCT_TYPE_ID
@@ -490,6 +487,7 @@ constexpr bool IsPcbnewType( const KICAD_T aType )
     case PCB_SHAPE_LOCATE_ELLIPSE_T:
     case PCB_SHAPE_LOCATE_ELLIPSE_ARC_T:
     case PCB_BOARD_OUTLINE_T:
+    case PCB_CONSTRAINT_T:
         return true;
 
     default:

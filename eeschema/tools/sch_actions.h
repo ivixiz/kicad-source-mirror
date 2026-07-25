@@ -15,11 +15,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #pragma once
@@ -104,7 +100,6 @@ public:
     static TOOL_ACTION undoLastSegment;
     static TOOL_ACTION switchSegmentPosture;
     static TOOL_ACTION drawRuleArea;
-    static TOOL_ACTION deleteLastPoint;
     static TOOL_ACTION closeOutline;
 
     // Symbol Tools
@@ -161,6 +156,7 @@ public:
     static TOOL_ACTION showLibFieldsTable;
     static TOOL_ACTION showRelatedLibFieldsTable;
     static TOOL_ACTION symbolProperties;
+    static TOOL_ACTION editSymbolPinMaps;
     static TOOL_ACTION pinTable;
     static TOOL_ACTION convertStackedPins;
     static TOOL_ACTION explodeStackedPin;
@@ -168,6 +164,8 @@ public:
     static TOOL_ACTION updateSymbols;
     static TOOL_ACTION changeSymbol;
     static TOOL_ACTION updateSymbol;
+    static TOOL_ACTION setVariantSymbol;
+    static TOOL_ACTION clearVariantSymbol;
     static TOOL_ACTION assignFootprints;
     static TOOL_ACTION assignNetclass;
     static TOOL_ACTION findNetInInspector;
@@ -175,6 +173,8 @@ public:
     static TOOL_ACTION editPageNumber;
     static TOOL_ACTION checkSymbol;
     static TOOL_ACTION diffSymbol;
+    static TOOL_ACTION compareSchematicWithFile;
+    static TOOL_ACTION compareSchematicWithHistory;
     static TOOL_ACTION showBusSyntaxHelp;
 
     static TOOL_ACTION rescueSymbols;
@@ -199,11 +199,14 @@ public:
     static TOOL_ACTION addVariant;
     static TOOL_ACTION removeVariant;
     static TOOL_ACTION editVariantDescription;
+    static TOOL_ACTION renameVariant;
+    static TOOL_ACTION copyVariant;
 
     // Attribute Toggles
     static TOOL_ACTION setExcludeFromBOM;
     static TOOL_ACTION setExcludeFromSim;
     static TOOL_ACTION setExcludeFromBoard;
+    static TOOL_ACTION setExcludeFromPosFiles;
     static TOOL_ACTION setDNP;
 
     // Design Block management
@@ -218,6 +221,7 @@ public:
 
     // Library management
     static TOOL_ACTION saveLibraryAs;
+    static TOOL_ACTION compareLibraryWithFile;
     static TOOL_ACTION saveSymbolAs;
     static TOOL_ACTION saveSymbolCopyAs;
     static TOOL_ACTION newSymbol;
@@ -233,6 +237,11 @@ public:
     static TOOL_ACTION exportSymbol;
     static TOOL_ACTION updateSymbolFields;
     static TOOL_ACTION flattenSymbol;
+
+    // Symbol Editor document tabs
+    static TOOL_ACTION nextSymbolTab;
+    static TOOL_ACTION prevSymbolTab;
+    static TOOL_ACTION closeSymbolTab;
 
     // Hierarchy navigation
     static TOOL_ACTION changeSheet;
@@ -310,6 +319,7 @@ public:
     static TOOL_ACTION toggleSimSidePanel;
     static TOOL_ACTION toggleLegend;
     static TOOL_ACTION toggleDottedSecondary;
+    static TOOL_ACTION toggleSmithChart;
     static TOOL_ACTION toggleDarkModePlots;
     static TOOL_ACTION simAnalysisProperties;
     static TOOL_ACTION runSimulation;
@@ -341,6 +351,8 @@ public:
         SCH_SYMBOL* m_Symbol = nullptr;
         ///< If a symbol is provide, reannotate it?
         bool m_Reannotate = true;
+        ///< For a preselected multi-unit symbol, keep placing remaining units instead of exiting
+        bool m_PlaceAllUnits = false;
     };
 
     struct PLACE_SYMBOL_UNIT_PARAMS

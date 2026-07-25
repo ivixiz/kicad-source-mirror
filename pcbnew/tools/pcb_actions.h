@@ -17,15 +17,13 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef __PCB_ACTIONS_H
 #define __PCB_ACTIONS_H
+
+#include <vector>
 
 #include <layer_ids.h>
 #include <tool/tool_action.h>
@@ -230,7 +228,6 @@ public:
     static TOOL_ACTION placeFootprint;
     static TOOL_ACTION placeImportedGraphics;
     static TOOL_ACTION setAnchor;
-    static TOOL_ACTION deleteLastPoint;
 
     // Line mode grouping and events
     static TOOL_ACTION lineModeFree;         ///< Unconstrained angle mode (icon lines_any)
@@ -245,9 +242,6 @@ public:
 
     /// Decrease width of currently drawn line
     static TOOL_ACTION decWidth;
-
-    /// Switch posture when drawing arc
-    static TOOL_ACTION arcPosture;
 
     /// Switch between dimension arrow directions
     static TOOL_ACTION changeDimensionArrows;
@@ -478,6 +472,9 @@ public:
     static TOOL_ACTION editFpInFpEditor;
     static TOOL_ACTION editLibFpInFpEditor;
 
+    static TOOL_ACTION toggleExcludeFromBOM;
+    static TOOL_ACTION toggleExcludeFromPosFiles;
+
     static TOOL_ACTION showLayersManager;
     static TOOL_ACTION showNetInspector;
     static TOOL_ACTION zonesManager;
@@ -514,6 +511,7 @@ public:
     static TOOL_ACTION importFootprint;
     static TOOL_ACTION exportFootprint;
 
+    static TOOL_ACTION compareFpLibraryWithFile;
     static TOOL_ACTION footprintProperties;
     static TOOL_ACTION defaultPadProperties;
     static TOOL_ACTION padTable;
@@ -583,9 +581,17 @@ public:
     static TOOL_ACTION boardReannotate;
     static TOOL_ACTION repairBoard;
     static TOOL_ACTION repairFootprint;
+
+    // Footprint Editor document tabs
+    static TOOL_ACTION nextFootprintTab;
+    static TOOL_ACTION prevFootprintTab;
+    static TOOL_ACTION closeFootprintTab;
+
     static TOOL_ACTION inspectClearance;
     static TOOL_ACTION inspectConstraints;
     static TOOL_ACTION diffFootprint;
+    static TOOL_ACTION compareBoardWithFile;
+    static TOOL_ACTION compareBoardWithHistory;
     static TOOL_ACTION showFootprintAssociations;
     static TOOL_ACTION collect3DModels;
 
@@ -626,6 +632,37 @@ public:
     static TOOL_ACTION convertToArc;
     static TOOL_ACTION convertToTracks;
 
+    // Geometric constraints (#2329).  Each per-type action bakes its PCB_CONSTRAINT_TYPE parameter
+    // for menu items and hotkeys.
+    static TOOL_ACTION addConstraintParallel;
+    static TOOL_ACTION addConstraintPerpendicular;
+    static TOOL_ACTION addConstraintEqualLength;
+    static TOOL_ACTION addConstraintCollinear;
+    static TOOL_ACTION addConstraintAngular;
+    static TOOL_ACTION addConstraintTangent;
+    static TOOL_ACTION addConstraintHorizontal;
+    static TOOL_ACTION addConstraintVertical;
+    static TOOL_ACTION addConstraintFixedLength;
+    static TOOL_ACTION addConstraintConcentric;
+    static TOOL_ACTION addConstraintEqualRadius;
+    static TOOL_ACTION addConstraintFixedRadius;
+    static TOOL_ACTION addConstraintArcAngle;
+    // Point-anchored families authored by clicking anchors (route to AddPointConstraint).
+    static TOOL_ACTION addConstraintCoincident;
+    static TOOL_ACTION addConstraintPointOnLine;
+    static TOOL_ACTION addConstraintMidpoint;
+    static TOOL_ACTION addConstraintSymmetric;
+    static TOOL_ACTION removeConstraints;
+    static TOOL_ACTION showConstraints;     ///< Toggle the constraint diagnostics overlay.
+    static TOOL_ACTION hideConstraints;     ///< Same toggle, shown while the overlay is visible.
+    static TOOL_ACTION manageConstraints;      ///< Open the constraint list dialog.
+    static TOOL_ACTION showConstraintsPanel;   ///< Toggle the docked constraints pane (board editor).
+    static TOOL_ACTION toggleAutoConstraints;  ///< Toggle authoring constraints automatically while drawing.
+
+    /// Canonical ordered list of the geometric-constraint "add" actions, shared by the context
+    /// submenu (gated per selection) and the Place menu (ungated) so the two cannot drift.
+    static const std::vector<const TOOL_ACTION*>& ConstraintAddActions();
+
     /// Drag and drop
     static TOOL_ACTION ddAppendBoard;
     static TOOL_ACTION ddImportFootprint;
@@ -638,6 +675,9 @@ public:
     static TOOL_ACTION showWizards;
     static TOOL_ACTION resetWizardPrms;
     static TOOL_ACTION exportFpToEditor;
+
+    /// Display of phase skew between differential pair tracks
+    static TOOL_ACTION showDiffPhaseSkew;
 };
 
 class PCB_EVENTS

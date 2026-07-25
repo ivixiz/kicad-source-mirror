@@ -15,11 +15,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef SCH_BASE_FRAME_H_
@@ -31,6 +27,7 @@
 #include <sch_draw_panel.h>
 #include <sch_screen.h>
 #include <schematic_settings.h>
+#include <variant_symbol_utils.h>
 
 #include <stddef.h>
 #include <utility>
@@ -174,6 +171,8 @@ public:
      *                   highlights none if there isn't one by that name.
      * @param aShowFootprints is the whether to show footprints in the dialog.
      * @param aAllowFields is whether to allow field editing in the dialog.
+     * @param aCompatFunc is an optional callback used to flag and describe symbols that are
+     *                    not compatible as variant alternates for the current base symbol.
      *
      * @return the selected symbol
      */
@@ -181,7 +180,8 @@ public:
                                          std::vector<PICKED_SYMBOL>&  aHistoryList,
                                          std::vector<PICKED_SYMBOL>&  aAlreadyPlaced,
                                          bool aShowFootprints, const LIB_ID* aHighlight = nullptr,
-                                         bool aAllowFields = true );
+                                         bool aAllowFields = true,
+                                         SYMBOL_COMPAT_FUNC aCompatFunc = nullptr );
 
     /**
      * Load symbol from symbol library table.

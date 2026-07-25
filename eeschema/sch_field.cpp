@@ -15,11 +15,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include <wx/log.h>
@@ -679,7 +675,8 @@ bool SCH_FIELD::Matches( const EDA_SEARCH_DATA& aSearchData, void* aAuxData ) co
         if( !parentSymbol )
             return false;
 
-        if( parentSymbol->Matches( aSearchData, aAuxData ) )
+        // the search pane surfaces metadata hits through the reference field
+        if( aSearchData.searchMetadata && parentSymbol->Matches( aSearchData, aAuxData ) )
             return true;
 
         wxASSERT( aAuxData );
@@ -1064,9 +1061,6 @@ void SCH_FIELD::GetMsgPanelInfo( EDA_DRAW_FRAME* aFrame, std::vector<MSG_PANEL_I
 bool SCH_FIELD::HasHypertext() const
 {
     if( m_id == FIELD_T::INTERSHEET_REFS )
-        return true;
-
-    if( m_name == SIM_LIBRARY::LIBRARY_FIELD )
         return true;
 
     return IsURL( GetShownText( false ) );
@@ -1585,6 +1579,33 @@ bool SCH_FIELD::operator==( const SCH_FIELD& aOther ) const
 }
 
 
+bool SCH_FIELD::HasSameContent( const SCH_FIELD& aOther ) const
+{
+    if( GetCanonicalName() != aOther.GetCanonicalName() )
+        return false;
+
+    if( GetPosition() != aOther.GetPosition() )
+        return false;
+
+    if( IsVisible() != aOther.IsVisible() )
+        return false;
+
+    if( IsPrivate() != aOther.IsPrivate() )
+        return false;
+
+    if( IsGeneratedField() != aOther.IsGeneratedField() )
+        return false;
+
+    if( IsNameShown() != aOther.IsNameShown() )
+        return false;
+
+    if( CanAutoplace() != aOther.CanAutoplace() )
+        return false;
+
+    return EDA_TEXT::operator==( aOther );
+}
+
+
 double SCH_FIELD::Similarity( const SCH_ITEM& aOther ) const
 {
     if( Type() != aOther.Type() )
@@ -1737,9 +1758,19 @@ wxString SCH_FIELD::getUnescapedText( const SCH_SHEET_PATH* aPath, const wxStrin
                     // If the variant is not found, fall back to default variant above.
                     if( std::optional<SCH_SYMBOL_VARIANT> variant = symbol->GetVariant( *aPath, aVariantName ) )
                     {
-                        // If the field name does not exist in the variant, fall back to the default variant above.
+                        // An explicit override wins; otherwise resolve through the alternate
+                        // library symbol so the canvas matches the fields table and netlist.
                         if( variant->m_Fields.contains( GetName() ) )
+                        {
                             retv = variant->m_Fields[GetName()];
+                        }
+                        else if( LIB_SYMBOL* altSymbol = symbol->GetVariantLibSymbol( aVariantName, *aPath ) )
+                        {
+                            const SCH_FIELD* altField = altSymbol->GetField( GetName() );
+
+                            if( altField && !altField->GetText().IsEmpty() )
+                                retv = altField->GetText();
+                        }
                     }
                 }
             }

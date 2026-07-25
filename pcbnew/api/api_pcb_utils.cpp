@@ -14,8 +14,8 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include <api/api_pcb_utils.h>
@@ -26,6 +26,7 @@
 #include <lset.h>
 #include <pad.h>
 #include <pcb_group.h>
+#include <constraints/pcb_constraint.h>
 #include <pcb_barcode.h>
 #include <pcb_reference_image.h>
 #include <pcb_shape.h>
@@ -50,6 +51,7 @@ std::unique_ptr<BOARD_ITEM> CreateItemForType( KICAD_T aType, BOARD_ITEM_CONTAIN
     case PCB_BARCODE_T: return std::make_unique<PCB_BARCODE>( aContainer );
     case PCB_ZONE_T:    return std::make_unique<ZONE>( aContainer );
     case PCB_GROUP_T:   return std::make_unique<PCB_GROUP>( aContainer );
+    case PCB_CONSTRAINT_T: return std::make_unique<PCB_CONSTRAINT>( aContainer );
     case PCB_REFERENCE_IMAGE_T: return std::make_unique<PCB_REFERENCE_IMAGE>( aContainer );
 
     case PCB_PAD_T:

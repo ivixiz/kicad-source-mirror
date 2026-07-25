@@ -14,11 +14,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef ERC_ITEM_H
@@ -239,6 +235,11 @@ private:
     static ERC_ITEM groundPinNotGround;
     static ERC_ITEM stackedPinName;
     static ERC_ITEM fieldNameWhitespace;
+    static ERC_ITEM emptyLabelName;
+    static ERC_ITEM pinMapBadPad;
+    static ERC_ITEM pinMapUnmappedPin;
+    static ERC_ITEM pinMapDuplicatePad;
+    static ERC_ITEM pinMapStalePin;
     static ERC_ITEM unresolvedVariable;
     static ERC_ITEM undefinedNetclass;
     static ERC_ITEM simulationModelIssues;
@@ -257,6 +258,8 @@ private:
     static ERC_ITEM duplicateReference;
     static ERC_ITEM busEntryNeeded;
     static ERC_ITEM unconnectedWireEndpoint;
+    static ERC_ITEM variantSymbolInvalid;
+    static ERC_ITEM variantSymbolIncompatible;
 
     /// True if this item is specific to a sheet instance (as opposed to applying to all instances)
     std::optional<SCH_SHEET_PATH> m_sheetSpecificPath;

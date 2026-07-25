@@ -14,11 +14,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include <qa_utils/wx_utils/unit_test_utils.h>
@@ -69,7 +65,8 @@ BOOST_FIXTURE_TEST_CASE( DRCFalsePositiveRegressions, DRC_REGRESSION_TEST_FIXTUR
         "issue18839",            // False positive board edge clearance between concentric arcs
         "unconnected-netnames/unconnected-netnames", // Raised false schematic partity error
         "net_tie_drc",                               // Net tie bridging soldermask DRC test
-        "diff_pair_uncoupled_tuning_drc"             // Tuning pattern length wrongly counted as uncoupled
+        "issue24974",                    // Net-tie graphic copper on last pad, UUID-order-independent exemption
+        "diff_pair_uncoupled_tuning_drc" // Tuning pattern length wrongly counted as uncoupled
     };
 
     for( const wxString& relPath : tests )
@@ -287,4 +284,77 @@ BOOST_FIXTURE_TEST_CASE( DRCZoneFalsePositiveRegressions, DRC_REGRESSION_TEST_FI
                                            report ) );
         }
     }
+}
+
+
+BOOST_FIXTURE_TEST_CASE( DRCTeardropOverCopperField, DRC_REGRESSION_TEST_FIXTURE )
+{
+    // A knockout footprint reference designator on a copper layer fills as real copper, so a
+    // teardrop zone of another net overlapping it bridges the two nets.  Footprint fields live in
+    // their own list rather than the graphical-items list, so the copper clearance test must reach
+    // them.  The board also carries a hidden knockout field bridging the same two zones; hidden
+    // fields render no copper and must not produce a short.
+    // See https://gitlab.com/kicad/code/kicad/-/issues/24649
+
+    KI_TEST::LoadBoard( m_settingsManager, "issue24649", m_board );
+    KI_TEST::FillZones( m_board.get() );
+
+    std::vector<DRC_ITEM>  violations;
+    BOARD_DESIGN_SETTINGS& bds = m_board->GetDesignSettings();
+
+    // The bare test board has unconnected fills by design; suppress checks unrelated to the
+    // short under test.
+    bds.m_DRCSeverities[ DRCE_UNCONNECTED_ITEMS ] = SEVERITY::RPT_SEVERITY_IGNORE;
+    bds.m_DRCSeverities[ DRCE_ISOLATED_COPPER ] = SEVERITY::RPT_SEVERITY_IGNORE;
+    bds.m_DRCSeverities[ DRCE_COPPER_SLIVER ] = SEVERITY::RPT_SEVERITY_IGNORE;
+    bds.m_DRCSeverities[ DRCE_LIB_FOOTPRINT_ISSUES ] = SEVERITY::RPT_SEVERITY_IGNORE;
+    bds.m_DRCSeverities[ DRCE_LIB_FOOTPRINT_MISMATCH ] = SEVERITY::RPT_SEVERITY_IGNORE;
+
+    bds.m_DRCEngine->SetViolationHandler(
+            [&]( const std::shared_ptr<DRC_ITEM>& aItem, const VECTOR2I&, int,
+                 const std::function<void( PCB_MARKER* )>& )
+            {
+                violations.push_back( *aItem );
+            } );
+
+    bds.m_DRCEngine->RunTests( EDA_UNITS::MM, true, false );
+
+    std::map<KIID, EDA_ITEM*> itemMap;
+    m_board->FillItemMap( itemMap );
+
+    auto involvesCopperField =
+            [&]( const DRC_ITEM& aItem )
+            {
+                for( const KIID& id : { aItem.GetMainItemID(), aItem.GetAuxItemID() } )
+                {
+                    auto it = itemMap.find( id );
+
+                    if( it != itemMap.end() && it->second->Type() == PCB_FIELD_T )
+                        return true;
+                }
+
+                return false;
+            };
+
+    int fieldShorts = 0;
+
+    for( const DRC_ITEM& item : violations )
+    {
+        if( item.GetErrorCode() == DRCE_SHORTING_ITEMS && involvesCopperField( item ) )
+            fieldShorts++;
+    }
+
+    if( fieldShorts != 1 )
+    {
+        UNITS_PROVIDER unitsProvider( pcbIUScale, EDA_UNITS::MM );
+
+        for( const DRC_ITEM& item : violations )
+            BOOST_TEST_MESSAGE( item.ShowReport( &unitsProvider, RPT_SEVERITY_ERROR, itemMap ) );
+    }
+
+    // Exactly one short: the visible field bridges the two nets; the hidden field does not.
+    BOOST_CHECK_MESSAGE( fieldShorts == 1,
+                         "Expected exactly one shorting-items violation involving a visible "
+                         "knockout copper reference field; found "
+                                 << fieldShorts );
 }

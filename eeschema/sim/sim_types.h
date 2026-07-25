@@ -17,11 +17,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * https://www.gnu.org/licenses/gpl-3.0.html
- * or you may search the http://www.gnu.org website for the version 3 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef SIM_TYPES_H
@@ -55,6 +51,8 @@ enum SIM_TRACE_TYPE
     SPT_AC_GAIN       = 0x0008,
     SPT_POWER         = 0x0010,
     SPT_SP_AMP        = 0x0020,
+    SPT_SP_SMITH      = 0x0040,
+    SPT_SP_MASK       = SPT_SP_AMP | SPT_AC_PHASE | SPT_SP_SMITH,
     SPT_Y_AXIS_MASK   = 0x00FF,
 
     // X axis

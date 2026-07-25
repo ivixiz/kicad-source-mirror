@@ -14,11 +14,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include "pcbexpr_evaluator.h"
@@ -31,6 +27,8 @@
 
 #include <board.h>
 #include <footprint.h>
+#include <gal/color4d.h>
+#include <geometry/eda_angle.h>
 #include <lset.h>
 #include <board_connected_item.h>
 #include <drc/drc_engine.h>
@@ -48,6 +46,20 @@ BOARD_ITEM* PCBEXPR_VAR_REF::GetObject( const LIBEVAL::CONTEXT* aCtx ) const
 
     const PCBEXPR_CONTEXT* ctx = static_cast<const PCBEXPR_CONTEXT*>( aCtx );
     BOARD_ITEM*            item  = ctx->GetItem( m_itemIndex );
+
+    for( PCBEXPR_NAV_STEP step : m_navigation )
+    {
+        if( !item )
+            break;
+
+        switch( step )
+        {
+        // The direct parent, matching the semantics of the "Parent" string property so that
+        // "A.Parent" used as an object refers to the same item as "A.Parent" used as a string.
+        case PCBEXPR_NAV_STEP::PARENT: item = item->GetParent(); break;
+        }
+    }
+
     return item;
 }
 
@@ -391,6 +403,62 @@ KICAD_T PCBEXPR_CONTEXT::GetEffectiveType( const BOARD_ITEM* aItem ) const
 }
 
 
+PCBEXPR_PROPERTY_KIND PCBEXPR_VAR_REF::ClassifyProperty( const PROPERTY_BASE* aProperty )
+{
+    const TYPE_ID type = aProperty->TypeHash();
+
+    if( type == TYPE_HASH( int ) )
+        return PCBEXPR_PROPERTY_KIND::INT;
+    else if( type == TYPE_HASH( std::optional<int> ) )
+        return PCBEXPR_PROPERTY_KIND::OPTIONAL_INT;
+    else if( type == TYPE_HASH( unsigned ) )
+        return PCBEXPR_PROPERTY_KIND::UNSIGNED;
+    else if( type == TYPE_HASH( long long int ) )
+        return PCBEXPR_PROPERTY_KIND::LONG_LONG;
+    else if( type == TYPE_HASH( double ) )
+        return PCBEXPR_PROPERTY_KIND::DOUBLE;
+    else if( type == TYPE_HASH( std::optional<double> ) )
+        return PCBEXPR_PROPERTY_KIND::OPTIONAL_DOUBLE;
+    else if( type == TYPE_HASH( bool ) )
+        return PCBEXPR_PROPERTY_KIND::BOOL;
+    else if( type == TYPE_HASH( wxString ) )
+        return PCBEXPR_PROPERTY_KIND::STRING;
+    else if( aProperty->HasChoices() )
+        return PCBEXPR_PROPERTY_KIND::ENUM;
+    else if( type == TYPE_HASH( EDA_ANGLE ) )
+        return PCBEXPR_PROPERTY_KIND::ANGLE;
+    else if( type == TYPE_HASH( COLOR4D ) )
+        return PCBEXPR_PROPERTY_KIND::COLOR;
+
+    return PCBEXPR_PROPERTY_KIND::UNSUPPORTED;
+}
+
+
+LIBEVAL::VAR_TYPE_T PCBEXPR_VAR_REF::ExpressionType( PCBEXPR_PROPERTY_KIND aKind )
+{
+    switch( aKind )
+    {
+    case PCBEXPR_PROPERTY_KIND::INT:
+    case PCBEXPR_PROPERTY_KIND::OPTIONAL_INT:
+    case PCBEXPR_PROPERTY_KIND::UNSIGNED:
+    case PCBEXPR_PROPERTY_KIND::LONG_LONG:
+    case PCBEXPR_PROPERTY_KIND::BOOL: return LIBEVAL::VT_NUMERIC;
+
+    case PCBEXPR_PROPERTY_KIND::DOUBLE:
+    case PCBEXPR_PROPERTY_KIND::OPTIONAL_DOUBLE:
+    case PCBEXPR_PROPERTY_KIND::ANGLE: return LIBEVAL::VT_NUMERIC_DOUBLE;
+
+    case PCBEXPR_PROPERTY_KIND::STRING:
+    case PCBEXPR_PROPERTY_KIND::ENUM:
+    case PCBEXPR_PROPERTY_KIND::COLOR: return LIBEVAL::VT_STRING;
+
+    case PCBEXPR_PROPERTY_KIND::UNSUPPORTED: return LIBEVAL::VT_PARSE_ERROR;
+    }
+
+    return LIBEVAL::VT_PARSE_ERROR;
+}
+
+
 LIBEVAL::VALUE* PCBEXPR_VAR_REF::GetValue( LIBEVAL::CONTEXT* aCtx )
 {
     PCBEXPR_CONTEXT* context = static_cast<PCBEXPR_CONTEXT*>( aCtx );
@@ -435,58 +503,71 @@ LIBEVAL::VALUE* PCBEXPR_VAR_REF::GetValue( LIBEVAL::CONTEXT* aCtx )
     }
     else
     {
-        if( m_type == LIBEVAL::VT_NUMERIC )
+        if( !PROPERTY_MANAGER::Instance().IsAvailableFor( TYPE_HASH( *item ), it->second.property, item ) )
         {
-            if( m_isOptional )
-            {
-                std::optional<int> val = item->Get<std::optional<int>>( it->second );
-
-                if( val.has_value() )
-                    return new LIBEVAL::VALUE( static_cast<double>( val.value() ) );
-
-                return LIBEVAL::VALUE::MakeNullValue();
-            }
-
-            return new LIBEVAL::VALUE( static_cast<double>( item->Get<int>( it->second ) ) );
+            return new LIBEVAL::VALUE();
         }
-        else if( m_type == LIBEVAL::VT_NUMERIC_DOUBLE )
+
+        switch( it->second.kind )
         {
-            if( m_isOptional )
-            {
-                std::optional<double> val = item->Get<std::optional<double>>( it->second );
+        case PCBEXPR_PROPERTY_KIND::INT:
+            return new LIBEVAL::VALUE( static_cast<double>( item->Get<int>( it->second.property ) ) );
 
-                if( val.has_value() )
-                    return new LIBEVAL::VALUE( val.value() );
+        case PCBEXPR_PROPERTY_KIND::OPTIONAL_INT:
+        {
+            std::optional<int> val = item->Get<std::optional<int>>( it->second.property );
 
-                return LIBEVAL::VALUE::MakeNullValue();
-            }
+            if( val.has_value() )
+                return new LIBEVAL::VALUE( static_cast<double>( val.value() ) );
 
-            return new LIBEVAL::VALUE( item->Get<double>( it->second ) );
+            return LIBEVAL::VALUE::MakeNullValue();
         }
-        else
+
+        case PCBEXPR_PROPERTY_KIND::UNSIGNED:
+            return new LIBEVAL::VALUE( static_cast<double>( item->Get<unsigned>( it->second.property ) ) );
+
+        case PCBEXPR_PROPERTY_KIND::LONG_LONG:
+            return new LIBEVAL::VALUE( static_cast<double>( item->Get<long long int>( it->second.property ) ) );
+
+        case PCBEXPR_PROPERTY_KIND::DOUBLE: return new LIBEVAL::VALUE( item->Get<double>( it->second.property ) );
+
+        case PCBEXPR_PROPERTY_KIND::OPTIONAL_DOUBLE:
+        {
+            std::optional<double> val = item->Get<std::optional<double>>( it->second.property );
+
+            if( val.has_value() )
+                return new LIBEVAL::VALUE( val.value() );
+
+            return LIBEVAL::VALUE::MakeNullValue();
+        }
+
+        case PCBEXPR_PROPERTY_KIND::BOOL:
+            return new LIBEVAL::VALUE( static_cast<double>( item->Get<bool>( it->second.property ) ) );
+
+        case PCBEXPR_PROPERTY_KIND::STRING:
+        {
+            wxString str = item->Get<wxString>( it->second.property );
+
+            if( it->second.property->Name() == wxT( "Pin Type" ) )
+                return new PCBEXPR_PINTYPE_VALUE( str );
+
+            // If it quacks like a duck, it is a duck
+            double doubleVal;
+
+            if( EDA_UNIT_UTILS::UI::DoubleValueFromString( pcbIUScale, str, doubleVal ) )
+                return new LIBEVAL::VALUE( doubleVal );
+
+            return new LIBEVAL::VALUE( str );
+        }
+
+        case PCBEXPR_PROPERTY_KIND::ENUM:
         {
             wxString str;
 
-            if( !m_isEnum )
+            if( it->second.property->Name() == wxT( "Layer" ) || it->second.property->Name() == wxT( "Layer Top" )
+                || it->second.property->Name() == wxT( "Layer Bottom" ) )
             {
-                str = item->Get<wxString>( it->second );
-
-                if( it->second->Name() == wxT( "Pin Type" ) )
-                    return new PCBEXPR_PINTYPE_VALUE( str );
-
-                // If it quacks like a duck, it is a duck
-                double doubleVal;
-
-                if( EDA_UNIT_UTILS::UI::DoubleValueFromString( pcbIUScale, str, doubleVal ) )
-                    return new LIBEVAL::VALUE( doubleVal );
-
-                return new LIBEVAL::VALUE( str );
-            }
-            else if( it->second->Name() == wxT( "Layer" )
-                        || it->second->Name() == wxT( "Layer Top" )
-                        || it->second->Name() == wxT( "Layer Bottom" ) )
-            {
-                const wxAny& any = item->Get( it->second );
+                const wxAny& any = item->Get( it->second.property );
                 PCB_LAYER_ID layer;
 
                 if( any.GetAs<PCB_LAYER_ID>( &layer ) )
@@ -496,7 +577,7 @@ LIBEVAL::VALUE* PCBEXPR_VAR_REF::GetValue( LIBEVAL::CONTEXT* aCtx )
             }
             else
             {
-                const wxAny& any = item->Get( it->second );
+                const wxAny& any = item->Get( it->second.property );
 
                 if( any.GetAs<wxString>( &str ) )
                     return new LIBEVAL::VALUE( str );
@@ -504,7 +585,18 @@ LIBEVAL::VALUE* PCBEXPR_VAR_REF::GetValue( LIBEVAL::CONTEXT* aCtx )
 
             return new LIBEVAL::VALUE();
         }
+
+        case PCBEXPR_PROPERTY_KIND::ANGLE:
+            return new LIBEVAL::VALUE( item->Get<EDA_ANGLE>( it->second.property ).AsDegrees() );
+
+        case PCBEXPR_PROPERTY_KIND::COLOR:
+            return new LIBEVAL::VALUE( item->Get<COLOR4D>( it->second.property ).ToCSSString() );
+
+        case PCBEXPR_PROPERTY_KIND::UNSUPPORTED: return new LIBEVAL::VALUE();
+        }
     }
+
+    return new LIBEVAL::VALUE();
 }
 
 
@@ -589,53 +681,94 @@ std::unique_ptr<LIBEVAL::VAR_REF> PCBEXPR_UCODE::CreateVarRef( const wxString& a
         return vref;
     }
 
+    // The receiver may be a navigation chain such as "A.Parent".  Split off the base variable
+    // and translate each remaining segment into a navigation step.  Only "Parent" is supported.
+
+    wxString                      baseVar = aVar;
+    std::vector<PCBEXPR_NAV_STEP> navigation;
+
+    if( aVar.Contains( wxT( "." ) ) )
+    {
+        wxArrayString tokens = wxSplit( aVar, '.' );
+        baseVar = tokens.IsEmpty() ? wxString() : tokens[0];
+
+        for( size_t i = 1; i < tokens.GetCount(); ++i )
+        {
+            if( tokens[i].CmpNoCase( wxT( "Parent" ) ) == 0 )
+                navigation.push_back( PCBEXPR_NAV_STEP::PARENT );
+            else
+                return nullptr;
+        }
+
+        // Navigation requires one concrete item; combined-item "AB" and layer "L" have no parent.
+        if( baseVar != wxT( "A" ) && baseVar != wxT( "B" ) )
+            return nullptr;
+    }
+
+    if( !aField.IsEmpty() && ( baseVar == wxT( "AB" ) || baseVar == wxT( "L" ) ) )
+        return nullptr;
+
+    if( baseVar == wxT( "B" ) || baseVar == wxT( "AB" ) )
+        m_requiresPairItems = true;
+
+    auto withNav =
+            [&navigation]( std::unique_ptr<PCBEXPR_VAR_REF> aRef ) -> std::unique_ptr<PCBEXPR_VAR_REF>
+            {
+                if( aRef && !navigation.empty() )
+                    aRef->SetNavigation( navigation );
+
+                return aRef;
+            };
+
     // Check for a couple of very common cases and compile them straight to "object code".
 
     if( aField.CmpNoCase( wxT( "NetClass" ) ) == 0 )
     {
-        if( aVar == wxT( "A" ) )
-            return std::make_unique<PCBEXPR_NETCLASS_REF>( 0 );
-        else if( aVar == wxT( "B" ) )
-            return std::make_unique<PCBEXPR_NETCLASS_REF>( 1 );
+        if( baseVar == wxT( "A" ) )
+            return withNav( std::make_unique<PCBEXPR_NETCLASS_REF>( 0 ) );
+        else if( baseVar == wxT( "B" ) )
+            return withNav( std::make_unique<PCBEXPR_NETCLASS_REF>( 1 ) );
         else
             return nullptr;
     }
     else if( aField.CmpNoCase( wxT( "ComponentClass" ) ) == 0 )
     {
-        if( aVar == wxT( "A" ) )
-            return std::make_unique<PCBEXPR_COMPONENT_CLASS_REF>( 0 );
-        else if( aVar == wxT( "B" ) )
-            return std::make_unique<PCBEXPR_COMPONENT_CLASS_REF>( 1 );
+        if( baseVar == wxT( "A" ) )
+            return withNav( std::make_unique<PCBEXPR_COMPONENT_CLASS_REF>( 0 ) );
+        else if( baseVar == wxT( "B" ) )
+            return withNav( std::make_unique<PCBEXPR_COMPONENT_CLASS_REF>( 1 ) );
         else
             return nullptr;
     }
     else if( aField.CmpNoCase( wxT( "NetName" ) ) == 0 )
     {
-        if( aVar == wxT( "A" ) )
-            return std::make_unique<PCBEXPR_NETNAME_REF>( 0 );
-        else if( aVar == wxT( "B" ) )
-            return std::make_unique<PCBEXPR_NETNAME_REF>( 1 );
+        if( baseVar == wxT( "A" ) )
+            return withNav( std::make_unique<PCBEXPR_NETNAME_REF>( 0 ) );
+        else if( baseVar == wxT( "B" ) )
+            return withNav( std::make_unique<PCBEXPR_NETNAME_REF>( 1 ) );
         else
             return nullptr;
     }
     else if( aField.CmpNoCase( wxT( "Type" ) ) == 0 )
     {
-        if( aVar == wxT( "A" ) )
-            return std::make_unique<PCBEXPR_TYPE_REF>( 0 );
-        else if( aVar == wxT( "B" ) )
-            return std::make_unique<PCBEXPR_TYPE_REF>( 1 );
+        if( baseVar == wxT( "A" ) )
+            return withNav( std::make_unique<PCBEXPR_TYPE_REF>( 0 ) );
+        else if( baseVar == wxT( "B" ) )
+            return withNav( std::make_unique<PCBEXPR_TYPE_REF>( 1 ) );
         else
             return nullptr;
     }
 
-    if( aVar == wxT( "A" ) || aVar == wxT( "AB" ) )
+    if( baseVar == wxT( "A" ) || baseVar == wxT( "AB" ) )
         vref = std::make_unique<PCBEXPR_VAR_REF>( 0 );
-    else if( aVar == wxT( "B" ) )
+    else if( baseVar == wxT( "B" ) )
         vref = std::make_unique<PCBEXPR_VAR_REF>( 1 );
-    else if( aVar == wxT( "L" ) )
+    else if( baseVar == wxT( "L" ) )
         vref = std::make_unique<PCBEXPR_VAR_REF>( 2 );
     else
         return nullptr;
+
+    vref->SetNavigation( navigation );
 
     if( aField.length() == 0 ) // return reference to base object
         return vref;
@@ -651,47 +784,18 @@ std::unique_ptr<LIBEVAL::VAR_REF> PCBEXPR_UCODE::CreateVarRef( const wxString& a
 
             if( prop )
             {
-                vref->AddAllowedClass( cls.type, prop );
+                PCBEXPR_PROPERTY_KIND kind = PCBEXPR_VAR_REF::ClassifyProperty( prop );
+                LIBEVAL::VAR_TYPE_T   expressionType = PCBEXPR_VAR_REF::ExpressionType( kind );
 
-                if( prop->TypeHash() == TYPE_HASH( int ) )
+                if( expressionType == LIBEVAL::VT_PARSE_ERROR
+                    || ( vref->GetType() != LIBEVAL::VT_UNDEFINED && vref->GetType() != expressionType ) )
                 {
-                    vref->SetType( LIBEVAL::VT_NUMERIC );
+                    vref->SetType( LIBEVAL::VT_PARSE_ERROR );
+                    return vref;
                 }
-                else if( prop->TypeHash() == TYPE_HASH( std::optional<int> ) )
-                {
-                    vref->SetType( LIBEVAL::VT_NUMERIC );
-                    vref->SetIsOptional();
-                }
-                else if( prop->TypeHash() == TYPE_HASH( double ) )
-                {
-                    vref->SetType( LIBEVAL::VT_NUMERIC_DOUBLE );
-                }
-                else if( prop->TypeHash() == TYPE_HASH( std::optional<double> ) )
-                {
-                    vref->SetType( LIBEVAL::VT_NUMERIC_DOUBLE );
-                    vref->SetIsOptional();
-                }
-                else if( prop->TypeHash() == TYPE_HASH( bool ) )
-                {
-                    vref->SetType( LIBEVAL::VT_NUMERIC );
-                }
-                else if( prop->TypeHash() == TYPE_HASH( wxString ) )
-                {
-                    vref->SetType( LIBEVAL::VT_STRING );
-                }
-                else if ( prop->HasChoices() )
-                {   // it's an enum, we treat it as string
-                    vref->SetType( LIBEVAL::VT_STRING );
-                    vref->SetIsEnum( true );
-                }
-                else
-                {
-                    wxString msg = wxString::Format( wxT( "PCBEXPR_UCODE::createVarRef: Unknown "
-                                                          "property type %s from %s." ),
-                                                     cls.name,
-                                                     field );
-                    wxFAIL_MSG( msg );
-                }
+
+                vref->AddAllowedClass( cls.type, prop, kind );
+                vref->SetType( expressionType );
             }
         }
     }

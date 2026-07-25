@@ -15,11 +15,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include <algorithm>
@@ -51,6 +47,10 @@
 #include <wx/sizer.h>
 #include <wx/dcclient.h>
 #include <wx/settings.h>
+
+#ifdef __WXMSW__
+#include <windows.h>
+#endif
 
 // Needed to handle adding the plugins to the toolbar
 // TODO (ISM): This should be better abstracted away from the toolbars
@@ -178,10 +178,18 @@ void ACTION_TOOLBAR_PALETTE::CheckAction( const TOOL_ACTION& aAction, bool aChec
 }
 
 
-void ACTION_TOOLBAR_PALETTE::Popup( wxWindow* aFocus )
+wxSize ACTION_TOOLBAR_PALETTE::GetFittedSize()
 {
     m_mainSizer->Fit( m_panel );
     SetClientSize( m_panel->GetSize() );
+
+    return m_panel->GetSize();
+}
+
+
+void ACTION_TOOLBAR_PALETTE::Popup( wxWindow* aFocus )
+{
+    GetFittedSize();
 
     wxPopupTransientWindow::Popup( aFocus );
 }
@@ -195,6 +203,37 @@ void ACTION_TOOLBAR_PALETTE::onCharHook( wxKeyEvent& aEvent )
     else
         aEvent.Skip();
 }
+
+
+#ifdef __WXMSW__
+bool ACTION_TOOLBAR_PALETTE::MSWHandleMessage( WXLRESULT* aResult, WXUINT aMessage,
+                                               WXWPARAM aWParam, WXLPARAM aLParam )
+{
+    // The Windows "Activate on hover" option (active window tracking) activates whatever
+    // top-level window the pointer is over. As the pointer travels from the toolbar button
+    // toward this palette it crosses the owner frame, which then steals activation and would
+    // normally deactivate and dismiss this transient popup before the user can reach it.
+    // Ignore that specific deactivation so the palette survives the trip. Dismissal by Escape,
+    // by pressing a palette button, or by switching to any other window is unaffected because
+    // those do not hand activation back to the owner frame.
+    if( aMessage == WM_ACTIVATE && LOWORD( aWParam ) == WA_INACTIVE )
+    {
+        BOOL tracking = FALSE;
+
+        if( ::SystemParametersInfo( SPI_GETACTIVEWINDOWTRACKING, 0, &tracking, 0 ) && tracking )
+        {
+            HWND      activated = reinterpret_cast<HWND>( aLParam );
+            wxWindow* owner = MSWGetOwner();
+
+            if( activated && owner && ::GetAncestor( activated, GA_ROOT ) == owner->GetHWND() )
+                return wxPopupTransientWindowBase::MSWHandleMessage( aResult, aMessage, aWParam,
+                                                                     aLParam );
+        }
+    }
+
+    return wxPopupTransientWindow::MSWHandleMessage( aResult, aMessage, aWParam, aLParam );
+}
+#endif
 
 
 ACTION_TOOLBAR::ACTION_TOOLBAR( EDA_BASE_FRAME* parent, wxWindowID id, const wxPoint& pos, const wxSize& size,
@@ -212,6 +251,7 @@ ACTION_TOOLBAR::ACTION_TOOLBAR( EDA_BASE_FRAME* parent, wxWindowID id, const wxP
 
     Connect( wxEVT_COMMAND_TOOL_CLICKED, wxAuiToolBarEventHandler( ACTION_TOOLBAR::onToolEvent ), nullptr, this );
     Connect( wxEVT_AUITOOLBAR_RIGHT_CLICK, wxAuiToolBarEventHandler( ACTION_TOOLBAR::onRightClick ), nullptr, this );
+    Connect( wxEVT_RIGHT_UP, wxMouseEventHandler( ACTION_TOOLBAR::onRightUp ), nullptr, this );
     Connect( wxEVT_AUITOOLBAR_BEGIN_DRAG, wxAuiToolBarEventHandler( ACTION_TOOLBAR::onItemDrag ), nullptr, this );
     Connect( wxEVT_LEFT_DOWN, wxMouseEventHandler( ACTION_TOOLBAR::onMouseClick ), nullptr, this );
     Connect( wxEVT_LEFT_UP, wxMouseEventHandler( ACTION_TOOLBAR::onMouseClick ), nullptr, this );
@@ -235,14 +275,24 @@ ACTION_TOOLBAR::ACTION_TOOLBAR( EDA_BASE_FRAME* parent, wxWindowID id, const wxP
           [&]( wxDPIChangedEvent& aEvent )
           {
 #ifdef __WXMSW__
-              // Update values which are normally only initialized in wxAuiToolBar::Create
-              // FromDIP is no-op on backends other than wxMSW
-              m_toolPacking = FromDIP( 2 );
-              m_toolBorderPadding = FromDIP( 3 );
+              // Update values which are normally only initialized in wxAuiToolBar::Create.
+              // FromDIP is no-op on backends other than wxMSW.
+              SetToolPacking( FromDIP( 2 ) );
+              SetToolBorderPadding( FromDIP( 3 ) );
 
               wxSize margin_lt = FromDIP( wxSize( 5, 5 ) );
               wxSize margin_rb = FromDIP( wxSize( 2, 2 ) );
               SetMargins( margin_lt.x, margin_lt.y, margin_rb.x, margin_rb.y );
+
+              // Re-realize the toolbar to recalculate all item sizes with the new DPI.
+              // This fixes excessive button padding when moving windows between displays
+              // with different DPI scaling factors.
+              if( GetToolCount() > 0 )
+              {
+                  UpdateControlWidths();
+                  InvalidateBestSize();
+                  KiRealize();
+              }
 #endif
 
               aEvent.Skip();
@@ -254,6 +304,7 @@ ACTION_TOOLBAR::~ACTION_TOOLBAR()
 {
     Disconnect( wxEVT_COMMAND_TOOL_CLICKED, wxAuiToolBarEventHandler( ACTION_TOOLBAR::onToolEvent ), nullptr, this );
     Disconnect( wxEVT_AUITOOLBAR_RIGHT_CLICK, wxAuiToolBarEventHandler( ACTION_TOOLBAR::onRightClick ), nullptr, this );
+    Disconnect( wxEVT_RIGHT_UP, wxMouseEventHandler( ACTION_TOOLBAR::onRightUp ), nullptr, this );
     Disconnect( wxEVT_AUITOOLBAR_BEGIN_DRAG, wxAuiToolBarEventHandler( ACTION_TOOLBAR::onItemDrag ), nullptr, this );
     Disconnect( wxEVT_LEFT_DOWN, wxMouseEventHandler( ACTION_TOOLBAR::onMouseClick ), nullptr, this );
     Disconnect( wxEVT_LEFT_UP, wxMouseEventHandler( ACTION_TOOLBAR::onMouseClick ), nullptr, this );
@@ -813,15 +864,39 @@ void ACTION_TOOLBAR::onRightClick( wxAuiToolBarEvent& aEvent )
     if( toolId == -1 )
         return;
 
+    showContextMenu( toolId );
+}
+
+
+void ACTION_TOOLBAR::onRightUp( wxMouseEvent& aEvent )
+{
+    // wxAuiToolBar::OnRightDown() uses horizontal-only geometry to reserve its overflow
+    // dead-zone, which on a vertical toolbar kills right-clicks over part of every button.
+    // Hit-test the tool ourselves so the whole button works.
+    wxAuiToolBarItem* item = FindToolByPosition( aEvent.GetX(), aEvent.GetY() );
+
+    if( !item )
+    {
+        aEvent.Skip();
+        return;
+    }
+
+    // Don't Skip(): suppress wx's own OnRightUp() so the menu is shown exactly once.
+    showContextMenu( item->GetId() );
+}
+
+
+void ACTION_TOOLBAR::showContextMenu( int aToolId )
+{
     // Ensure that the ID maps to a proper tool ID. If right-clicked on a group item, this is needed
     // to get the ID of the currently selected action, since the event's ID is that of the group.
-    const auto actionIt = m_toolActions.find( toolId );
+    const auto actionIt = m_toolActions.find( aToolId );
 
     if( actionIt != m_toolActions.end() )
-        toolId = actionIt->second->GetUIId();
+        aToolId = actionIt->second->GetUIId();
 
     // Find the menu for the action
-    const auto menuIt = m_toolMenus.find( toolId );
+    const auto menuIt = m_toolMenus.find( aToolId );
 
     if( menuIt == m_toolMenus.end() )
         return;
@@ -976,66 +1051,15 @@ void ACTION_TOOLBAR::popupPalette( wxAuiToolBarItem* aItem )
     wxPoint pos( ClientToScreen( toolRect.GetPosition() ) );
 
     // True for vertical buttons, false for horizontal
-    bool    dir        = true;
-    size_t  numActions = group->m_actions.size();
-
-    // The size of the palette in the long dimension
-    int paletteLongDim =   ( 2 * PALETTE_BORDER )      // The border on all sides of the buttons
-                         + ( BUTTON_BORDER )           // The border on the start of the buttons
-                         + ( numActions * BUTTON_BORDER )          // The other button borders
-                         + ( numActions * toolRect.GetHeight() );  // The size of the buttons
-
-    // Determine the position of the top left corner of the palette window
-    switch( pane.dock_direction )
-    {
-        case wxAUI_DOCK_TOP:
-            // Top toolbars need to shift the palette window down by the toolbar padding
-            dir = true;                                 // Buttons are vertical in the palette
-            pos = ClientToScreen( toolRect.GetBottomLeft() );
-            pos += wxPoint( -PALETTE_BORDER,            // Shift left to align the button edges
-                            m_bottomPadding );          // Shift down to move away from the toolbar
-            break;
-
-        case wxAUI_DOCK_BOTTOM:
-            // Bottom toolbars need to shift the palette window up by its height (all buttons +
-            // border + toolbar padding)
-            dir = true;                                 // Buttons are vertical in the palette
-            pos = ClientToScreen( toolRect.GetTopLeft() );
-            pos += wxPoint( -PALETTE_BORDER,                       // Shift left to align the button
-                            // Shift up by the entire length of the palette.
-                            -( paletteLongDim + m_topPadding ) );
-            break;
-
-        case wxAUI_DOCK_LEFT:
-            // Left toolbars need to shift the palette window up by the toolbar padding
-            dir = false;                               // Buttons are horizontal in the palette
-            pos = ClientToScreen( toolRect.GetTopRight() );
-            pos += wxPoint( m_rightPadding,            // Shift right to move away from the toolbar
-                            -( PALETTE_BORDER ) );     // Shift up to align the button tops
-            break;
-
-        case wxAUI_DOCK_RIGHT:
-            // Right toolbars need to shift the palette window left by its width (all buttons +
-            // border + toolbar padding)
-            dir = false;                                // Buttons are horizontal in the palette
-            pos = ClientToScreen( toolRect.GetTopLeft() );
-
-            // Shift left by the entire length of the palette.
-            pos += wxPoint( -( paletteLongDim + m_leftPadding ),
-                            -( PALETTE_BORDER  ) );                // Shift up to align the button
-            break;
-    }
+    bool dir = pane.dock_direction != wxAUI_DOCK_LEFT && pane.dock_direction != wxAUI_DOCK_RIGHT;
 
     m_palette = new ACTION_TOOLBAR_PALETTE( GetParent(), dir );
 
-    // We handle the button events in the toolbar class, so connect the right handler
     m_palette->SetGroup( group );
     m_palette->SetButtonSize( toolRect );
     m_palette->Connect( wxEVT_BUTTON, wxCommandEventHandler( ACTION_TOOLBAR::onPaletteEvent ), nullptr, this );
 
 
-    // Add the actions in the group to the palette and update their enabled state
-    // We purposely don't check items in the palette
     for( const TOOL_ACTION* action : group->m_actions )
     {
         wxUpdateUIEvent evt( action->GetUIId() );
@@ -1046,6 +1070,45 @@ void ACTION_TOOLBAR::popupPalette( wxAuiToolBarItem* aItem )
 
         if( evt.GetSetEnabled() )
             m_palette->EnableAction( *action, evt.GetEnabled() );
+    }
+
+    wxSize paletteSize = m_palette->GetFittedSize();
+
+    // Determine the position of the top left corner of the palette window
+    switch( pane.dock_direction )
+    {
+        case wxAUI_DOCK_TOP:
+            // Top toolbars need to shift the palette window down by the toolbar padding
+            pos = ClientToScreen( toolRect.GetBottomLeft() );
+            pos += wxPoint( -PALETTE_BORDER,            // Shift left to align the button edges
+                            m_bottomPadding );          // Shift down to move away from the toolbar
+            break;
+
+        case wxAUI_DOCK_BOTTOM:
+            // Bottom toolbars need to shift the palette window up by its height (all buttons +
+            // border + toolbar padding)
+            pos = ClientToScreen( toolRect.GetTopLeft() );
+            pos += wxPoint( -PALETTE_BORDER, // Shift left to align the button
+                            // Shift up by the entire length of the palette.
+                            -( paletteSize.GetHeight() + m_topPadding ) );
+            break;
+
+        case wxAUI_DOCK_LEFT:
+            // Left toolbars open the palette to the right, with a small extra nudge so it does not
+            // paint over the toolbar icon that opened it.
+            pos = ClientToScreen( toolRect.GetTopRight() );
+            pos += wxPoint( m_rightPadding + PALETTE_BORDER, 0 );
+            break;
+
+        case wxAUI_DOCK_RIGHT:
+            // Right toolbars need to shift the palette window left by its width (all buttons +
+            // border + toolbar padding)
+            pos = ClientToScreen( toolRect.GetTopLeft() );
+
+            // Shift left by the palette length, with a small extra nudge so it does not paint over
+            // the toolbar icon that opened it.
+            pos += wxPoint( -( paletteSize.GetWidth() + m_leftPadding + PALETTE_BORDER ), 0 );
+            break;
     }
 
     // Release the mouse to ensure the first click will be recognized in the palette

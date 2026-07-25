@@ -15,11 +15,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 
@@ -1063,37 +1059,41 @@ void SPECCTRA_DB::fillBOUNDARY( BOARD* aBoard, BOUNDARY* boundary )
 }
 
 
-typedef std::set<std::string>                   STRINGSET;
-typedef std::pair<STRINGSET::iterator, bool>    STRINGSET_PAIR;
+// Specctra strings have no in-string escape, so a payload holding the quote delimiter would end
+// the token early and desync the reader.  Only fold free-text fields that need no round-trip
+static std::string sanitizeForDSNString( const wxString& aValue )
+{
+    wxString ret = aValue;
+    ret.Replace( wxT( "\"" ), wxT( "''" ) );
+    return TO_UTF8( ret );
+}
 
 
 void SPECCTRA_DB::FromBOARD( BOARD* aBoard )
 {
     std::shared_ptr<NET_SETTINGS>& netSettings = aBoard->GetDesignSettings().m_NetSettings;
 
-    // Not all boards are exportable.  Check that all reference Ids are unique, or we won't be
-    // able to import the session file which comes back to us later from the router.
+    // Component ids must be unique for the session file to round-trip, but empty and duplicate
+    // references (unannotated REF** fiducials, intentional duplicates) are common, so uniquify
+    // rather than refuse the export.  Exported DSN defaults to case-insensitive ids, so fold case
+    // when checking for collisions.
+    std::map<FOOTPRINT*, std::string> componentIds;
     {
-        STRINGSET refs;       // holds footprint reference designators
+        std::set<wxString> used;
 
         for( FOOTPRINT* footprint : aBoard->Footprints() )
         {
-            if( footprint->GetReference() == wxEmptyString )
-            {
-                THROW_IO_ERROR( wxString::Format( _( "Footprint with value of '%s' has an empty "
-                                                     "reference designator." ),
-                                                  footprint->GetValue() ) );
-            }
+            wxString ref = footprint->GetReference();
 
-            // if we cannot insert OK, that means the reference has been seen before.
-            STRINGSET_PAIR refpair = refs.insert( TO_UTF8( footprint->GetReference() ) );
+            if( ref.IsEmpty() )
+                ref = wxT( "REF**" );
 
-            if( !refpair.second )      // insert failed
-            {
-                THROW_IO_ERROR( wxString::Format( _( "Multiple footprints have the reference "
-                                                     "designator '%s'." ),
-                                                  footprint->GetReference() ) );
-            }
+            wxString unique = ref;
+
+            for( int suffix = 1; !used.insert( unique.Lower() ).second; ++suffix )
+                unique = wxString::Format( wxT( "%s_%d" ), ref, suffix );
+
+            componentIds[footprint] = TO_UTF8( unique );
         }
     }
 
@@ -1187,120 +1187,93 @@ void SPECCTRA_DB::FromBOARD( BOARD* aBoard )
         rules.push_back( rule );
     }
 
-    //-----<zones (not keepout areas) become planes>--------------------------------
-    // Note: only zones are output here, keepout areas are created later.
+    //-----<zones (not keepout areas) become wiring polygons>-----------------------
+    // Specctra treats (plane ...) as pins; export copper zones as (wire (polygon ...))
+    // instead. Top-level polygon = fractured zone outline; windows = outline − fill.
     {
-        int netlessZones = 0;
+        int     netlessZones = 0;
+        WIRING* wiring = m_pcb->m_wiring;
+
+        auto appendClosedChain = [&]( PATH* aPath, const SHAPE_LINE_CHAIN& aChain )
+        {
+            if( aChain.PointCount() < 3 )
+                return;
+
+            for( int v = 0; v < aChain.PointCount(); v++ )
+                aPath->AppendPoint( mapPt( aChain.CPoint( v ) ) );
+
+            aPath->AppendPoint( mapPt( aChain.CPoint( 0 ) ) );
+        };
 
         for( ZONE* zone : aBoard->Zones() )
         {
-            if( zone->GetIsRuleArea() )
+            if( zone->GetIsRuleArea() || !zone->IsOnCopperLayer() )
                 continue;
 
-            // Currently, we export only copper layers
-            if( ! zone->IsOnCopperLayer() )
+            const SHAPE_POLY_SET* zoneOutline = zone->Outline();
+            wxCHECK2( zoneOutline && zoneOutline->OutlineCount() > 0, continue );
+
+            // Fracture the zone outline with potential cutouts to fit as top-level wire polygon.
+            SHAPE_POLY_SET zoneOutlineFractured( *zoneOutline );
+            zoneOutlineFractured.Fracture();
+            wxCHECK2( zoneOutlineFractured.OutlineCount() == 1, continue );
+
+            if( zoneOutlineFractured.FullPointCount() < 3 )
                 continue;
 
-            // Now, build zone polygon on each copper layer where the zone
-            // is living (zones can live on many copper layers)
+            std::string netId = zone->GetNetname().utf8_string();
+
+            if( netId.empty() )
+            {
+                NET* no_net = new NET( m_pcb->m_network );
+                no_net->m_net_id = "@:no_net_" + std::to_string( netlessZones++ );
+                m_pcb->m_network->m_nets.push_back( no_net );
+                netId = no_net->m_net_id;
+            }
+
             LSET layerset = zone->GetLayerSet() & LSET::AllCuMask( aBoard->GetCopperLayerCount() );
 
             for( PCB_LAYER_ID layer : layerset )
             {
-                COPPER_PLANE*   plane = new COPPER_PLANE( m_pcb->m_structure );
+                const std::string& layerId = m_layerIds[m_kicadLayer2pcb[layer]];
 
-                m_pcb->m_structure->m_planes.push_back( plane );
+                WIRE* wire = new WIRE( wiring );
+                wiring->wires.push_back( wire );
+                wire->m_net_id = netId;
+                wire->m_wire_type = T_protect;
 
-                PATH* mainPolygon = new PATH( plane, T_polygon );
+                PATH* mainPolygon = new PATH( wire, T_polygon );
+                wire->SetShape( mainPolygon );
+                mainPolygon->layer_id = layerId;
+                appendClosedChain( mainPolygon, zoneOutlineFractured.COutline( 0 ) );
 
-                plane->SetShape( mainPolygon );
-                plane->m_name = TO_UTF8( zone->GetNetname() );
+                SHAPE_POLY_SET* zoneFill = zone->GetFill( layer );
 
-                if( plane->m_name.size() == 0 )
+                if( !zoneFill || zoneFill->IsEmpty() )
+                    continue;
+
+                SHAPE_POLY_SET fill( *zoneFill );
+                fill.Unfracture();
+
+                SHAPE_POLY_SET cutouts( *zoneOutline );
+                cutouts.BooleanSubtract( fill );
+
+                for( int c = 0; c < cutouts.OutlineCount(); c++ )
                 {
-                    // This is one of those no connection zones, netcode=0, and it has no name.
-                    // Create a unique, bogus netname.
-                    NET* no_net = new NET( m_pcb->m_network );
+                    const SHAPE_LINE_CHAIN& hole = cutouts.COutline( c );
 
+                    if( hole.PointCount() < 3 )
+                        continue;
 
-                    no_net->m_net_id = "@:no_net_" + std::to_string( netlessZones++ );
+                    WINDOW* window = new WINDOW( wire );
+                    wire->AddWindow( window );
 
-                    // add the bogus net name to network->nets.
-                    m_pcb->m_network->m_nets.push_back( no_net );
-
-                    // use the bogus net name in the netless zone.
-                    plane->m_name = no_net->m_net_id;
+                    PATH* cutout = new PATH( window, T_polygon );
+                    window->SetShape( cutout );
+                    cutout->layer_id = layerId;
+                    appendClosedChain( cutout, hole );
                 }
-
-                mainPolygon->layer_id = m_layerIds[ m_kicadLayer2pcb[ layer ] ];
-
-                // Handle the main outlines
-                SHAPE_POLY_SET::ITERATOR iterator;
-                VECTOR2I                 startpoint;
-                bool is_first_point = true;
-
-                for( iterator = zone->IterateWithHoles(); iterator; iterator++ )
-                {
-                    VECTOR2I point( iterator->x, iterator->y );
-
-                    if( is_first_point )
-                    {
-                        startpoint = point;
-                        is_first_point = false;
-                    }
-
-                    mainPolygon->AppendPoint( mapPt( point ) );
-
-                    // this was the end of the main polygon
-                    if( iterator.IsEndContour() )
-                    {
-                        // Close polygon
-                        mainPolygon->AppendPoint( mapPt( startpoint ) );
-                        break;
-                    }
-                }
-
-                WINDOW* window  = nullptr;
-                PATH*   cutout  = nullptr;
-
-                bool isStartContour = true;
-
-                // handle the cutouts
-                for( iterator++; iterator; iterator++ )
-                {
-                    if( isStartContour )
-                    {
-                        is_first_point = true;
-                        window = new WINDOW( plane );
-                        plane->AddWindow( window );
-
-                        cutout = new PATH( window, T_polygon );
-                        window->SetShape( cutout );
-                        cutout->layer_id = m_layerIds[ m_kicadLayer2pcb[ layer ] ];
-                    }
-
-                    // If the point in this iteration is the last of the contour, the next iteration
-                    // will start with a new contour.
-                    isStartContour = iterator.IsEndContour();
-
-                    wxASSERT( window );
-                    wxASSERT( cutout );
-
-                    VECTOR2I point( iterator->x, iterator->y );
-
-                    if( is_first_point )
-                    {
-                        startpoint = point;
-                        is_first_point = false;
-                    }
-
-                    cutout->AppendPoint( mapPt( point ) );
-
-                    // Close the polygon
-                    if( iterator.IsEndContour() )
-                        cutout->AppendPoint( mapPt( startpoint ) );
-                }
-            }   // end build zones by layer
+            }
         }
     }
 
@@ -1428,7 +1401,7 @@ void SPECCTRA_DB::FromBOARD( BOARD* aBoard )
         for( NETINFO_LIST::iterator i = netInfo.begin(); i != netInfo.end(); ++i )
         {
             if( i->GetNetCode() > 0 )
-                m_nets[i->GetNetCode()]->m_net_id = TO_UTF8( i->GetNetname() );
+                m_nets[i->GetNetCode()]->m_net_id = sanitizeForDSNString( i->GetNetname() );
         }
 
         m_padstackset.clear();
@@ -1437,7 +1410,7 @@ void SPECCTRA_DB::FromBOARD( BOARD* aBoard )
         {
             IMAGE* image = makeIMAGE( aBoard, footprint );
 
-            componentId = TO_UTF8( footprint->GetReference() );
+            componentId = componentIds[footprint];
 
             // Create a net list entry for all the actual pins in the current footprint.
             // Location of this code is critical because we fabricated some pin names to ensure
@@ -1480,7 +1453,7 @@ void SPECCTRA_DB::FromBOARD( BOARD* aBoard )
             place->SetRotation( footprint->GetOrientationDegrees() );
             place->SetVertex( mapPt( footprint->GetPosition() ) );
             place->m_component_id = componentId;
-            place->m_part_number  = TO_UTF8( footprint->GetValue() );
+            place->m_part_number  = sanitizeForDSNString( footprint->GetValue() );
 
             // footprint is flipped from bottom side, set side to T_back
             if( footprint->GetFlag() )
@@ -1572,14 +1545,10 @@ void SPECCTRA_DB::FromBOARD( BOARD* aBoard )
 
     //-----<create the wires from tracks>-----------------------------------
     {
-        // export all of them for now, later we'll decide what controls we need on this.
-        std::string netname;
-        WIRING*     wiring = m_pcb->m_wiring;
-        PATH*       path = nullptr;
-
-        int old_netcode = -1;
-        int old_width = -1;
-        int old_layer = UNDEFINED_LAYER;
+        // One Specctra wire per KiCad track/arc segment, always exactly two path points.
+        // FreeRouting may have issues normalizing multi-point (polyline) wires
+        // that share endpoints
+        WIRING* wiring = m_pcb->m_wiring;
 
         for( PCB_TRACK* track : aBoard->Tracks() )
         {
@@ -1591,44 +1560,28 @@ void SPECCTRA_DB::FromBOARD( BOARD* aBoard )
             if( netcode == 0 )
                 continue;
 
-            if( old_netcode != netcode
-                    || old_width != track->GetWidth()
-                    || old_layer != track->GetLayer()
-                    || ( path && path->points.back() != mapPt( track->GetStart() ) ) )
-            {
-                old_width   = track->GetWidth();
-                old_layer   = track->GetLayer();
+            NETINFO_ITEM* net = aBoard->FindNet( netcode );
+            wxASSERT( net );
 
-                if( old_netcode != netcode )
-                {
-                    old_netcode = netcode;
-                    NETINFO_ITEM* net = aBoard->FindNet( netcode );
-                    wxASSERT( net );
-                    netname = TO_UTF8( net->GetNetname() );
-                }
+            WIRE* wire = new WIRE( wiring );
 
-                WIRE* wire = new WIRE( wiring );
+            wiring->wires.push_back( wire );
+            wire->m_net_id = TO_UTF8( net->GetNetname() );
 
-                wiring->wires.push_back( wire );
-                wire->m_net_id = netname;
+            if( track->IsLocked() )
+                wire->m_wire_type = T_fix; // tracks with fix property are not returned in .ses files
+            else
+                wire->m_wire_type = T_protect;
 
-                if( track->IsLocked() )
-                    wire->m_wire_type = T_fix;    // tracks with fix property are not returned in .ses files
-                else
-                    wire->m_wire_type = T_route;  // could be T_protect
+            PCB_LAYER_ID kiLayer = track->GetLayer();
+            int          pcbLayer = m_kicadLayer2pcb[kiLayer];
 
-                PCB_LAYER_ID kiLayer = track->GetLayer();
-                int          pcbLayer = m_kicadLayer2pcb[kiLayer];
-
-                path = new PATH( wire );
-                wire->SetShape( path );
-                path->layer_id = m_layerIds[pcbLayer];
-                path->aperture_width = scale( old_width );
-                path->AppendPoint( mapPt( track->GetStart() ) );
-            }
-
-            if( path )  // Should not occur
-                path->AppendPoint( mapPt( track->GetEnd() ) );
+            PATH* path = new PATH( wire );
+            wire->SetShape( path );
+            path->layer_id = m_layerIds[pcbLayer];
+            path->aperture_width = scale( track->GetWidth() );
+            path->AppendPoint( mapPt( track->GetStart() ) );
+            path->AppendPoint( mapPt( track->GetEnd() ) );
         }
     }
 
@@ -1669,7 +1622,7 @@ void SPECCTRA_DB::FromBOARD( BOARD* aBoard )
             if( via->IsLocked() )
                 dsnVia->m_via_type = T_fix;    // vias with fix property are not returned in .ses files
             else
-                dsnVia->m_via_type = T_route;  // could be T_protect
+                dsnVia->m_via_type = T_protect;
         }
     }
 

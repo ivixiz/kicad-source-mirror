@@ -17,11 +17,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include <macros.h>
@@ -37,6 +33,8 @@
 #include <increment.h>
 #include <pcb_shape.h>
 #include <pcb_group.h>
+#include <constraints/constraint_copy.h>
+#include <constraints/pcb_constraint.h>
 #include <pcb_point.h>
 #include <pcb_target.h>
 #include <pcb_textbox.h>
@@ -48,10 +46,12 @@
 #include <drawing_sheet/ds_proxy_view_item.h>
 #include <kiway.h>
 #include <status_popup.h>
+#include <tool/action_manager.h>
 #include <tool/selection_conditions.h>
 #include <tool/tool_manager.h>
 #include <tools/pcb_actions.h>
 #include <tools/pcb_selection_tool.h>
+#include <tools/constraint_edit_tool.h>
 #include <tools/edit_tool.h>
 #include <tools/item_modification_routine.h>
 #include <tools/pcb_picker_tool.h>
@@ -129,6 +129,50 @@ static const std::vector<KICAD_T> connectedTypes = { PCB_TRACE_T, PCB_ARC_T, PCB
 static const std::vector<KICAD_T> routableTypes = { PCB_TRACE_T, PCB_ARC_T, PCB_VIA_T, PCB_PAD_T, PCB_FOOTPRINT_T };
 
 
+// Types with no Mirror() override, which would fall through to the warning-dialog
+// BOARD_ITEM::Mirror. Free pads are handled specially by the tool but not by PCB_GROUP::Mirror.
+static const std::vector<KICAD_T> nonMirrorableTypes = {
+    PCB_FOOTPRINT_T, PCB_PAD_T, PCB_TARGET_T, PCB_REFERENCE_IMAGE_T,
+};
+
+
+// A group is mirrorable only if none of its members hit BOARD_ITEM::Mirror.
+static bool groupMirrorable( const PCB_GROUP* aGroup )
+{
+    bool ok = true;
+
+    aGroup->RunOnChildren(
+            [&]( BOARD_ITEM* aChild )
+            {
+                if( aChild->IsType( nonMirrorableTypes ) )
+                    ok = false;
+            },
+            RECURSE_MODE::RECURSE );
+
+    return ok;
+}
+
+
+// True if at least one selected item can be mirrored. A group counts only if all its members can.
+static bool selectionMirrorable( const SELECTION& aSelection )
+{
+    for( EDA_ITEM* item : aSelection )
+    {
+        if( item->Type() == PCB_GROUP_T )
+        {
+            if( groupMirrorable( static_cast<PCB_GROUP*>( item ) ) )
+                return true;
+        }
+        else if( item->IsType( EDIT_TOOL::MirrorableItems ) )
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
 EDIT_TOOL::EDIT_TOOL() :
         PCB_TOOL_BASE( "pcbnew.InteractiveEdit" ),
         m_selectionTool( nullptr ),
@@ -157,14 +201,9 @@ static std::shared_ptr<CONDITIONAL_MENU> makeMirrorRotateMenu( TOOL_INTERACTIVE*
     auto canMirror = []( const SELECTION& aSelection )
     {
         if( SELECTION_CONDITIONS::OnlyTypes( padTypes )( aSelection ) )
-        {
             return false;
-        }
 
-        if( SELECTION_CONDITIONS::HasTypes( groupTypes )( aSelection ) )
-            return true;
-
-        return SELECTION_CONDITIONS::HasTypes( EDIT_TOOL::MirrorableItems )( aSelection );
+        return selectionMirrorable( aSelection );
     };
 
     menu->AddItem( PCB_ACTIONS::rotateCcw, SELECTION_CONDITIONS::NotEmpty );
@@ -572,6 +611,12 @@ bool EDIT_TOOL::Init()
     std::shared_ptr<ACTION_MENU> gateSwapSubMenu = makeGateSwapMenu( this );
     m_selectionTool->GetToolMenu().RegisterSubMenu( gateSwapSubMenu );
 
+    auto fpAttributesMenu = std::make_shared<CONDITIONAL_MENU>( this );
+    fpAttributesMenu->SetUntranslatedTitle( _HKI( "Attributes" ) );
+    fpAttributesMenu->AddCheckItem( PCB_ACTIONS::toggleExcludeFromBOM, SELECTION_CONDITIONS::ShowAlways );
+    fpAttributesMenu->AddCheckItem( PCB_ACTIONS::toggleExcludeFromPosFiles, SELECTION_CONDITIONS::ShowAlways );
+    m_selectionTool->GetToolMenu().RegisterSubMenu( fpAttributesMenu );
+
     auto positioningToolsCondition = [this]( const SELECTION& aSel )
     {
         std::shared_ptr<CONDITIONAL_MENU> subMenu = makePositioningToolsMenu( this );
@@ -664,6 +709,8 @@ bool EDIT_TOOL::Init()
             return false;
         }
 
+        // Gates the whole "Mirror / Rotate" submenu, so keep it open for any group. Rotate works
+        // on a group with footprints, only the mirror items inside disable (see makeMirrorRotateMenu).
         if( SELECTION_CONDITIONS::HasTypes( groupTypes )( aSelection ) )
             return true;
 
@@ -689,6 +736,50 @@ bool EDIT_TOOL::Init()
         }
 
         return false;
+    };
+
+    auto excludeFromBOMCond = [this]( const SELECTION& aSel )
+    {
+        wxString variantName;
+        int      checked = 0, unchecked = 0;
+
+        if( BOARD* board = frame()->GetBoard() )
+            variantName = board->GetCurrentVariant();
+
+        for( const EDA_ITEM* item : aSel )
+        {
+            if( item->Type() == PCB_FOOTPRINT_T )
+            {
+                if( static_cast<const FOOTPRINT*>( item )->GetExcludedFromBOMForVariant( variantName ) )
+                    checked++;
+                else
+                    unchecked++;
+            }
+        }
+
+        return checked > 0 && unchecked == 0;
+    };
+
+    auto excludeFromPosFilesCond = [this]( const SELECTION& aSel )
+    {
+        wxString variantName;
+        int      checked = 0, unchecked = 0;
+
+        if( BOARD* board = frame()->GetBoard() )
+            variantName = board->GetCurrentVariant();
+
+        for( const EDA_ITEM* item : aSel )
+        {
+            if( item->Type() == PCB_FOOTPRINT_T )
+            {
+                if( static_cast<const FOOTPRINT*>( item )->GetExcludedFromPosFilesForVariant( variantName ) )
+                    checked++;
+                else
+                    unchecked++;
+            }
+        }
+
+        return checked > 0 && unchecked == 0;
     };
 
     auto noActiveToolCondition = [this]( const SELECTION& aSelection )
@@ -775,6 +866,7 @@ bool EDIT_TOOL::Init()
     menu.AddItem( PCB_ACTIONS::updateFootprints,  multipleFootprintsCondition );
     menu.AddItem( PCB_ACTIONS::changeFootprint,   singleFootprintCondition );
     menu.AddItem( PCB_ACTIONS::changeFootprints,  multipleFootprintsCondition );
+    menu.AddMenu( fpAttributesMenu.get(),         singleFootprintCondition || multipleFootprintsCondition );
 
     // Add the submenu for the special tools: modfiers and positioning tools
     menu.AddSeparator( 100 );
@@ -799,6 +891,10 @@ bool EDIT_TOOL::Init()
     menu.AddSeparator( 2000 );
     menu.AddItem( PCB_ACTIONS::properties,        propertiesCondition, 2000 );
     // clang-format on
+
+    ACTION_MANAGER* mgr = m_toolMgr->GetActionManager();
+    mgr->SetConditions( PCB_ACTIONS::toggleExcludeFromBOM, ACTION_CONDITIONS().Check( excludeFromBOMCond ) );
+    mgr->SetConditions( PCB_ACTIONS::toggleExcludeFromPosFiles, ACTION_CONDITIONS().Check( excludeFromPosFilesCond ) );
 
     return true;
 }
@@ -1023,359 +1119,76 @@ int EDIT_TOOL::Drag( const TOOL_EVENT& aEvent )
     if( selection.Empty() )
         return 0;
 
-    if( selection.Size() == 1 && selection.Front()->Type() == PCB_ARC_T )
-    {
-        // TODO: This really should be done in PNS to ensure DRC is maintained, but for now
-        // it allows interactive editing of an arc track
-        return DragArcTrack( aEvent );
-    }
-    else
-    {
-        invokeInlineRouter( mode );
-    }
+    invokeInlineRouter( mode );
 
     return 0;
 }
 
 
-int EDIT_TOOL::DragArcTrack( const TOOL_EVENT& aEvent )
+int EDIT_TOOL::ToggleFootprintAttribute( const TOOL_EVENT& aEvent )
 {
-    PCB_SELECTION& selection = m_selectionTool->GetSelection();
+    const PCB_SELECTION& selection = m_selectionTool->RequestSelection( EDIT_TOOL::FootprintFilter );
 
-    if( selection.Size() != 1 || selection.Front()->Type() != PCB_ARC_T )
+    if( selection.Empty() )
         return 0;
 
-    PCB_ARC*  theArc = static_cast<PCB_ARC*>( selection.Front() );
-    EDA_ANGLE maxTangentDeviation( ADVANCED_CFG::GetCfg().m_MaxTangentAngleDeviation, DEGREES_T );
+    wxString variantName;
 
-    if( theArc->GetAngle() + maxTangentDeviation >= ANGLE_180 )
+    if( BOARD* board = frame()->GetBoard() )
+        variantName = board->GetCurrentVariant();
+
+    bool new_state = false;
+
+    for( const EDA_ITEM* item : selection )
     {
-        wxString msg = wxString::Format( _( "Unable to resize arc tracks of %s or greater." ),
-                                         EDA_UNIT_UTILS::UI::MessageTextFromValue( ANGLE_180 - maxTangentDeviation ) );
-        frame()->ShowInfoBarError( msg );
+        const FOOTPRINT* fp = static_cast<const FOOTPRINT*>( item );
 
-        return 0; // don't bother with > 180 degree arcs
+        if( ( aEvent.IsAction( &PCB_ACTIONS::toggleExcludeFromBOM )
+              && !fp->GetExcludedFromBOMForVariant( variantName ) )
+            || ( aEvent.IsAction( &PCB_ACTIONS::toggleExcludeFromPosFiles )
+                 && !fp->GetExcludedFromPosFilesForVariant( variantName ) ) )
+        {
+            new_state = true;
+            break;
+        }
     }
-
-    KIGFX::VIEW_CONTROLS* controls = getViewControls();
-
-    Activate();
-    // Must be done after Activate() so that it gets set into the correct context
-    controls->ShowCursor( true );
-    controls->SetAutoPan( true );
 
     BOARD_COMMIT commit( this );
-    bool         restore_state = false;
 
-    commit.Modify( theArc );
-
-    VECTOR2I arcCenter = theArc->GetCenter();
-    SEG      tanStart = SEG( arcCenter, theArc->GetStart() ).PerpendicularSeg( theArc->GetStart() );
-    SEG      tanEnd = SEG( arcCenter, theArc->GetEnd() ).PerpendicularSeg( theArc->GetEnd() );
-
-    //Ensure the tangent segments are in the correct orientation
-    OPT_VECTOR2I tanIntersect = tanStart.IntersectLines( tanEnd );
-
-    if( !tanIntersect )
-        return 0;
-
-    tanStart.A = *tanIntersect;
-    tanStart.B = theArc->GetStart();
-    tanEnd.A = *tanIntersect;
-    tanEnd.B = theArc->GetEnd();
-
-    std::set<PCB_TRACK*> addedTracks;
-
-    auto getUniqueTrackAtAnchorCollinear = [&]( const VECTOR2I& aAnchor, const SEG& aCollinearSeg ) -> PCB_TRACK*
+    for( EDA_ITEM* item : selection )
     {
-        std::shared_ptr<CONNECTIVITY_DATA> conn = board()->GetConnectivity();
+        FOOTPRINT* fp = static_cast<FOOTPRINT*>( item );
+        commit.Modify( fp );
 
-        // Allow items at a distance within the width of the arc track
-        int allowedDeviation = theArc->GetWidth();
-
-        std::vector<BOARD_CONNECTED_ITEM*> itemsOnAnchor;
-
-        for( int i = 0; i < 3; i++ )
+        if( !variantName.IsEmpty() )
         {
-            itemsOnAnchor = conn->GetConnectedItemsAtAnchor( theArc, aAnchor, baseConnectedTypes, allowedDeviation );
-            allowedDeviation /= 2;
+            FOOTPRINT_VARIANT* variant = fp->GetVariant( variantName );
 
-            if( itemsOnAnchor.size() == 1 )
-                break;
-        }
+            if( !variant )
+                variant = fp->AddVariant( variantName );
 
-        PCB_TRACK* track = nullptr;
-
-        if( itemsOnAnchor.size() == 1 && itemsOnAnchor.front()->Type() == PCB_TRACE_T )
-        {
-            track = static_cast<PCB_TRACK*>( itemsOnAnchor.front() );
-            commit.Modify( track );
-
-            SEG trackSeg( track->GetStart(), track->GetEnd() );
-
-            // Allow deviations in colinearity as defined in ADVANCED_CFG
-            if( trackSeg.Angle( aCollinearSeg ) > maxTangentDeviation )
-                track = nullptr;
-        }
-
-        if( !track )
-        {
-            track = new PCB_TRACK( theArc->GetParent() );
-            track->SetStart( aAnchor );
-            track->SetEnd( aAnchor );
-            track->SetNet( theArc->GetNet() );
-            track->SetLayer( theArc->GetLayer() );
-            track->SetWidth( theArc->GetWidth() );
-            track->SetLocked( theArc->IsLocked() );
-            track->SetHasSolderMask( theArc->HasSolderMask() );
-            track->SetLocalSolderMaskMargin( theArc->GetLocalSolderMaskMargin() );
-            track->SetFlags( IS_NEW );
-            getView()->Add( track );
-            addedTracks.insert( track );
-        }
-
-        return track;
-    };
-
-    PCB_TRACK* trackOnStart = getUniqueTrackAtAnchorCollinear( theArc->GetStart(), tanStart );
-    PCB_TRACK* trackOnEnd = getUniqueTrackAtAnchorCollinear( theArc->GetEnd(), tanEnd );
-
-    if( trackOnStart->GetLength() != 0 )
-    {
-        tanStart.A = trackOnStart->GetStart();
-        tanStart.B = trackOnStart->GetEnd();
-    }
-
-    if( trackOnEnd->GetLength() != 0 )
-    {
-        tanEnd.A = trackOnEnd->GetStart();
-        tanEnd.B = trackOnEnd->GetEnd();
-    }
-
-    // Recalculate intersection point
-    if( tanIntersect = tanStart.IntersectLines( tanEnd ); !tanIntersect )
-        return 0;
-
-    auto isTrackStartClosestToArcStart = [&]( PCB_TRACK* aTrack ) -> bool
-    {
-        double trackStartToArcStart = aTrack->GetStart().Distance( theArc->GetStart() );
-        double trackEndToArcStart = aTrack->GetEnd().Distance( theArc->GetStart() );
-
-        return trackStartToArcStart < trackEndToArcStart;
-    };
-
-    bool isStartTrackOnStartPt = isTrackStartClosestToArcStart( trackOnStart );
-    bool isEndTrackOnStartPt = isTrackStartClosestToArcStart( trackOnEnd );
-
-    // Calculate constraints
-    //======================
-    // maxTanCircle is the circle with maximum radius that is tangent to the two adjacent straight
-    // tracks and whose tangent points are constrained within the original tracks and their
-    // projected intersection points.
-    //
-    // The cursor will be constrained first within the isosceles triangle formed by the segments
-    // cSegTanStart, cSegTanEnd and cSegChord. After that it will be constrained to be outside
-    // maxTanCircle.
-    //
-    //
-    //                   ____________  <-cSegTanStart
-    //                  /     *   . '   *
-    //    cSegTanEnd-> /  *   . '           *
-    //                /*  . ' <-cSegChord     *
-    //               /. '
-    //              /*                           *
-    //
-    //              *             c               *  <-maxTanCircle
-    //
-    //               *                           *
-    //
-    //                  *                     *
-    //                    *                 *
-    //                        *        *
-    //
-
-    auto getFurthestPointToTanInterstect = [&]( VECTOR2I& aPointA, VECTOR2I& aPointB ) -> VECTOR2I
-    {
-        if( ( aPointA - *tanIntersect ).EuclideanNorm() > ( aPointB - *tanIntersect ).EuclideanNorm() )
-        {
-            return aPointA;
-        }
-        else
-        {
-            return aPointB;
-        }
-    };
-
-    CIRCLE   maxTanCircle;
-    VECTOR2I tanStartPoint = getFurthestPointToTanInterstect( tanStart.A, tanStart.B );
-    VECTOR2I tanEndPoint = getFurthestPointToTanInterstect( tanEnd.A, tanEnd.B );
-    VECTOR2I tempTangentPoint = tanEndPoint;
-
-    if( getFurthestPointToTanInterstect( tanStartPoint, tanEndPoint ) == tanEndPoint )
-        tempTangentPoint = tanStartPoint;
-
-    maxTanCircle.ConstructFromTanTanPt( tanStart, tanEnd, tempTangentPoint );
-    VECTOR2I maxTanPtStart = tanStart.LineProject( maxTanCircle.Center );
-    VECTOR2I maxTanPtEnd = tanEnd.LineProject( maxTanCircle.Center );
-
-    SEG cSegTanStart( maxTanPtStart, *tanIntersect );
-    SEG cSegTanEnd( maxTanPtEnd, *tanIntersect );
-    SEG cSegChord( maxTanPtStart, maxTanPtEnd );
-
-    int cSegTanStartSide = cSegTanStart.Side( theArc->GetMid() );
-    int cSegTanEndSide = cSegTanEnd.Side( theArc->GetMid() );
-    int cSegChordSide = cSegChord.Side( theArc->GetMid() );
-
-    bool eatFirstMouseUp = true;
-
-    // Start the tool loop
-    while( TOOL_EVENT* evt = Wait() )
-    {
-        m_cursor = controls->GetMousePosition();
-
-        // Constrain cursor within the isosceles triangle
-        if( cSegTanStartSide != cSegTanStart.Side( m_cursor ) || cSegTanEndSide != cSegTanEnd.Side( m_cursor )
-            || cSegChordSide != cSegChord.Side( m_cursor ) )
-        {
-            std::vector<VECTOR2I> possiblePoints;
-
-            possiblePoints.push_back( cSegTanEnd.NearestPoint( m_cursor ) );
-            possiblePoints.push_back( cSegChord.NearestPoint( m_cursor ) );
-
-            VECTOR2I closest = cSegTanStart.NearestPoint( m_cursor );
-
-            for( const VECTOR2I& candidate : possiblePoints )
+            if( variant )
             {
-                if( ( candidate - m_cursor ).SquaredEuclideanNorm() < ( closest - m_cursor ).SquaredEuclideanNorm() )
-                {
-                    closest = candidate;
-                }
-            }
+                if( aEvent.IsAction( &PCB_ACTIONS::toggleExcludeFromBOM ) )
+                    variant->SetExcludedFromBOM( new_state );
+                else if( aEvent.IsAction( &PCB_ACTIONS::toggleExcludeFromPosFiles ) )
+                    variant->SetExcludedFromPosFiles( new_state );
 
-            m_cursor = closest;
-        }
-
-        // Constrain cursor to be outside maxTanCircle
-        if( ( m_cursor - maxTanCircle.Center ).EuclideanNorm() < maxTanCircle.Radius )
-            m_cursor = maxTanCircle.NearestPoint( m_cursor );
-
-        controls->ForceCursorPosition( true, m_cursor );
-
-        // Calculate resulting object coordinates
-        CIRCLE circlehelper;
-        circlehelper.ConstructFromTanTanPt( cSegTanStart, cSegTanEnd, m_cursor );
-
-        VECTOR2I newCenter = circlehelper.Center;
-        VECTOR2I newStart = cSegTanStart.LineProject( newCenter );
-        VECTOR2I newEnd = cSegTanEnd.LineProject( newCenter );
-        VECTOR2I newMid = CalcArcMid( newStart, newEnd, newCenter );
-
-        // Update objects
-        theArc->SetStart( newStart );
-        theArc->SetEnd( newEnd );
-        theArc->SetMid( newMid );
-
-        if( isStartTrackOnStartPt )
-            trackOnStart->SetStart( newStart );
-        else
-            trackOnStart->SetEnd( newStart );
-
-        if( isEndTrackOnStartPt )
-            trackOnEnd->SetStart( newEnd );
-        else
-            trackOnEnd->SetEnd( newEnd );
-
-        // Update view
-        getView()->Update( trackOnStart );
-        getView()->Update( trackOnEnd );
-        getView()->Update( theArc );
-
-        // Handle events
-        if( evt->IsMotion() || evt->IsDrag( BUT_LEFT ) )
-        {
-            eatFirstMouseUp = false;
-        }
-        else if( evt->IsCancelInteractive() || evt->IsActivate() )
-        {
-            restore_state = true; // Canceling the tool means that items have to be restored
-            break;                // Finish
-        }
-        else if( evt->IsAction( &ACTIONS::undo ) )
-        {
-            restore_state = true; // Perform undo locally
-            break;                // Finish
-        }
-        else if( evt->IsMouseUp( BUT_LEFT ) || evt->IsClick( BUT_LEFT ) || evt->IsDblClick( BUT_LEFT ) )
-        {
-            // Eat mouse-up/-click events that leaked through from the lock dialog
-            if( eatFirstMouseUp && !evt->IsAction( &ACTIONS::cursorClick ) )
-            {
-                eatFirstMouseUp = false;
                 continue;
             }
-
-            break; // Finish
         }
+
+        if( aEvent.IsAction( &PCB_ACTIONS::toggleExcludeFromBOM ) )
+            fp->SetExcludedFromBOM( new_state );
+        else if( aEvent.IsAction( &PCB_ACTIONS::toggleExcludeFromPosFiles ) )
+            fp->SetExcludedFromPosFiles( new_state );
     }
 
-    // Amend the end points of the arc if we delete the joining tracks
-    VECTOR2I newStart = trackOnStart->GetStart();
-    VECTOR2I newEnd = trackOnEnd->GetStart();
+    if( !commit.Empty() )
+        commit.Push( _( "Toggle Attribute" ) );
 
-    if( isStartTrackOnStartPt )
-        newStart = trackOnStart->GetEnd();
-
-    if( isEndTrackOnStartPt )
-        newEnd = trackOnEnd->GetEnd();
-
-    int maxLengthIU = KiROUND( ADVANCED_CFG::GetCfg().m_MaxTrackLengthToKeep * pcbIUScale.IU_PER_MM );
-
-    if( trackOnStart->GetLength() <= maxLengthIU )
-    {
-        if( addedTracks.count( trackOnStart ) )
-        {
-            getView()->Remove( trackOnStart );
-            addedTracks.erase( trackOnStart );
-            delete trackOnStart;
-        }
-        else
-        {
-            commit.Remove( trackOnStart );
-        }
-
-        theArc->SetStart( newStart );
-    }
-
-    if( trackOnEnd->GetLength() <= maxLengthIU )
-    {
-        if( addedTracks.count( trackOnEnd ) )
-        {
-            getView()->Remove( trackOnEnd );
-            addedTracks.erase( trackOnEnd );
-            delete trackOnEnd;
-        }
-        else
-        {
-            commit.Remove( trackOnEnd );
-        }
-
-        theArc->SetEnd( newEnd );
-    }
-
-    if( theArc->GetLength() <= 0 )
-        commit.Remove( theArc );
-
-    for( PCB_TRACK* added : addedTracks )
-    {
-        getView()->Remove( added );
-        commit.Add( added );
-    }
-
-    // Should we commit?
-    if( restore_state )
-        commit.Revert();
-    else
-        commit.Push( _( "Drag Arc Track" ) );
+    if( selection.IsHover() )
+        m_toolMgr->RunAction( ACTIONS::selectionClear );
 
     return 0;
 }
@@ -1543,7 +1356,8 @@ int EDIT_TOOL::FilletTracks( const TOOL_EVENT& aEvent )
                 sTool->FilterCollectorForLockedItems( aCollector );
             } );
 
-    m_selectionTool->ReportFilteredLockedItems();
+    if( m_selectionTool->ReportFilteredLockedItems() )
+        return 0;
 
     if( selection.Size() < 2 )
     {
@@ -2355,10 +2169,23 @@ int EDIT_TOOL::BooleanPolygons( const TOOL_EVENT& aEvent )
 int EDIT_TOOL::Properties( const TOOL_EVENT& aEvent )
 {
     PCB_BASE_EDIT_FRAME* editFrame = getEditFrame<PCB_BASE_EDIT_FRAME>();
+
+    // A constraint selected by clicking its badge has no board selection, so Edit targets it here
+    // before the normal properties path (mirrors the Delete hook for a badge-selected constraint).
+    if( CONSTRAINT_EDIT_TOOL* constraintTool = m_toolMgr->GetTool<CONSTRAINT_EDIT_TOOL>();
+        constraintTool && constraintTool->TryEditSelectedConstraint() )
+    {
+        return 0;
+    }
+
     const PCB_SELECTION& selection = m_selectionTool->RequestSelection(
             []( const VECTOR2I& aPt, GENERAL_COLLECTOR& aCollector, PCB_SELECTION_TOOL* sTool )
             {
             } );
+
+    // Snapshot undo depth to detect whether dialog actually committed
+    // Cancel leaves it unchanged and must not trigger a constraint resolve
+    const int undoBefore = editFrame->GetUndoCommandCount();
 
     // Tracks & vias are treated in a special way:
     if( ( SELECTION_CONDITIONS::OnlyTypes( { PCB_TRACE_T, PCB_ARC_T, PCB_VIA_T } ) )( selection ) )
@@ -2406,6 +2233,18 @@ int EDIT_TOOL::Properties( const TOOL_EVENT& aEvent )
             m_toolMgr->PostAction( ACTIONS::pageSettings );
         else
             m_toolMgr->RunAction( PCB_ACTIONS::footprintProperties );
+    }
+
+    // Position or geometry edit via these dialogs settles constraints as if item were dragged
+    // holding edited item and moving neighbors gated on real commit so canceled dialog skips the solve
+    if( editFrame->GetUndoCommandCount() > undoBefore )
+    {
+        if( CONSTRAINT_EDIT_TOOL* constraintTool = m_toolMgr->GetTool<CONSTRAINT_EDIT_TOOL>() )
+        {
+            std::vector<PCB_SHAPE*> shapes;
+            collectConstraintShapes( selection, shapes );
+            constraintTool->SolveAfterEdit( shapes );
+        }
     }
 
     if( selection.IsHover() )
@@ -2467,6 +2306,48 @@ int EDIT_TOOL::EditVertices( const TOOL_EVENT& aEvent )
         editFrame->OpenVertexEditor( item );
 
     return 0;
+}
+
+
+void EDIT_TOOL::collectConstraintShapes( const SELECTION& aSelection, std::vector<PCB_SHAPE*>& aShapes )
+{
+    // Recurse so constrained shapes carried inside a transformed footprint or group seed their
+    // clusters too; a top-level-only walk would leave those constraints silently violated.
+    // PCB_GROUP::RunOnChildren only descends into groups and generators, so recurse through every
+    // container ourselves; the visited set guards against overlapping ownership paths.
+    std::unordered_set<BOARD_ITEM*> visited;
+
+    std::function<void( BOARD_ITEM* )> collect =
+            [&]( BOARD_ITEM* aItem )
+            {
+                if( !aItem || !visited.insert( aItem ).second )
+                    return;
+
+                if( aItem->Type() == PCB_SHAPE_T )
+                    aShapes.push_back( static_cast<PCB_SHAPE*>( aItem ) );
+
+                aItem->RunOnChildren( collect, RECURSE_MODE::NO_RECURSE );
+            };
+
+    for( EDA_ITEM* item : aSelection )
+    {
+        if( item->IsBOARD_ITEM() )
+            collect( static_cast<BOARD_ITEM*>( item ) );
+    }
+}
+
+
+void EDIT_TOOL::reSolveConstraintsAfterEdit( const PCB_SELECTION& aSelection )
+{
+    CONSTRAINT_EDIT_TOOL* constraintTool = m_toolMgr->GetTool<CONSTRAINT_EDIT_TOOL>();
+
+    if( !constraintTool )
+        return;
+
+    std::vector<PCB_SHAPE*> shapes;
+    collectConstraintShapes( aSelection, shapes );
+
+    constraintTool->SolveAfterMove( shapes );
 }
 
 
@@ -2611,7 +2492,10 @@ int EDIT_TOOL::Rotate( const TOOL_EVENT& aEvent )
         // Don't push a separate undo entry when we're in the middle of a move operation.
         // The parent move will handle the commit.
         if( !localCommit.Empty() && !m_dragging )
+        {
             localCommit.Push( _( "Rotate" ) );
+            reSolveConstraintsAfterEdit( selection );
+        }
 
         if( is_hover && !m_dragging )
             m_toolMgr->RunAction( ACTIONS::selectionClear );
@@ -2662,8 +2546,8 @@ static void mirrorPad( PAD& aPad, const VECTOR2I& aMirrorPoint, FLIP_DIRECTION a
 
 
 const std::vector<KICAD_T> EDIT_TOOL::MirrorableItems = {
-    PCB_SHAPE_T, PCB_FIELD_T, PCB_TEXT_T, PCB_TEXTBOX_T, PCB_ZONE_T,      PCB_PAD_T,
-    PCB_TRACE_T, PCB_ARC_T,   PCB_VIA_T,  PCB_GROUP_T,   PCB_GENERATOR_T, PCB_POINT_T,
+    PCB_SHAPE_T, PCB_FIELD_T, PCB_TEXT_T,  PCB_TEXTBOX_T,   PCB_ZONE_T,  PCB_PAD_T,   PCB_TRACE_T,
+    PCB_ARC_T,   PCB_VIA_T,   PCB_GROUP_T, PCB_GENERATOR_T, PCB_POINT_T, PCB_TABLE_T,
 };
 
 
@@ -2701,10 +2585,25 @@ int EDIT_TOOL::Mirror( const TOOL_EVENT& aEvent )
     FLIP_DIRECTION flipDirection = aEvent.IsAction( &PCB_ACTIONS::mirrorV ) ? FLIP_DIRECTION::TOP_BOTTOM
                                                                             : FLIP_DIRECTION::LEFT_RIGHT;
 
+    int skippedFootprints = 0;
+    int skippedGroups = 0;
+
     for( EDA_ITEM* item : selection )
     {
         if( !item->IsType( MirrorableItems ) )
+        {
+            if( item->Type() == PCB_FOOTPRINT_T )
+                skippedFootprints++;
+
             continue;
+        }
+
+        // Skip groups that hold non-mirrorable items, else the rest would tear away from them.
+        if( item->Type() == PCB_GROUP_T && !groupMirrorable( static_cast<PCB_GROUP*>( item ) ) )
+        {
+            skippedGroups++;
+            continue;
+        }
 
         commit->Modify( item, nullptr, RECURSE_MODE::RECURSE );
 
@@ -2728,9 +2627,7 @@ int EDIT_TOOL::Mirror( const TOOL_EVENT& aEvent )
             static_cast<PCB_TEXTBOX*>( item )->Mirror( mirrorPoint, flipDirection );
             break;
 
-        case PCB_TABLE_T:
-            // JEY TODO: tables
-            break;
+        case PCB_TABLE_T: static_cast<PCB_TABLE*>( item )->Mirror( mirrorPoint, flipDirection ); break;
 
         case PCB_PAD_T:
             mirrorPad( *static_cast<PAD*>( item ), mirrorPoint, flipDirection );
@@ -2763,7 +2660,21 @@ int EDIT_TOOL::Mirror( const TOOL_EVENT& aEvent )
     // Don't push a separate undo entry when we're in the middle of a move operation.
     // The parent move will handle the commit.
     if( !localCommit.Empty() && !m_dragging )
+    {
         localCommit.Push( _( "Mirror" ) );
+        reSolveConstraintsAfterEdit( selection );
+    }
+
+    if( skippedFootprints > 0 && !m_dragging )
+    {
+        frame()->ShowInfoBarMsg( _( "Footprints cannot be mirrored. Use Flip to move them to "
+                                    "the other side of the board." ) );
+    }
+    else if( skippedGroups > 0 && !m_dragging )
+    {
+        frame()->ShowInfoBarMsg( _( "Groups containing footprints or other items that cannot be "
+                                    "mirrored were skipped." ) );
+    }
 
     if( selection.IsHover() && !m_dragging )
         m_toolMgr->RunAction( ACTIONS::selectionClear );
@@ -2934,7 +2845,10 @@ int EDIT_TOOL::Flip( const TOOL_EVENT& aEvent )
     // Don't push a separate undo entry when we're in the middle of a move operation.
     // The parent move will handle the commit.
     if( !localCommit.Empty() && !m_dragging )
+    {
         localCommit.Push( _( "Change Side / Flip" ) );
+        reSolveConstraintsAfterEdit( selection );
+    }
 
     if( selection.IsHover() && !m_dragging )
         m_toolMgr->RunAction( ACTIONS::selectionClear );
@@ -3140,6 +3054,20 @@ int EDIT_TOOL::Remove( const TOOL_EVENT& aEvent )
 {
     PCB_BASE_EDIT_FRAME* editFrame = getEditFrame<PCB_BASE_EDIT_FRAME>();
 
+    // A geometric constraint selected by clicking its on-canvas badge has no board selection, so a
+    // plain Delete targets it here before the normal item-removal path.  Cut is excluded: the
+    // constraint is not on the clipboard, so it must not be silently removed (#2329).
+    bool isCut = aEvent.Parameter<PCB_ACTIONS::REMOVE_FLAGS>() == PCB_ACTIONS::REMOVE_FLAGS::CUT;
+
+    if( !isCut )
+    {
+        if( CONSTRAINT_EDIT_TOOL* constraintTool = m_toolMgr->GetTool<CONSTRAINT_EDIT_TOOL>();
+            constraintTool && constraintTool->TryDeleteSelectedConstraint() )
+        {
+            return 0;
+        }
+    }
+
     editFrame->PushTool( aEvent );
 
     std::vector<BOARD_ITEM*> lockedItems;
@@ -3147,7 +3075,6 @@ int EDIT_TOOL::Remove( const TOOL_EVENT& aEvent )
 
     // get a copy instead of reference (as we're going to clear the selection before removing items)
     PCB_SELECTION selectionCopy;
-    bool          isCut = aEvent.Parameter<PCB_ACTIONS::REMOVE_FLAGS>() == PCB_ACTIONS::REMOVE_FLAGS::CUT;
     bool          isAlt = aEvent.Parameter<PCB_ACTIONS::REMOVE_FLAGS>() == PCB_ACTIONS::REMOVE_FLAGS::ALT;
 
     // If we are in a "Cut" operation, then the copied selection exists already and we want to
@@ -3159,6 +3086,9 @@ int EDIT_TOOL::Remove( const TOOL_EVENT& aEvent )
     }
     else
     {
+        // Hover-pick is only a fallback for an empty selection.
+        const bool hadInitialSelection = !m_selectionTool->GetSelection().Empty();
+
         // When not in free-pad mode we normally auto-promote selected pads to their parent
         // footprints.  But this is probably a little too dangerous for a destructive operation,
         // so we just do the promotion but not the deletion (allowing for a second delete to do
@@ -3171,6 +3101,12 @@ int EDIT_TOOL::Remove( const TOOL_EVENT& aEvent )
                 } );
 
         m_selectionTool->ReportFilteredLockedItems();
+
+        if( hadInitialSelection && selectionCopy.Empty() )
+        {
+            editFrame->PopTool( aEvent );
+            return 0;
+        }
 
         size_t beforeFPCount = selectionCopy.CountType( PCB_FOOTPRINT_T );
 
@@ -3284,6 +3220,7 @@ int EDIT_TOOL::MoveExact( const TOOL_EVENT& aEvent )
         }
 
         commit.Push( _( "Move Exactly" ) );
+        reSolveConstraintsAfterEdit( selection );
 
         if( selection.IsHover() )
             m_toolMgr->RunAction( ACTIONS::selectionClear );
@@ -3342,6 +3279,10 @@ int EDIT_TOOL::Duplicate( const TOOL_EVENT& aEvent )
     std::vector<BOARD_ITEM*> new_items;
     new_items.reserve( selection.Size() );
 
+    // Maps each duplicated original KIID to its duplicate so constraints between them
+    // can be repointed at the copies once duplication finishes
+    std::map<KIID, KIID> idMap;
+
     // Each selected item is duplicated and pushed to new_items list
     // Old selection is cleared, and new items are then selected.
     for( EDA_ITEM* item : selection )
@@ -3391,6 +3332,7 @@ int EDIT_TOOL::Duplicate( const TOOL_EVENT& aEvent )
                     dupe_item->SetFlags( IS_NEW );
                 }
 
+                idMap[orig_item->m_Uuid] = dupe_item->m_Uuid;
                 new_items.push_back( dupe_item );
                 commit.Add( dupe_item );
                 break;
@@ -3417,6 +3359,7 @@ int EDIT_TOOL::Duplicate( const TOOL_EVENT& aEvent )
                 // will not properly select it later on
                 dupe_item->ClearSelected();
 
+                idMap[orig_item->m_Uuid] = dupe_item->m_Uuid;
                 new_items.push_back( dupe_item );
                 commit.Add( dupe_item );
                 break;
@@ -3427,7 +3370,10 @@ int EDIT_TOOL::Duplicate( const TOOL_EVENT& aEvent )
 
             case PCB_GENERATOR_T:
             case PCB_GROUP_T:
-                dupe_item = static_cast<PCB_GROUP*>( orig_item )->DeepDuplicate( true, &commit );
+            {
+                // DeepDuplicate maps original to duplicate KIID per descendant while cloning the group
+                // so grouped constraints can be repointed unordered iteration blocks a later pairing
+                dupe_item = static_cast<PCB_GROUP*>( orig_item )->DeepDuplicate( true, &commit, &idMap );
 
                 dupe_item->RunOnChildren(
                         [&]( BOARD_ITEM* aItem )
@@ -3442,11 +3388,20 @@ int EDIT_TOOL::Duplicate( const TOOL_EVENT& aEvent )
                 new_items.push_back( dupe_item );
                 commit.Add( dupe_item );
                 break;
+            }
 
             default: UNIMPLEMENTED_FOR( orig_item->GetClass() ); break;
             }
         }
     }
+
+    // Carry constraints whose members were all duplicated repointed at the copies
+    // constraints are not selectable so add them to commit but keep them out of new selection
+    const CONSTRAINTS& sourceConstraints = parentFootprint ? parentFootprint->Constraints()
+                                                           : board()->Constraints();
+
+    for( PCB_CONSTRAINT* clone : CloneFullySelectedConstraints( sourceConstraints, idMap ) )
+        commit.Add( clone );
 
     // Clear the old selection first
     m_toolMgr->RunAction( ACTIONS::selectionClear );
@@ -3951,8 +3906,10 @@ void EDIT_TOOL::setTransitions()
     Go( &EDIT_TOOL::Swap,                  PCB_ACTIONS::swap.MakeEvent() );
     Go( &EDIT_TOOL::SwapPadNets,           PCB_ACTIONS::swapPadNets.MakeEvent() );
     Go( &EDIT_TOOL::SwapGateNets,          PCB_ACTIONS::swapGateNets.MakeEvent() );
-    Go( &EDIT_TOOL::PackAndMoveFootprints, PCB_ACTIONS::packAndMoveFootprints.MakeEvent() );
-    Go( &EDIT_TOOL::ChangeTrackWidth,      PCB_ACTIONS::changeTrackWidth.MakeEvent() );
+    Go( &EDIT_TOOL::PackAndMoveFootprints,    PCB_ACTIONS::packAndMoveFootprints.MakeEvent() );
+    Go( &EDIT_TOOL::ToggleFootprintAttribute, PCB_ACTIONS::toggleExcludeFromBOM.MakeEvent() );
+    Go( &EDIT_TOOL::ToggleFootprintAttribute, PCB_ACTIONS::toggleExcludeFromPosFiles.MakeEvent() );
+    Go( &EDIT_TOOL::ChangeTrackWidth,         PCB_ACTIONS::changeTrackWidth.MakeEvent() );
     Go( &EDIT_TOOL::ChangeTrackLayer,      PCB_ACTIONS::changeTrackLayerNext.MakeEvent() );
     Go( &EDIT_TOOL::ChangeTrackLayer,      PCB_ACTIONS::changeTrackLayerPrev.MakeEvent() );
     Go( &EDIT_TOOL::FilletTracks,          PCB_ACTIONS::filletTracks.MakeEvent() );

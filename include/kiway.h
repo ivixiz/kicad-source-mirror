@@ -15,11 +15,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef KIWAY_H_
@@ -491,6 +487,7 @@ public:
      * @return Pointer to blocking dialog window or null if none
      */
     wxWindow* GetBlockingDialog();
+    bool HasBlockingDialog() const { return m_blockingDialog != wxID_NONE; }
     void SetBlockingDialog( wxWindow* aWin );
 
 private:

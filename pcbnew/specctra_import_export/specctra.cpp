@@ -16,11 +16,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 
@@ -901,6 +897,10 @@ void SPECCTRA_DB::doKEEPOUT( KEEPOUT* growth )
 
         case T_path:
         case T_polygon:
+        case T_poly: // Allegro Specctra abbreviation of polygon
+            if( tok == T_poly )
+                tok = T_polygon;
+
             if( growth->m_shape )
                 Unexpected( tok );
 
@@ -1002,6 +1002,10 @@ void SPECCTRA_DB::doWINDOW( WINDOW* growth )
 
         case T_path:
         case T_polygon:
+        case T_poly: // Allegro Specctra abbreviation of polygon
+            if( tok == T_poly )
+                tok = T_polygon;
+
             if( growth->shape )
                 Unexpected( tok );
 
@@ -1645,6 +1649,7 @@ void SPECCTRA_DB::doREGION( REGION* growth )
             break;
 
         case T_polygon:
+        case T_poly: // Allegro Specctra abbreviation of polygon
             if( growth->m_polygon )
                 Unexpected( tok );
 
@@ -2230,6 +2235,7 @@ void SPECCTRA_DB::doSHAPE( SHAPE* growth )
         case T_circle:
         case T_path:
         case T_polygon:
+        case T_poly: // Allegro Specctra abbreviation of polygon
         case T_qarc:
 L_done_that:
             if( growth->shape )
@@ -2260,6 +2266,10 @@ L_done_that:
 
         case T_path:
         case T_polygon:
+        case T_poly: // Allegro Specctra abbreviation of polygon
+            if( tok == T_poly )
+                tok = T_polygon;
+
             growth->shape = new PATH( growth, tok );
             doPATH( (PATH*)growth->shape );
             break;
@@ -3007,6 +3017,10 @@ void SPECCTRA_DB::doWIRE( WIRE* growth )
 
         case T_path:
         case T_polygon:
+        case T_poly: // Specctra abbreviation of polygon
+            if( tok == T_poly )
+                tok = T_polygon;
+
             if( growth->m_shape )
                 Unexpected( tok );
 
@@ -3598,6 +3612,7 @@ void SPECCTRA_DB::doNET_OUT( NET_OUT* growth )
 
     /*  <net_out_descriptor >::=
         (net <net_id >
+          [(unassigned)]
           [(net_number <integer >)]
           [<rule_descriptor> ]
           {[<wire_shape_descriptor> | <wire_guide_descriptor> |
@@ -3618,6 +3633,11 @@ void SPECCTRA_DB::doNET_OUT( NET_OUT* growth )
 
         switch( tok )
         {
+        case T_unassigned:
+            growth->m_unassigned = true;
+            NeedRIGHT();
+            break;
+
         case T_net_number:
             tok = NextTok();
 

@@ -17,11 +17,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef __DRAWING_TOOL_H
@@ -46,6 +42,7 @@ class PCB_BASE_EDIT_FRAME;
 class PCB_SHAPE;
 class POLYGON_GEOM_MANAGER;
 class PCB_TUNING_PATTERN;
+class SHAPE_DRAW_BEHAVIOR;
 class STATUS_MIN_MAX_POPUP;
 
 
@@ -250,21 +247,6 @@ public:
     void UpdateStatusBar() const;
 
 private:
-    enum class DRAW_ONE_RESULT
-    {
-        // The drawing was accepted "normally"
-        // E.g. for a poly-line, you might then begin a chained next segment
-        ACCEPTED,
-        // The drawing was cancelled with no shape accepted.
-        CANCELLED,
-        // The drawing was reset - no shape was accepted this time,
-        // but the tool remains active.
-        RESET,
-        // A shape was accepted, but the tool should reset for the
-        // next one (e.g. no chaining)
-        ACCEPTED_AND_RESET,
-    };
-
     /**
      * Start drawing a selected shape (i.e. PCB_SHAPE).
      *
@@ -284,35 +266,20 @@ private:
                             std::function<bool( const TOOL_EVENT&, PCB_SHAPE**, std::optional<VECTOR2D> )> aDrawer );
 
     /**
-     * Start drawing an arc.
+     * Run the interactive drawing event loop for a shape, driven by a
+     * SHAPE_DRAW_BEHAVIOR.
      *
-     * @param aGraphic is an object that is going to be used by the tool for drawing. Must be
-     *                 already created. The tool deletes the object if it is not added to a BOARD.
-     * @return False if the tool was canceled before the origin was set or origin and end are
-     *         the same point.
+     * @param aGraphic  the shape being drawn; must already be created.  On
+     *                  cancel the unique_ptr is reset; on completion the
+     *                  caller can take ownership (e.g. to release into a COMMIT).
+     * @param aInitialPts  points to pre-load into the behaviour before the first
+     *                     user click, e.g. start point and mirrored control point
+     *                     for tangent-continuous bezier chaining.
+     * @return true if the shape was completed, false if cancelled.
      */
-    bool drawArc( const TOOL_EVENT& aTool, PCB_SHAPE** aGraphic,
-                  std::optional<VECTOR2D> aStartingPoint );
-
-
-    /**
-     * Draw a bezier curve.
-     *
-     * @param aTool is the event that triggered the drawing.
-     * @param aStartingPoint is the starting point of the curve (e.g. the end point of the
-     *                      previous curve).
-     * @param aStartingControl1Point is the previous control point of the curve (which can
-     *                               be used to create a smooth transition between two curves).
-     * @param aCancelled is set to true if the tool was canceled before the curve was finished.
-     *
-     * @return A new PCB_SHAPE object representing the bezier curve, or nullptr if
-     *         the tool was cancelled or reset.
-     */
-    std::unique_ptr<PCB_SHAPE> drawOneBezier( const TOOL_EVENT&   aTool,
-                                              const OPT_VECTOR2I& aStartingPoint,
-                                              const OPT_VECTOR2I& aStartingControl1Point,
-                                              DRAW_ONE_RESULT&    aResult );
-
+    bool drawManagedShape( const TOOL_EVENT& aTool, std::unique_ptr<PCB_SHAPE>& aGraphic,
+                           SHAPE_DRAW_BEHAVIOR& aBehavior,
+                           const std::vector<VECTOR2D>& aInitialPts );
 
     /**
      * Draw a polygon, that is added as a zone or a keepout area.

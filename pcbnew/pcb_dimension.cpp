@@ -18,11 +18,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include <bitmaps.h>
@@ -31,8 +27,11 @@
 #include <convert_basic_shapes_to_polygon.h>
 #include <font/font.h>
 #include <board.h>
+#include <footprint.h>
 #include <pcb_dimension.h>
+#include <pcb_painter.h>
 #include <pcb_text.h>
+#include <view/view.h>
 #include <board_design_settings.h>
 #include <geometry/shape_compound.h>
 #include <geometry/shape_circle.h>
@@ -47,6 +46,10 @@
 #include <api/board/board_types.pb.h>
 #include <properties/property.h>
 #include <properties/property_mgr.h>
+#include <properties/property_validators.h>
+
+#include <constraints/constraint_builder.h>
+#include <constraints/pcb_constraint.h>
 
 
 static const int INWARD_ARROW_LENGTH_TO_HEAD_RATIO = 2;
@@ -164,10 +167,65 @@ PCB_DIMENSION_BASE::PCB_DIMENSION_BASE( BOARD_ITEM* aParent, KICAD_T aType ) :
         m_textPosition( DIM_TEXT_POSITION::OUTSIDE ),
         m_keepTextAligned( true ),
         m_measuredValue( 0 ),
+        m_start( 0, 0 ),
+        m_end( 0, 0 ),
         m_inClearRenderCache( false )
 {
     m_layer = Dwgs_User;
     m_busy = false;
+}
+
+
+VECTOR2I PCB_DIMENSION_BASE::GetStart() const
+{
+    if( const FOOTPRINT* fp = GetParentFootprint() )
+        return fp->GetTransform().Apply( m_start );
+
+    return m_start;
+}
+
+
+VECTOR2I PCB_DIMENSION_BASE::GetEnd() const
+{
+    if( const FOOTPRINT* fp = GetParentFootprint() )
+        return fp->GetTransform().Apply( m_end );
+
+    return m_end;
+}
+
+
+void PCB_DIMENSION_BASE::SetStart( const VECTOR2I& aPoint )
+{
+    if( const FOOTPRINT* fp = GetParentFootprint() )
+        m_start = fp->GetTransform().InverseApply( aPoint );
+    else
+        m_start = aPoint;
+}
+
+
+void PCB_DIMENSION_BASE::SetEnd( const VECTOR2I& aPoint )
+{
+    if( const FOOTPRINT* fp = GetParentFootprint() )
+        m_end = fp->GetTransform().InverseApply( aPoint );
+    else
+        m_end = aPoint;
+}
+
+
+void PCB_DIMENSION_BASE::OnFootprintRescaled( double /* aRatioX */, double /* aRatioY */, double /* aLinearFactor */,
+                                              const VECTOR2I& /* aAnchor */, const EDA_ANGLE& /* aParentRotate */ )
+{
+    PCB_TEXT::OnFootprintRescaled( 0, 0, 0, VECTOR2I( 0, 0 ), ANGLE_0 );
+    OnFootprintTransformed();
+}
+
+
+void PCB_DIMENSION_BASE::OnFootprintTransformed()
+{
+    SetTextAngle( GetTextAngle() );
+    Update();
+    ClearRenderCache();
+    ClearBoundingBoxCache();
 }
 
 
@@ -463,6 +521,60 @@ wxString PCB_DIMENSION_BASE::GetValueText() const
 }
 
 
+DIM_VALUE_MODE PCB_DIMENSION_BASE::GetValueMode() const
+{
+    // Read only here but shared lookup helpers require a mutable board pointer
+    BOARD* board = const_cast<BOARD*>( GetBoard() );
+
+    return DimensionValueMode( board, this );
+}
+
+
+void PCB_DIMENSION_BASE::ChangeValueMode( DIM_VALUE_MODE aMode )
+{
+    SetOverrideTextEnabled( aMode == DIM_VALUE_MODE::ARBITRARY );
+    Update();
+}
+
+
+wxString PCB_DIMENSION_BASE::GetValueFieldText() const
+{
+    switch( GetValueMode() )
+    {
+    case DIM_VALUE_MODE::DRIVING:
+    {
+        PCB_CONSTRAINT* lengthConstraint =
+                FindDimensionLengthConstraint( const_cast<BOARD*>( GetBoard() ), this );
+
+        if( lengthConstraint && lengthConstraint->GetValue() )
+        {
+            return EDA_UNIT_UTILS::UI::StringFromValue( pcbIUScale, GetUnits(),
+                                                        *lengthConstraint->GetValue() );
+        }
+
+        return GetValueText();
+    }
+
+    case DIM_VALUE_MODE::ARBITRARY:
+        return GetOverrideText();
+
+    case DIM_VALUE_MODE::DRIVEN:
+    default:
+        return GetValueText();
+    }
+}
+
+
+void PCB_DIMENSION_BASE::ChangeValueFieldText( const wxString& aText )
+{
+    if( GetValueMode() == DIM_VALUE_MODE::ARBITRARY )
+    {
+        SetOverrideText( aText );
+        Update();
+    }
+}
+
+
 void PCB_DIMENSION_BASE::SetPrefix( const wxString& aPrefix )
 {
     m_prefix = aPrefix;
@@ -547,8 +659,18 @@ void PCB_DIMENSION_BASE::Move( const VECTOR2I& offset )
 {
     PCB_TEXT::Offset( offset );
 
-    m_start += offset;
-    m_end   += offset;
+    if( const FOOTPRINT* fp = GetParentFootprint() )
+    {
+        const TRANSFORM_TRS& xform = fp->GetTransform();
+        VECTOR2I             libOffset = xform.InverseApply( offset ) - xform.InverseApply( VECTOR2I( 0, 0 ) );
+        m_start += libOffset;
+        m_end += libOffset;
+    }
+    else
+    {
+        m_start += offset;
+        m_end += offset;
+    }
 
     Update();
 }
@@ -557,17 +679,28 @@ void PCB_DIMENSION_BASE::Move( const VECTOR2I& offset )
 void PCB_DIMENSION_BASE::Rotate( const VECTOR2I& aRotCentre, const EDA_ANGLE& aAngle )
 {
     EDA_ANGLE newAngle = GetTextAngle() + aAngle;
-
     newAngle.Normalize();
-
     SetTextAngle( newAngle );
 
     VECTOR2I pt = GetTextPos();
     RotatePoint( pt, aRotCentre, aAngle );
     SetTextPos( pt );
 
-    RotatePoint( m_start, aRotCentre, aAngle );
-    RotatePoint( m_end, aRotCentre, aAngle );
+    VECTOR2I boardStart = GetStart();
+    VECTOR2I boardEnd = GetEnd();
+    RotatePoint( boardStart, aRotCentre, aAngle );
+    RotatePoint( boardEnd, aRotCentre, aAngle );
+
+    if( const FOOTPRINT* fp = GetParentFootprint() )
+    {
+        m_start = fp->GetTransform().InverseApply( boardStart );
+        m_end = fp->GetTransform().InverseApply( boardEnd );
+    }
+    else
+    {
+        m_start = boardStart;
+        m_end = boardEnd;
+    }
 
     Update();
 }
@@ -583,6 +716,37 @@ void PCB_DIMENSION_BASE::Flip( const VECTOR2I& aCentre, FLIP_DIRECTION aFlipDire
 
 void PCB_DIMENSION_BASE::Mirror( const VECTOR2I& axis_pos, FLIP_DIRECTION aFlipDirection )
 {
+    if( const FOOTPRINT* fp = GetParentFootprint() )
+    {
+        const VECTOR2I libAxis = fp->GetTransform().InverseApply( axis_pos );
+
+        auto mirrorPt = [&]( VECTOR2I& p )
+        {
+            if( aFlipDirection == FLIP_DIRECTION::LEFT_RIGHT )
+                p.x = 2 * libAxis.x - p.x;
+            else
+                p.y = 2 * libAxis.y - p.y;
+        };
+
+        mirrorPt( m_start );
+        mirrorPt( m_end );
+
+        VECTOR2I libTextPos = EDA_TEXT::GetTextPos();
+        mirrorPt( libTextPos );
+        EDA_TEXT::SetTextPos( libTextPos );
+
+        EDA_ANGLE newLibAngle =
+                aFlipDirection == FLIP_DIRECTION::LEFT_RIGHT ? ANGLE_180 - GetLibTextAngle() : -GetLibTextAngle();
+        SetLibTextAngle( newLibAngle );
+
+        if( IsSideSpecific() )
+            SetMirrored( !IsMirrored() );
+
+        SetTextAngle( GetTextAngle() );
+        Update();
+        return;
+    }
+
     VECTOR2I newPos = GetTextPos();
 
     MIRROR( newPos, axis_pos, aFlipDirection );
@@ -815,6 +979,40 @@ const BOX2I PCB_DIMENSION_BASE::ViewBBox() const
 }
 
 
+std::vector<int> PCB_DIMENSION_BASE::ViewGetLayers() const
+{
+    std::vector<int> layers = PCB_TEXT::ViewGetLayers();
+
+    // Always advertised while ViewGetLOD gates the draw on actual constraint reference
+    layers.push_back( LAYER_CONSTRAINT_SHADOW );
+
+    return layers;
+}
+
+
+double PCB_DIMENSION_BASE::ViewGetLOD( int aLayer, const KIGFX::VIEW* aView ) const
+{
+    if( aLayer == LAYER_CONSTRAINT_SHADOW && aView )
+    {
+        KIGFX::PCB_RENDER_SETTINGS& renderSettings =
+                *static_cast<KIGFX::PCB_PAINTER&>( *aView->GetPainter() ).GetSettings();
+
+        if( !renderSettings.GetConstrainedItems().count( m_Uuid ) )
+            return LOD_HIDE;
+
+        if( !aView->IsLayerVisibleCached( GetLayer() ) )
+            return LOD_HIDE;
+
+        if( renderSettings.GetHighContrast() && GetLayer() != renderSettings.GetPrimaryHighContrastLayer() )
+            return LOD_HIDE;
+
+        return LOD_SHOW;
+    }
+
+    return PCB_TEXT::ViewGetLOD( aLayer, aView );
+}
+
+
 void PCB_DIMENSION_BASE::TransformShapeToPolygon( SHAPE_POLY_SET& aBuffer, PCB_LAYER_ID aLayer,
                                                   int aClearance, int aError, ERROR_LOC aErrorLoc,
                                                   bool aIgnoreLineWidth ) const
@@ -874,8 +1072,8 @@ void PCB_DIM_ALIGNED::Serialize( google::protobuf::Any &aContainer ) const
     PCB_DIMENSION_BASE::Serialize( aContainer );
     aContainer.UnpackTo( &dimension );
 
-    PackVector2( *dimension.mutable_aligned()->mutable_start(), m_start );
-    PackVector2( *dimension.mutable_aligned()->mutable_end(), m_end );
+    PackVector2( *dimension.mutable_aligned()->mutable_start(), GetStart() );
+    PackVector2( *dimension.mutable_aligned()->mutable_end(), GetEnd() );
     dimension.mutable_aligned()->mutable_height()->set_value_nm( m_height );
     dimension.mutable_aligned()->mutable_extension_height()->set_value_nm( m_extensionHeight );
 
@@ -957,7 +1155,9 @@ void PCB_DIM_ALIGNED::updateGeometry()
 
     m_shapes.clear();
 
-    VECTOR2I dimension( m_end - m_start );
+    const VECTOR2I start = GetStart();
+    const VECTOR2I end = GetEnd();
+    VECTOR2I       dimension( end - start );
 
     m_measuredValue = KiROUND( dimension.EuclideanNorm() );
 
@@ -971,20 +1171,20 @@ void PCB_DIM_ALIGNED::updateGeometry()
     // Add extension lines
     int extensionHeight = std::abs( m_height ) - m_extensionOffset + m_extensionHeight;
 
-    VECTOR2I extStart( m_start );
+    VECTOR2I extStart( start );
     extStart += extension.Resize( m_extensionOffset );
 
     addShape( SHAPE_SEGMENT( extStart, extStart + extension.Resize( extensionHeight ) ) );
 
-    extStart = VECTOR2I( m_end );
+    extStart = VECTOR2I( end );
     extStart += extension.Resize( m_extensionOffset );
 
     addShape( SHAPE_SEGMENT( extStart, extStart + extension.Resize( extensionHeight ) ) );
 
     // Add crossbar
     VECTOR2I crossBarDistance = sign( m_height ) * extension.Resize( m_height );
-    m_crossBarStart = m_start + crossBarDistance;
-    m_crossBarEnd   = m_end + crossBarDistance;
+    m_crossBarStart = start + crossBarDistance;
+    m_crossBarEnd = end + crossBarDistance;
 
     // Update text after calculating crossbar position but before adding crossbar lines
     updateText();
@@ -1107,8 +1307,8 @@ void PCB_DIM_ORTHOGONAL::Serialize( google::protobuf::Any &aContainer ) const
     PCB_DIMENSION_BASE::Serialize( aContainer );
     aContainer.UnpackTo( &dimension );
 
-    PackVector2( *dimension.mutable_orthogonal()->mutable_start(), m_start );
-    PackVector2( *dimension.mutable_orthogonal()->mutable_end(), m_end );
+    PackVector2( *dimension.mutable_orthogonal()->mutable_start(), GetStart() );
+    PackVector2( *dimension.mutable_orthogonal()->mutable_end(), GetEnd() );
     dimension.mutable_orthogonal()->mutable_height()->set_value_nm( m_height );
     dimension.mutable_orthogonal()->mutable_extension_height()->set_value_nm( m_extensionHeight );
 
@@ -1187,8 +1387,10 @@ void PCB_DIM_ORTHOGONAL::updateGeometry()
     m_busy = true;
     m_shapes.clear();
 
-    int measurement = ( m_orientation == DIR::HORIZONTAL ? m_end.x - m_start.x :
-                                                           m_end.y - m_start.y );
+    const VECTOR2I start = GetStart();
+    const VECTOR2I end = GetEnd();
+
+    int measurement = ( m_orientation == DIR::HORIZONTAL ? end.x - start.x : end.y - start.y );
     m_measuredValue = KiROUND( std::abs( measurement ) );
 
     VECTOR2I extension;
@@ -1201,25 +1403,25 @@ void PCB_DIM_ORTHOGONAL::updateGeometry()
     // Add first extension line
     int extensionHeight = std::abs( m_height ) - m_extensionOffset + m_extensionHeight;
 
-    VECTOR2I extStart( m_start );
+    VECTOR2I extStart( start );
     extStart += extension.Resize( m_extensionOffset );
 
     addShape( SHAPE_SEGMENT( extStart, extStart + extension.Resize( extensionHeight ) ) );
 
     // Add crossbar
     VECTOR2I crossBarDistance = sign( m_height ) * extension.Resize( m_height );
-    m_crossBarStart = m_start + crossBarDistance;
+    m_crossBarStart = start + crossBarDistance;
 
     if( m_orientation == DIR::HORIZONTAL )
-        m_crossBarEnd = VECTOR2I( m_end.x, m_crossBarStart.y );
+        m_crossBarEnd = VECTOR2I( end.x, m_crossBarStart.y );
     else
-        m_crossBarEnd = VECTOR2I( m_crossBarStart.x, m_end.y );
+        m_crossBarEnd = VECTOR2I( m_crossBarStart.x, end.y );
 
-    // Add second extension line (m_end to crossbar end)
+    // Add second extension line (end to crossbar end)
     if( m_orientation == DIR::HORIZONTAL )
-        extension = VECTOR2I( 0, m_end.y - m_crossBarEnd.y );
+        extension = VECTOR2I( 0, end.y - m_crossBarEnd.y );
     else
-        extension = VECTOR2I( m_end.x - m_crossBarEnd.x, 0 );
+        extension = VECTOR2I( end.x - m_crossBarEnd.x, 0 );
 
     extensionHeight = extension.EuclideanNorm() - m_extensionOffset + m_extensionHeight;
 
@@ -1378,8 +1580,8 @@ void PCB_DIM_LEADER::Serialize( google::protobuf::Any &aContainer ) const
     PCB_DIMENSION_BASE::Serialize( aContainer );
     aContainer.UnpackTo( &dimension );
 
-    PackVector2( *dimension.mutable_leader()->mutable_start(), m_start );
-    PackVector2( *dimension.mutable_leader()->mutable_end(), m_end );
+    PackVector2( *dimension.mutable_leader()->mutable_start(), GetStart() );
+    PackVector2( *dimension.mutable_leader()->mutable_end(), GetEnd() );
     dimension.mutable_leader()->set_border_style(
             ToProtoEnum<DIM_TEXT_BORDER, kiapi::board::types::DimensionTextBorderStyle>(
                     m_textBorder ) );
@@ -1466,12 +1668,15 @@ void PCB_DIM_LEADER::updateGeometry()
     polyBox.Append( textBox.GetEnd().x, textBox.GetOrigin().y );
     polyBox.Rotate( GetTextAngle(), textBox.GetCenter() );
 
-    VECTOR2I firstLine( m_end - m_start );
-    VECTOR2I start( m_start );
+    const VECTOR2I boardStart = GetStart();
+    const VECTOR2I boardEnd = GetEnd();
+
+    VECTOR2I firstLine( boardEnd - boardStart );
+    VECTOR2I start( boardStart );
     start += firstLine.Resize( m_extensionOffset );
 
-    SEG arrowSeg( m_start, m_end );
-    SEG textSeg( m_end, GetTextPos() );
+    SEG          arrowSeg( boardStart, boardEnd );
+    SEG          textSeg( boardEnd, GetTextPos() );
     OPT_VECTOR2I arrowSegEnd;
     OPT_VECTOR2I textSegEnd;
 
@@ -1491,7 +1696,7 @@ void PCB_DIM_LEADER::updateGeometry()
     }
 
     if( !arrowSegEnd )
-        arrowSegEnd = m_end;
+        arrowSegEnd = boardEnd;
 
     m_shapes.emplace_back( new SHAPE_SEGMENT( start, *arrowSegEnd ) );
 
@@ -1523,8 +1728,8 @@ void PCB_DIM_LEADER::updateGeometry()
         }
     }
 
-    if( textSegEnd && *arrowSegEnd == m_end )
-        m_shapes.emplace_back( new SHAPE_SEGMENT( m_end, *textSegEnd ) );
+    if( textSegEnd && *arrowSegEnd == boardEnd )
+        m_shapes.emplace_back( new SHAPE_SEGMENT( boardEnd, *textSegEnd ) );
 
     m_busy = false;
 }
@@ -1572,8 +1777,8 @@ void PCB_DIM_RADIAL::Serialize( google::protobuf::Any &aContainer ) const
     PCB_DIMENSION_BASE::Serialize( aContainer );
     aContainer.UnpackTo( &dimension );
 
-    PackVector2( *dimension.mutable_radial()->mutable_center(), m_start );
-    PackVector2( *dimension.mutable_radial()->mutable_radius_point(), m_end );
+    PackVector2( *dimension.mutable_radial()->mutable_center(), GetStart() );
+    PackVector2( *dimension.mutable_radial()->mutable_radius_point(), GetEnd() );
     dimension.mutable_radial()->mutable_leader_length()->set_value_nm( m_leaderLength );
 
     aContainer.PackFrom( dimension );
@@ -1630,9 +1835,10 @@ BITMAPS PCB_DIM_RADIAL::GetMenuImage() const
 
 VECTOR2I PCB_DIM_RADIAL::GetKnee() const
 {
-    VECTOR2I radial( m_end - m_start );
+    const VECTOR2I end = GetEnd();
+    VECTOR2I       radial( end - GetStart() );
 
-    return m_end + radial.Resize( m_leaderLength );
+    return end + radial.Resize( m_leaderLength );
 }
 
 
@@ -1667,7 +1873,10 @@ void PCB_DIM_RADIAL::updateGeometry()
 
     m_shapes.clear();
 
-    VECTOR2I center( m_start );
+    const VECTOR2I boardStart = GetStart();
+    const VECTOR2I boardEnd = GetEnd();
+
+    VECTOR2I center( boardStart );
     VECTOR2I centerArm( 0, m_arrowLength );
 
     m_shapes.emplace_back( new SHAPE_SEGMENT( center - centerArm, center + centerArm ) );
@@ -1676,7 +1885,7 @@ void PCB_DIM_RADIAL::updateGeometry()
 
     m_shapes.emplace_back( new SHAPE_SEGMENT( center - centerArm, center + centerArm ) );
 
-    VECTOR2I radius( m_end - m_start );
+    VECTOR2I radius( boardEnd - boardStart );
 
     m_measuredValue = KiROUND( radius.EuclideanNorm() );
 
@@ -1694,16 +1903,16 @@ void PCB_DIM_RADIAL::updateGeometry()
     polyBox.Append( textBox.GetEnd().x, textBox.GetOrigin().y );
     polyBox.Rotate( GetTextAngle(), textBox.GetCenter() );
 
-    VECTOR2I radial( m_end - m_start );
+    VECTOR2I radial( boardEnd - boardStart );
     radial = radial.Resize( m_leaderLength );
 
-    SEG arrowSeg( m_end, m_end + radial );
+    SEG arrowSeg( boardEnd, boardEnd + radial );
     SEG textSeg( arrowSeg.B, GetTextPos() );
 
     CollectKnockedOutSegments( polyBox, arrowSeg, m_shapes );
     CollectKnockedOutSegments( polyBox, textSeg, m_shapes );
 
-    drawAnArrow( m_end, EDA_ANGLE( radial ), 0 );
+    drawAnArrow( boardEnd, EDA_ANGLE( radial ), 0 );
 
     m_busy = false;
 }
@@ -1730,8 +1939,8 @@ void PCB_DIM_CENTER::Serialize( google::protobuf::Any &aContainer ) const
     PCB_DIMENSION_BASE::Serialize( aContainer );
     aContainer.UnpackTo( &dimension );
 
-    PackVector2( *dimension.mutable_center()->mutable_center(), m_start );
-    PackVector2( *dimension.mutable_center()->mutable_end(), m_end );
+    PackVector2( *dimension.mutable_center()->mutable_center(), GetStart() );
+    PackVector2( *dimension.mutable_center()->mutable_end(), GetEnd() );
 
     aContainer.PackFrom( dimension );
 }
@@ -1784,10 +1993,11 @@ const BOX2I PCB_DIM_CENTER::GetBoundingBox() const
     BOX2I bBox;
     int   xmin, xmax, ymin, ymax;
 
-    xmin    = m_start.x;
-    xmax    = m_start.x;
-    ymin    = m_start.y;
-    ymax    = m_start.y;
+    const VECTOR2I start = GetStart();
+    xmin = start.x;
+    xmax = start.x;
+    ymin = start.y;
+    ymax = start.y;
 
     for( const std::shared_ptr<SHAPE>& shape : GetShapes() )
     {
@@ -1821,7 +2031,7 @@ void PCB_DIM_CENTER::updateText()
 {
     // Even if PCB_DIM_CENTER has no text, we still need to update its text position
     // so GetTextPos() users get a valid value. Required at least for lasso hit-testing.
-    SetTextPos( m_start );
+    SetTextPos( GetStart() );
 
     PCB_DIMENSION_BASE::updateText();
 }
@@ -1836,8 +2046,10 @@ void PCB_DIM_CENTER::updateGeometry()
 
     m_shapes.clear();
 
-    VECTOR2I center( m_start );
-    VECTOR2I arm( m_end - m_start );
+    const VECTOR2I boardStart = GetStart();
+    const VECTOR2I boardEnd = GetEnd();
+    VECTOR2I       center( boardStart );
+    VECTOR2I       arm( boardEnd - boardStart );
 
     m_shapes.emplace_back( new SHAPE_SEGMENT( center - arm, center + arm ) );
 
@@ -1882,6 +2094,11 @@ static struct DIMENSION_DESC
                     .Map( DIM_ARROW_DIRECTION::INWARD,  _HKI( "Inward" ) )
                     .Map( DIM_ARROW_DIRECTION::OUTWARD, _HKI( "Outward" ) );
 
+        ENUM_MAP<DIM_VALUE_MODE>::Instance()
+                    .Map( DIM_VALUE_MODE::DRIVEN,    _HKI( "Driven" ) )
+                    .Map( DIM_VALUE_MODE::DRIVING,   _HKI( "Driving" ) )
+                    .Map( DIM_VALUE_MODE::ARBITRARY, _HKI( "Arbitrary" ) );
+
         PROPERTY_MANAGER& propMgr = PROPERTY_MANAGER::Instance();
         REGISTER_TYPE( PCB_DIMENSION_BASE );
         propMgr.AddTypeCast( new TYPE_CAST<PCB_DIMENSION_BASE, PCB_TEXT> );
@@ -1921,10 +2138,97 @@ static struct DIMENSION_DESC
                 &PCB_DIMENSION_BASE::ChangeSuffix, &PCB_DIMENSION_BASE::GetSuffix ),
                 groupDimension )
                 .SetAvailableFunc( isNotLeader );
+        auto hasValueMode =
+                []( INSPECTABLE* aItem ) -> bool
+                {
+                    return DimensionHasValueMode( dynamic_cast<PCB_DIMENSION_BASE*>( aItem ) );
+                };
+
+        // Value bearing dims use Value row instead while leaders keep Text below
+        // Override Text left for centre mark only
+        auto usesOverrideText =
+                [isLeader, hasValueMode]( INSPECTABLE* aItem ) -> bool
+                {
+                    return aItem && !isLeader( aItem ) && !hasValueMode( aItem );
+                };
+
+        // Driving needs both endpoints bound to movable geometry
+        // Dropdown always offers it so gate the transition here
+        auto valueModeValidator =
+                []( const wxAny&& aValue, EDA_ITEM* aItem ) -> VALIDATOR_RESULT
+                {
+                    PCB_DIMENSION_BASE* dim = dynamic_cast<PCB_DIMENSION_BASE*>( aItem );
+
+                    if( !dim )
+                        return std::nullopt;
+
+                    int mode = 0;
+
+                    if( aValue.CheckType<DIM_VALUE_MODE>() )
+                        mode = static_cast<int>( aValue.As<DIM_VALUE_MODE>() );
+                    else if( !aValue.GetAs( &mode ) )
+                        return std::nullopt;
+
+                    if( mode == static_cast<int>( DIM_VALUE_MODE::DRIVING )
+                            && !DimensionCanDrive( dim->GetBoard(), dim ) )
+                    {
+                        return std::make_unique<VALIDATION_ERROR_MSG>(
+                                _( "Driving requires both dimension endpoints bound to objects" ) );
+                    }
+
+                    return std::nullopt;
+                };
+
+        // Driving edits length constraint which must stay positive
+        // Catches zero and negative and stale exprs parsing to zero
+        auto drivingValueValidator =
+                []( const wxAny&& aValue, EDA_ITEM* aItem ) -> VALIDATOR_RESULT
+                {
+                    PCB_DIMENSION_BASE* dim = dynamic_cast<PCB_DIMENSION_BASE*>( aItem );
+
+                    if( !dim || dim->GetValueMode() != DIM_VALUE_MODE::DRIVING )
+                        return std::nullopt;
+
+                    wxString text;
+
+                    if( !aValue.GetAs( &text ) )
+                        return std::nullopt;
+
+                    double iu = EDA_UNIT_UTILS::UI::DoubleValueFromString( pcbIUScale, dim->GetUnits(),
+                                                                           text );
+
+                    if( !( iu > 0.0 ) )
+                    {
+                        return std::make_unique<VALIDATION_ERROR_MSG>(
+                                _( "Enter a positive length for a driving dimension" ) );
+                    }
+
+                    return std::nullopt;
+                };
+
         propMgr.AddProperty( new PROPERTY<PCB_DIMENSION_BASE, wxString>( _HKI( "Override Text" ),
                 &PCB_DIMENSION_BASE::ChangeOverrideText, &PCB_DIMENSION_BASE::GetOverrideText ),
                 groupDimension )
-                .SetAvailableFunc( isNotLeader );
+                .SetAvailableFunc( usesOverrideText );
+
+        propMgr.AddProperty( new PROPERTY_ENUM<PCB_DIMENSION_BASE, DIM_VALUE_MODE>( _HKI( "Value Mode" ),
+                &PCB_DIMENSION_BASE::ChangeValueMode, &PCB_DIMENSION_BASE::GetValueMode ),
+                groupDimension )
+                .SetAvailableFunc( hasValueMode )
+                .SetValidator( std::move( valueModeValidator ) );
+
+        propMgr.AddProperty( new PROPERTY<PCB_DIMENSION_BASE, wxString>( _HKI( "Value" ),
+                &PCB_DIMENSION_BASE::ChangeValueFieldText, &PCB_DIMENSION_BASE::GetValueFieldText ),
+                groupDimension )
+                .SetAvailableFunc( hasValueMode )
+                .SetWriteableFunc(
+                        []( INSPECTABLE* aItem ) -> bool
+                        {
+                            // Driven mirrors measured geometry so grey it out since edit would not stick
+                            PCB_DIMENSION_BASE* dim = dynamic_cast<PCB_DIMENSION_BASE*>( aItem );
+                            return dim && dim->GetValueMode() != DIM_VALUE_MODE::DRIVEN;
+                        } )
+                .SetValidator( std::move( drivingValueValidator ) );
 
         propMgr.AddProperty( new PROPERTY<PCB_DIMENSION_BASE, wxString>( _HKI( "Text" ),
                 &PCB_DIMENSION_BASE::ChangeOverrideText, &PCB_DIMENSION_BASE::GetOverrideText ),
@@ -1979,6 +2283,7 @@ ENUM_TO_WXANY( DIM_PRECISION )
 ENUM_TO_WXANY( DIM_UNITS_FORMAT )
 ENUM_TO_WXANY( DIM_UNITS_MODE )
 ENUM_TO_WXANY( DIM_ARROW_DIRECTION )
+ENUM_TO_WXANY( DIM_VALUE_MODE )
 
 
 static struct ALIGNED_DIMENSION_DESC

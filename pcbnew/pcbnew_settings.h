@@ -14,8 +14,8 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #pragma once
@@ -215,6 +215,17 @@ public:
 
         bool                 m_ForceShowFieldsWhenFPSelected;
         bool                 m_Live3DRefresh;
+
+        bool m_ShowConstraints; ///< Keep the geometric-constraint overlay shown.
+    };
+
+    struct DIFF_PHASE_SKEW_SETTINGS
+    {
+        KIGFX::COLOR4D m_ZeroSkewColor{ 1.0, 1.0, 1.0, 1.0 };
+        KIGFX::COLOR4D m_PositiveSkewColor{ 0.0, 0.0, 1.0, 1.0 };
+        KIGFX::COLOR4D m_NegativeSkewColor{ 1.0, 0.0, 0.0, 1.0 };
+        KIGFX::COLOR4D m_UnknownSkewColor{ 0.5, 0.5, 0.5, 1.0 };
+        bool           m_UseLogScale{ false };
     };
 
     PCBNEW_SETTINGS();
@@ -246,6 +257,8 @@ public:
     LEADER_MODE        m_AngleSnapMode;        // Constrain tool actions to horizontal/vertical or 45°/90°
     FLIP_DIRECTION     m_FlipDirection;
 
+    bool m_AutoConstraints;
+
     bool      m_ESCClearsNetHighlight;
 
     bool      m_PolarCoords;
@@ -271,5 +284,7 @@ public:
 
     wxString  m_LastFootprintLibDir;
     wxString  m_LastFootprint3dDir;
+
+    DIFF_PHASE_SKEW_SETTINGS m_DiffPhaseSkewSettings;
 };
 

@@ -16,11 +16,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * https://www.gnu.org/licenses/gpl-3.0.html
- * or you may search the http://www.gnu.org website for the version 3 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include "spice_circuit_model.h"
@@ -265,5 +261,10 @@ void SPICE_CIRCUIT_MODEL::WriteDirectives( const wxString& aSimCommand, unsigned
     NETLIST_EXPORTER_SPICE::WriteDirectives( aSimCommand, aSimOptions, aFormatter );
 
     if( !aSimCommand.IsEmpty() )
-        aFormatter.Print( 0, "%s\n", TO_UTF8( aSimCommand ) );
+    {
+        if( CommandToSimType( aSimCommand ) == ST_FFT )
+            aFormatter.Print( 0, ".control\n%s\n.endc\n", TO_UTF8( aSimCommand ) );
+        else
+            aFormatter.Print( 0, "%s\n", TO_UTF8( aSimCommand ) );
+    }
 }

@@ -71,11 +71,14 @@ class DIALOG_SYMBOL_PROPERTIES_BASE : public DIALOG_SHIM
 		wxChoice* m_choicePassthrough;
 		wxButton* m_updateSymbolBtn;
 		wxButton* m_changeSymbolBtn;
+		wxButton* m_clearVariantSymbolBtn;
 		wxButton* m_editSchematicSymbolBtn;
 		wxButton* m_findPart;
 		wxButton* m_editLibrarySymbolBtn;
 		wxPanel* m_pinTablePage;
 		WX_GRID* m_pinGrid;
+		wxPanel* m_pinMapPage;
+		wxBoxSizer* bPinMapPageSizer;
 		wxStaticText* m_libraryIDLabel;
 		wxTextCtrl* m_tcLibraryID;
 		wxButton* m_spiceFieldsButton;
@@ -97,6 +100,7 @@ class DIALOG_SYMBOL_PROPERTIES_BASE : public DIALOG_SHIM
 		virtual void OnCheckBox( wxCommandEvent& event ) { event.Skip(); }
 		virtual void OnUpdateSymbol( wxCommandEvent& event ) { event.Skip(); }
 		virtual void OnExchangeSymbol( wxCommandEvent& event ) { event.Skip(); }
+		virtual void OnClearVariantSymbol( wxCommandEvent& event ) { event.Skip(); }
 		virtual void OnEditSymbol( wxCommandEvent& event ) { event.Skip(); }
 		virtual void onUpdateEditSymbol( wxUpdateUIEvent& event ) { event.Skip(); }
 		virtual void OnFindPart( wxCommandEvent& event ) { event.Skip(); }

@@ -14,8 +14,8 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef _BOM_SETTINGS_H
@@ -86,6 +86,7 @@ struct KICOMMON_API BOM_FMT_PRESET
     wxString refRangeDelimiter;
     bool     keepTabs = false;
     bool     keepLineBreaks = false;
+    bool     includeByteOrderMark = false;
 
     bool operator==( const BOM_FMT_PRESET& rhs ) const;
 

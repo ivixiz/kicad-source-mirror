@@ -16,8 +16,8 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef __PNS_NODE_H
@@ -581,7 +581,8 @@ private:
     ///< Scan the joint map, forming a line starting from segment (current).
     void followLine( LINKED_ITEM* aCurrent, bool aScanDirection, int& aPos, int aLimit,
                      VECTOR2I* aCorners, LINKED_ITEM** aSegments, bool* aArcReversed,
-                     bool& aGuardHit, bool aStopAtLockedJoints, bool aFollowLockedSegments );
+                     bool& aGuardHit, bool aStopAtLockedJoints, bool aFollowLockedSegments,
+                     bool aAllowSegmentSizeMismatch );
 
 private:
     struct DEFAULT_OBSTACLE_VISITOR;

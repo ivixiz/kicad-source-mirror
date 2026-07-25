@@ -15,11 +15,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include <api/api_enums.h>
@@ -47,6 +43,9 @@
 #include <sch_rule_area.h>
 #include <api/api_sch_utils.h>
 #include <api/schematic/schematic_types.pb.h>
+#include <project_sch.h>
+#include <libraries/symbol_library_adapter.h>
+#include <variant_symbol_utils.h>
 
 #include <utility>
 #include <validators.h>
@@ -154,6 +153,7 @@ SCH_SYMBOL::SCH_SYMBOL( const SCH_SYMBOL& aSymbol ) :
     m_transform = aSymbol.m_transform;
     m_prefix = aSymbol.m_prefix;
     m_instances = aSymbol.m_instances;
+    m_instancePathIndex = aSymbol.m_instancePathIndex;
     m_fields = aSymbol.m_fields;
     m_passthroughMode = aSymbol.m_passthroughMode;
     m_signalName = aSymbol.m_signalName;
@@ -260,6 +260,15 @@ void SCH_SYMBOL::Serialize( google::protobuf::Any& aContainer ) const
 
     GetField( FIELD_T::DESCRIPTION )->Serialize( any );
     any.UnpackTo( symbol.mutable_description_field() );
+
+    for( const SCH_FIELD& field : GetFields() )
+    {
+        if( field.IsMandatory() )
+            continue;
+
+        field.Serialize( any );
+        any.UnpackTo( symbol.add_user_fields() );
+    }
 
     if( m_part )
     {
@@ -433,6 +442,37 @@ bool SCH_SYMBOL::Deserialize( const google::protobuf::Any& aContainer )
     any.PackFrom( symbol.description_field() );
     GetField( FIELD_T::DESCRIPTION )->Deserialize( any );
 
+    std::set<wxString> incoming;
+
+    for( const SchematicField& fieldProto : symbol.user_fields() )
+    {
+        wxString   name = wxString::FromUTF8( fieldProto.name() );
+        SCH_FIELD* existing = GetField( name );
+
+        // Don't duplicate existing or mandatory fields.
+        if( existing && existing->IsMandatory() )
+            continue;
+
+        incoming.insert( name );
+        any.PackFrom( fieldProto );
+
+        if( existing )
+            existing->Deserialize( any );
+        else
+            AddField( SCH_FIELD( this, FIELD_T::USER, name ) )->Deserialize( any );
+    }
+
+    std::vector<wxString> toRemove;
+
+    for( const SCH_FIELD& field : GetFields() )
+    {
+        if( !field.IsMandatory() && !incoming.count( field.GetName( false ) ) )
+            toRemove.push_back( field.GetName( false ) );
+    }
+
+    for( const wxString& name : toRemove )
+        RemoveField( name );
+
     SetShowPinNames( symbol.show_pin_names() );
     SetShowPinNumbers( symbol.show_pin_numbers() );
     SetPinNameOffset( UnpackDistance( symbol.pin_name_offset(), schIUScale ) );
@@ -515,6 +555,9 @@ void SCH_SYMBOL::SetLibSymbol( LIB_SYMBOL* aLibSymbol )
     wxCHECK2( !aLibSymbol || aLibSymbol->IsRoot(), aLibSymbol = nullptr );
 
     m_part.reset( aLibSymbol );
+
+    // Library content changed, so cached flattened alternates may be stale.
+    m_variantSymbolCache.clear();
 
     // We've just reset the library symbol, so the lib_pins, which were just
     // pointers to the old symbol, need to be cleared.
@@ -797,17 +840,22 @@ wxString SCH_SYMBOL::GetBodyStyleDescription( int aBodyStyle, bool aLabel ) cons
 
 bool SCH_SYMBOL::GetInstance( SCH_SYMBOL_INSTANCE& aInstance, const KIID_PATH& aSheetPath, bool aTestFromEnd ) const
 {
+    if( !aTestFromEnd )
+    {
+        auto it = m_instancePathIndex.find( aSheetPath );
+
+        if( it != m_instancePathIndex.end() )
+        {
+            aInstance = m_instances[it->second];
+            return true;
+        }
+
+        return false;
+    }
+
     for( const SCH_SYMBOL_INSTANCE& instance : m_instances )
     {
-        if( !aTestFromEnd )
-        {
-            if( instance.m_Path == aSheetPath )
-            {
-                aInstance = instance;
-                return true;
-            }
-        }
-        else if( instance.m_Path.EndsWith( aSheetPath ) )
+        if( instance.m_Path.EndsWith( aSheetPath ) )
         {
             aInstance = instance;
             return true;
@@ -826,6 +874,8 @@ void SCH_SYMBOL::RemoveInstance( const SCH_SHEET_PATH& aInstancePath )
 
 void SCH_SYMBOL::RemoveInstance( const KIID_PATH& aInstancePath )
 {
+    bool removed = false;
+
     // Search for an existing path and remove it if found
     // (search from back to avoid invalidating iterator on remove)
     for( int ii = m_instances.size() - 1; ii >= 0; --ii )
@@ -840,8 +890,22 @@ void SCH_SYMBOL::RemoveInstance( const KIID_PATH& aInstancePath )
                         m_Uuid.AsString() );
 
             m_instances.erase( m_instances.begin() + ii );
+            removed = true;
         }
     }
+
+    if( removed )
+        rebuildInstancePathIndex();
+}
+
+
+void SCH_SYMBOL::rebuildInstancePathIndex()
+{
+    m_instancePathIndex.clear();
+    m_instancePathIndex.reserve( m_instances.size() );
+
+    for( size_t i = 0; i < m_instances.size(); ++i )
+        m_instancePathIndex[m_instances[i].m_Path] = i;
 }
 
 
@@ -869,6 +933,7 @@ void SCH_SYMBOL::AddHierarchicalReference( const SCH_SYMBOL_INSTANCE& aInstance 
                      "    unit %d\n" ),
                 m_Uuid.AsString(), instance.m_Path.AsString(), instance.m_Reference, instance.m_Unit );
 
+    m_instancePathIndex[instance.m_Path] = m_instances.size();
     m_instances.push_back( instance );
 
     // This should set the default instance to the first saved instance data for each symbol
@@ -887,23 +952,18 @@ const wxString SCH_SYMBOL::GetRef( const SCH_SHEET_PATH* sheet, bool aIncludeUni
     wxString  ref;
     wxString  subRef;
 
-    wxLogTrace( traceSchSymbolRef, "GetRef for symbol %s on path %s (sheet path has %zu sheets)", m_Uuid.AsString(),
-                path.AsString(), sheet->size() );
+    wxLogTrace( traceSchSymbolRef, "GetRef for symbol %s on path %s (sheet path has %zu sheets)",
+                m_Uuid.AsString(), path.AsString(), sheet->size() );
 
     wxLogTrace( traceSchSymbolRef, "  Symbol has %zu instance references", m_instances.size() );
 
-    for( const SCH_SYMBOL_INSTANCE& instance : m_instances )
+    if( auto it = m_instancePathIndex.find( path ); it != m_instancePathIndex.end() )
     {
-        wxLogTrace( traceSchSymbolRef, "    Instance: path=%s, ref=%s", instance.m_Path.AsString(),
-                    instance.m_Reference );
+        const SCH_SYMBOL_INSTANCE& instance = m_instances[it->second];
 
-        if( instance.m_Path == path )
-        {
-            ref = instance.m_Reference;
-            subRef = SubReference( instance.m_Unit );
-            wxLogTrace( traceSchSymbolRef, "  MATCH FOUND: ref=%s", ref );
-            break;
-        }
+        ref = instance.m_Reference;
+        subRef = SubReference( instance.m_Unit );
+        wxLogTrace( traceSchSymbolRef, "  MATCH FOUND: ref=%s", ref );
     }
 
     // If it was not found in m_Paths array, then see if it is in m_Field[REFERENCE] -- if so,
@@ -950,20 +1010,10 @@ void SCH_SYMBOL::SetValueProp( const wxString& aValue )
 void SCH_SYMBOL::SetRef( const SCH_SHEET_PATH* sheet, const wxString& ref )
 {
     KIID_PATH path = sheet->Path();
-    bool      found = false;
 
-    // check to see if it is already there before inserting it
-    for( SCH_SYMBOL_INSTANCE& instance : m_instances )
-    {
-        if( instance.m_Path == path )
-        {
-            found = true;
-            instance.m_Reference = ref;
-            break;
-        }
-    }
-
-    if( !found )
+    if( auto it = m_instancePathIndex.find( path ); it != m_instancePathIndex.end() )
+        m_instances[it->second].m_Reference = ref;
+    else
         AddHierarchicalReference( path, ref, m_unit );
 
     for( std::unique_ptr<SCH_PIN>& pin : m_pins )
@@ -1014,6 +1064,16 @@ void SCH_SYMBOL::SetFieldText( const wxString& aFieldName, const wxString& aFiel
 
             wxCHECK( instance, /* void */ );
 
+            // Diff against the value the variant resolves to without an explicit override so
+            // alternate symbol fields read back through the UI are not re-stored as overrides.
+            if( LIB_SYMBOL* altSymbol = GetVariantLibSymbol( aVariantName, *aPath ) )
+            {
+                const SCH_FIELD* altField = altSymbol->GetField( aFieldName );
+
+                if( altField && !altField->GetText().IsEmpty() )
+                    defaultText = altField->GetText();
+            }
+
             if( instance->m_Variants.contains( aVariantName ) )
             {
                 if( aFieldText != defaultText )
@@ -1063,6 +1123,16 @@ wxString SCH_SYMBOL::GetFieldText( const wxString& aFieldName, const SCH_SHEET_P
             {
                 return instance->m_Variants.at( aVariantName ).m_Fields.at( aFieldName );
             }
+
+            LIB_SYMBOL* altSymbol = GetVariantLibSymbol( aVariantName, *aPath );
+
+            if( altSymbol )
+            {
+                const SCH_FIELD* altField = altSymbol->GetField( FIELD_T::FOOTPRINT );
+
+                if( altField && !altField->GetText().IsEmpty() )
+                    return altField->GetText();
+            }
         }
 
         return GetFootprintFieldText( false, nullptr, false );
@@ -1072,13 +1142,27 @@ wxString SCH_SYMBOL::GetFieldText( const wxString& aFieldName, const SCH_SHEET_P
         {
             return field->GetText();
         }
-        else
+        else if( aPath )
         {
             const SCH_SYMBOL_INSTANCE* instance = getInstance( *aPath );
 
-            if( instance->m_Variants.contains( aVariantName )
-              && instance->m_Variants.at( aVariantName ).m_Fields.contains( aFieldName ) )
-                return instance->m_Variants.at( aVariantName ).m_Fields.at( aFieldName );
+            if( instance && instance->m_Variants.contains( aVariantName ) )
+            {
+                const SCH_SYMBOL_VARIANT& variant = instance->m_Variants.at( aVariantName );
+
+                if( variant.m_Fields.contains( aFieldName ) )
+                    return variant.m_Fields.at( aFieldName );
+
+                LIB_SYMBOL* altSymbol = GetVariantLibSymbol( aVariantName, *aPath );
+
+                if( altSymbol )
+                {
+                    const SCH_FIELD* altField = altSymbol->GetField( aFieldName );
+
+                    if( altField && !altField->GetText().IsEmpty() )
+                        return altField->GetText();
+                }
+            }
         }
 
         break;
@@ -1165,11 +1249,8 @@ int SCH_SYMBOL::GetUnitSelection( const SCH_SHEET_PATH* aSheet ) const
 {
     KIID_PATH path = aSheet->Path();
 
-    for( const SCH_SYMBOL_INSTANCE& instance : m_instances )
-    {
-        if( instance.m_Path == path )
-            return instance.m_Unit;
-    }
+    if( auto it = m_instancePathIndex.find( path ); it != m_instancePathIndex.end() )
+        return m_instances[it->second].m_Unit;
 
     // If it was not found in m_Paths array, then use m_unit.  This will happen if we load a
     // version 1 schematic file.
@@ -1181,14 +1262,10 @@ void SCH_SYMBOL::SetUnitSelection( const SCH_SHEET_PATH* aSheet, int aUnitSelect
 {
     KIID_PATH path = aSheet->Path();
 
-    // check to see if it is already there before inserting it
-    for( SCH_SYMBOL_INSTANCE& instance : m_instances )
+    if( auto it = m_instancePathIndex.find( path ); it != m_instancePathIndex.end() )
     {
-        if( instance.m_Path == path )
-        {
-            instance.m_Unit = aUnitSelection;
-            return;
-        }
+        m_instances[it->second].m_Unit = aUnitSelection;
+        return;
     }
 
     // didn't find it; better add it
@@ -1216,11 +1293,11 @@ void SCH_SYMBOL::SetDNP( bool aEnable, const SCH_SHEET_PATH* aInstance, const wx
     }
     else
     {
-        if( instance->m_Variants.contains( aVariantName ) && ( aEnable != instance->m_Variants[aVariantName].m_DNP ) )
+        if( instance->m_Variants.contains( aVariantName ) )
         {
             instance->m_Variants[aVariantName].m_DNP = aEnable;
         }
-        else
+        else if( aEnable != m_DNP )
         {
             SCH_SYMBOL_VARIANT variant( aVariantName );
 
@@ -1249,6 +1326,91 @@ bool SCH_SYMBOL::GetDNP( const SCH_SHEET_PATH* aInstance, const wxString& aVaria
 }
 
 
+void SCH_SYMBOL::SetPinMapOverride( const PIN_MAP_INSTANCE_OVERRIDE& aOverride, const SCH_SHEET_PATH* aInstance,
+                                    const wxString& aVariantName )
+{
+    if( !aInstance || aVariantName.IsEmpty() )
+    {
+        m_pinMapOverride = aOverride;
+        return;
+    }
+
+    SCH_SYMBOL_INSTANCE* instance = getInstance( *aInstance );
+
+    wxCHECK_MSG( instance, /* void */,
+                 wxString::Format( wxS( "Cannot set pin map override for invalid sheet path '%s'." ),
+                                   aInstance->PathHumanReadable() ) );
+
+    if( instance->m_Variants.contains( aVariantName ) )
+    {
+        instance->m_Variants[aVariantName].m_PinMapOverride = aOverride;
+    }
+    else if( !aOverride.IsDefault() )
+    {
+        SCH_SYMBOL_VARIANT variant( aVariantName );
+
+        variant.InitializeAttributes( *this );
+        variant.m_PinMapOverride = aOverride;
+        AddVariant( *aInstance, variant );
+    }
+}
+
+
+PIN_MAP_INSTANCE_OVERRIDE SCH_SYMBOL::GetPinMapOverride( const SCH_SHEET_PATH* aInstance,
+                                                         const wxString&       aVariantName ) const
+{
+    PIN_MAP_INSTANCE_OVERRIDE result = m_pinMapOverride;
+
+    if( aInstance && !aVariantName.IsEmpty() )
+    {
+        SCH_SYMBOL_INSTANCE instance;
+
+        if( GetInstance( instance, aInstance->Path() ) && instance.m_Variants.contains( aVariantName ) )
+            result = instance.m_Variants[aVariantName].m_PinMapOverride;
+    }
+
+    // Units 2..N follow unit 1's record; resolve that here so callers never see a delegate.
+    if( result.IsDelegate() && aInstance )
+        result = resolveDelegatedPinMapOverride( *aInstance, aVariantName );
+
+    return result;
+}
+
+
+PIN_MAP_INSTANCE_OVERRIDE SCH_SYMBOL::resolveDelegatedPinMapOverride( const SCH_SHEET_PATH& aSheet,
+                                                                      const wxString&       aVariantName ) const
+{
+    if( !Schematic() )
+        return PIN_MAP_INSTANCE_OVERRIDE();
+
+    wxString ref = GetRef( &aSheet );
+
+    for( const SCH_SHEET_PATH& sheet : Schematic()->Hierarchy() )
+    {
+        for( SCH_ITEM* item : sheet.LastScreen()->Items().OfType( SCH_SYMBOL_T ) )
+        {
+            SCH_SYMBOL* sibling = static_cast<SCH_SYMBOL*>( item );
+
+            if( sibling == this || sibling->GetUnit() != 1 )
+                continue;
+
+            if( sibling->GetRef( &sheet ).CmpNoCase( ref ) != 0 )
+                continue;
+
+            PIN_MAP_INSTANCE_OVERRIDE unit1 = sibling->GetPinMapOverride( &sheet, aVariantName );
+
+            // Guard against a unit-1 record that itself (incorrectly) delegates.
+            if( unit1.IsDelegate() )
+                return PIN_MAP_INSTANCE_OVERRIDE();
+
+            return unit1;
+        }
+    }
+
+    return PIN_MAP_INSTANCE_OVERRIDE();
+}
+
+
 void SCH_SYMBOL::SetExcludedFromBOM( bool aEnable, const SCH_SHEET_PATH* aInstance, const wxString& aVariantName )
 {
     if( !aInstance || aVariantName.IsEmpty() )
@@ -1269,12 +1431,11 @@ void SCH_SYMBOL::SetExcludedFromBOM( bool aEnable, const SCH_SHEET_PATH* aInstan
     }
     else
     {
-        if( instance->m_Variants.contains( aVariantName )
-          && ( aEnable != instance->m_Variants[aVariantName].m_ExcludedFromBOM ) )
+        if( instance->m_Variants.contains( aVariantName ) )
         {
             instance->m_Variants[aVariantName].m_ExcludedFromBOM = aEnable;
         }
-        else
+        else if( aEnable != m_excludedFromBOM )
         {
             SCH_SYMBOL_VARIANT variant( aVariantName );
 
@@ -1324,12 +1485,11 @@ void SCH_SYMBOL::SetExcludedFromSim( bool aEnable, const SCH_SHEET_PATH* aInstan
     }
     else
     {
-        if( instance->m_Variants.contains( aVariantName )
-          && ( aEnable != instance->m_Variants[aVariantName].m_ExcludedFromSim ) )
+        if( instance->m_Variants.contains( aVariantName ) )
         {
             instance->m_Variants[aVariantName].m_ExcludedFromSim = aEnable;
         }
-        else
+        else if( aEnable != m_excludedFromSim )
         {
             SCH_SYMBOL_VARIANT variant( aVariantName );
 
@@ -1380,12 +1540,11 @@ void SCH_SYMBOL::SetExcludedFromBoard( bool aEnable, const SCH_SHEET_PATH* aInst
     }
     else
     {
-        if( instance->m_Variants.contains( aVariantName )
-          && ( aEnable != instance->m_Variants[aVariantName].m_ExcludedFromBoard ) )
+        if( instance->m_Variants.contains( aVariantName ) )
         {
             instance->m_Variants[aVariantName].m_ExcludedFromBoard = aEnable;
         }
-        else
+        else if( aEnable != m_excludedFromBoard )
         {
             SCH_SYMBOL_VARIANT variant( aVariantName );
 
@@ -1437,12 +1596,11 @@ void SCH_SYMBOL::SetExcludedFromPosFiles( bool aEnable, const SCH_SHEET_PATH* aI
     }
     else
     {
-        if( instance->m_Variants.contains( aVariantName )
-          && ( aEnable != instance->m_Variants[aVariantName].m_ExcludedFromPosFiles ) )
+        if( instance->m_Variants.contains( aVariantName ) )
         {
             instance->m_Variants[aVariantName].m_ExcludedFromPosFiles = aEnable;
         }
-        else
+        else if( aEnable != m_excludedFromPosFiles )
         {
             SCH_SYMBOL_VARIANT variant( aVariantName );
 
@@ -1483,7 +1641,7 @@ void SCH_SYMBOL::SetUnitSelection( int aUnitSelection )
 const wxString SCH_SYMBOL::GetValue( bool aResolve, const SCH_SHEET_PATH* aInstance,
                                      bool aAllowExtraText, const wxString& aVariantName ) const
 {
-    if( aVariantName.IsEmpty() )
+    if( aVariantName.IsEmpty() || !aInstance )
     {
         if( aResolve )
             return GetField( FIELD_T::VALUE )->GetShownText( aInstance, aAllowExtraText );
@@ -1493,8 +1651,23 @@ const wxString SCH_SYMBOL::GetValue( bool aResolve, const SCH_SHEET_PATH* aInsta
 
     std::optional variant = GetVariant( *aInstance, aVariantName );
 
-    if( variant && variant->m_Fields.contains( GetField( FIELD_T::VALUE )->GetName() ) )
-        return variant->m_Fields[GetField( FIELD_T::VALUE )->GetName()];
+    if( variant )
+    {
+        const wxString& fieldName = GetField( FIELD_T::VALUE )->GetName();
+
+        if( variant->m_Fields.contains( fieldName ) )
+            return variant->m_Fields[fieldName];
+
+        LIB_SYMBOL* altSymbol = GetVariantLibSymbol( aVariantName, *aInstance );
+
+        if( altSymbol )
+        {
+            const SCH_FIELD* altField = altSymbol->GetField( FIELD_T::VALUE );
+
+            if( altField && !altField->GetText().IsEmpty() )
+                return altField->GetText();
+        }
+    }
 
     // Fall back to default value when variant doesn't have an override
     if( aResolve )
@@ -1730,6 +1903,7 @@ void SCH_SYMBOL::SyncOtherUnits( const SCH_SHEET_PATH& aSourceSheet, SCH_COMMIT&
     bool updateFootprint = false;
     bool updateDatasheet = false;
     bool updatePins = true;
+    bool updatePinMapOverride = true;
 
     if( aProperty )
     {
@@ -1740,13 +1914,14 @@ void SCH_SYMBOL::SyncOtherUnits( const SCH_SHEET_PATH& aSourceSheet, SCH_COMMIT&
         updateExclFromBOM = aProperty->Name() == _HKI( "Exclude From Bill of Materials" );
         updateExclFromPosFiles = aProperty->Name() == _HKI( "Exclude From Position Files" );
         updateDNP = aProperty->Name() == _HKI( "Do not Populate" );
+        updatePinMapOverride = aProperty->Name() == wxS( "Pin Map Mode" ) || aProperty->Name() == wxS( "Pin Map Name" );
         updateOtherFields = false;
         updatePins = false;
     }
 
     if( !updateValue && !updateFootprint && !updateDatasheet
             && !updateExclFromBOM && !updateExclFromBoard && !updateExclFromPosFiles && !updateDNP
-            && !updateOtherFields && !updatePins )
+            && !updateOtherFields && !updatePins && !updatePinMapOverride )
     {
         return;
     }
@@ -1769,7 +1944,11 @@ void SCH_SYMBOL::SyncOtherUnits( const SCH_SHEET_PATH& aSourceSheet, SCH_COMMIT&
                 aCommit.Modify( otherUnit, screen );
 
                 if( updateValue )
-                    otherUnit->SetValueFieldText( GetField( FIELD_T::VALUE )->GetText() );
+                {
+                    otherUnit->SetFieldText( GetField( FIELD_T::VALUE )->GetName(),
+                                             GetValue( false, &aSourceSheet, false, aVariantName ), &sheet,
+                                             aVariantName );
+                }
 
                 if( updateFootprint )
                     otherUnit->GetField( FIELD_T::FOOTPRINT )->SetText( GetField( FIELD_T::FOOTPRINT )->GetText() );
@@ -1796,7 +1975,7 @@ void SCH_SYMBOL::SyncOtherUnits( const SCH_SHEET_PATH& aSourceSheet, SCH_COMMIT&
 
                         if( otherField )
                         {
-                            otherField->SetText( field.GetText() );
+                            otherField->SetText( field.GetText( &aSourceSheet, aVariantName ), &sheet, aVariantName );
                         }
                         else
                         {
@@ -1807,7 +1986,13 @@ void SCH_SYMBOL::SyncOtherUnits( const SCH_SHEET_PATH& aSourceSheet, SCH_COMMIT&
                             newField.Offset( otherUnit->GetPosition() );
 
                             newField.SetParent( otherUnit );
-                            otherUnit->AddField( newField );
+                            SCH_FIELD* addedField = otherUnit->AddField( newField );
+
+                            if( !aVariantName.IsEmpty() )
+                            {
+                                addedField->SetText( field.GetText( &aSourceSheet, aVariantName ), &sheet,
+                                                     aVariantName );
+                            }
                         }
                     }
 
@@ -1821,16 +2006,29 @@ void SCH_SYMBOL::SyncOtherUnits( const SCH_SHEET_PATH& aSourceSheet, SCH_COMMIT&
                 }
 
                 if( updateExclFromBOM )
-                    otherUnit->SetExcludedFromBOM( m_excludedFromBOM );
+                {
+                    otherUnit->SetExcludedFromBOM( GetExcludedFromBOM( &aSourceSheet, aVariantName ), &sheet,
+                                                   aVariantName );
+                }
 
                 if( updateExclFromBoard )
-                    otherUnit->SetExcludedFromBoard( m_excludedFromBoard );
+                {
+                    otherUnit->SetExcludedFromBoard( GetExcludedFromBoard( &aSourceSheet, aVariantName ), &sheet,
+                                                     aVariantName );
+                }
 
                 if( updateExclFromPosFiles )
-                    otherUnit->SetExcludedFromPosFiles( m_excludedFromPosFiles );
+                {
+                    otherUnit->SetExcludedFromPosFiles( GetExcludedFromPosFiles( &aSourceSheet, aVariantName ), &sheet,
+                                                        aVariantName );
+                }
 
                 if( updateDNP )
                     otherUnit->SetDNP( GetDNP( &aSourceSheet, aVariantName ), &sheet, aVariantName );
+
+                if( updatePinMapOverride )
+                    otherUnit->SetPinMapOverride( GetPinMapOverride( &aSourceSheet, aVariantName ), &sheet,
+                                                  aVariantName );
 
                 if( updatePins )
                 {
@@ -1856,12 +2054,38 @@ void SCH_SYMBOL::RunOnChildren( const std::function<void( SCH_ITEM* )>& aFunctio
 }
 
 
+void SCH_SYMBOL::ClearCaches()
+{
+    SCH_ITEM::ClearCaches();
+    m_variantSymbolCache.clear();
+}
+
+
 SCH_PIN* SCH_SYMBOL::GetPin( const wxString& aNumber ) const
 {
     for( const std::unique_ptr<SCH_PIN>& pin : m_pins )
     {
         if( pin->GetNumber() == aNumber )
             return pin.get();
+    }
+
+    return nullptr;
+}
+
+
+SCH_PIN* SCH_SYMBOL::GetPinByEffectivePadNumber( const wxString& aPadNumber, const SCH_SHEET_PATH* aSheet,
+                                                 const wxString& aVariantName ) const
+{
+    if( !aSheet )
+        return nullptr;
+
+    for( const std::unique_ptr<SCH_PIN>& pin : m_pins )
+    {
+        for( const wxString& pad : ExpandStackedPinNotation( pin->GetEffectivePadNumber( *aSheet, aVariantName ) ) )
+        {
+            if( pad == aPadNumber )
+                return pin.get();
+        }
     }
 
     return nullptr;
@@ -2034,9 +2258,14 @@ void SCH_SYMBOL::swapData( SCH_ITEM* aItem )
     std::swap( m_DNP, symbol->m_DNP );
     std::swap( m_excludedFromBoard, symbol->m_excludedFromBoard );
     std::swap( m_excludedFromPosFiles, symbol->m_excludedFromPosFiles );
+    std::swap( m_pinMapOverride, symbol->m_pinMapOverride );
 
     std::swap( m_instances, symbol->m_instances );
+    std::swap( m_instancePathIndex, symbol->m_instancePathIndex );
     std::swap( m_schLibSymbolName, symbol->m_schLibSymbolName );
+
+    m_variantSymbolCache.clear();
+    symbol->m_variantSymbolCache.clear();
 }
 
 
@@ -2393,7 +2622,7 @@ bool SCH_SYMBOL::ResolveTextVar( const SCH_SHEET_PATH* aPath, wxString* token,
                             result = wxEmptyString;
                     }
 
-                    *token = result;
+                    *token = std::move( result );
                     return true;
                 }
                 else if( token->StartsWith( wxT( "PIN_NAME" ) ) )
@@ -2417,10 +2646,11 @@ bool SCH_SYMBOL::ResolveTextVar( const SCH_SHEET_PATH* aPath, wxString* token,
                     {
                         if( !altList.IsEmpty() )
                             altList += wxT( ", " );
+
                         altList += altName;
                     }
 
-                    *token = altList;
+                    *token = std::move( altList );
                     return true;
                 }
 
@@ -2433,10 +2663,11 @@ bool SCH_SYMBOL::ResolveTextVar( const SCH_SHEET_PATH* aPath, wxString* token,
                 else if( token->StartsWith( wxT( "SHORT_NET_NAME" ) ) )
                 {
                     wxString netName = conn->LocalName();
+
                     if( netName.Lower().StartsWith( wxT( "unconnected" ) ) )
                         *token = wxT( "NC" );
                     else
-                        *token = netName;
+                        *token = std::move( netName );
                 }
                 else if( token->StartsWith( wxT( "NET_NAME" ) ) )
                 {
@@ -2879,9 +3110,11 @@ void SCH_SYMBOL::Show( int nestLevel, std::ostream& os ) const
 BOX2I SCH_SYMBOL::doGetBoundingBox( bool aIncludePins, bool aIncludeFields ) const
 {
     BOX2I bBox;
+    const SCH_SHEET_PATH* sheetPath = Schematic() ? &Schematic()->CurrentSheet() : nullptr;
+    const LIB_SYMBOL* effSym = GetEffectiveLibSymbol( sheetPath );
 
-    if( m_part )
-        bBox = m_part->GetBodyBoundingBox( m_unit, m_bodyStyle, aIncludePins, false );
+    if( effSym )
+        bBox = effSym->GetBodyBoundingBox( m_unit, m_bodyStyle, aIncludePins, false );
     else
         bBox = LIB_SYMBOL::GetDummy()->GetBodyBoundingBox( m_unit, m_bodyStyle, aIncludePins, false );
 
@@ -3127,18 +3360,7 @@ bool SCH_SYMBOL::Matches( const EDA_SEARCH_DATA& aSearchData, void* aAuxData ) c
             return true;
     }
 
-    // Search instance fields rather than lib template fields so that modified values
-    // (e.g. a "+5VA" symbol derived from "+5V") are matched correctly.  Skip the
-    // Reference field to avoid infinite recursion: SCH_FIELD::Matches() for REFERENCE
-    // calls back into SCH_SYMBOL::Matches().
-    for( const SCH_FIELD& field : m_fields )
-    {
-        if( field.GetId() == FIELD_T::REFERENCE )
-            continue;
-
-        if( field.Matches( aSearchData, aAuxData ) )
-            return true;
-    }
+    // Fields are searched as separate items
 
     // Search non-field lib draw items (pins, graphical text) for completeness.
     for( const SCH_ITEM& drawItem : GetLibSymbolRef()->GetDrawItems() )
@@ -3465,6 +3687,7 @@ SCH_SYMBOL& SCH_SYMBOL::operator=( const SCH_SYMBOL& aSymbol )
         m_transform = aSymbol.m_transform;
 
         m_instances = aSymbol.m_instances;
+        m_instancePathIndex = aSymbol.m_instancePathIndex;
 
         m_fields = aSymbol.m_fields; // std::vector's assignment operator
 
@@ -3473,6 +3696,7 @@ SCH_SYMBOL& SCH_SYMBOL::operator=( const SCH_SYMBOL& aSymbol )
             field.SetParent( this );
 
         UpdatePins();
+        m_variantSymbolCache.clear();
     }
 
     return *this;
@@ -3553,18 +3777,24 @@ void SCH_SYMBOL::Plot( PLOTTER* aPlotter, bool aBackground, const SCH_PLOT_OPTS&
     if( aBackground )
         return;
 
-    if( m_part )
+    SCH_SHEET_PATH*   sheet = Schematic() ? &Schematic()->CurrentSheet() : nullptr;
+    const LIB_SYMBOL* effectiveSym = GetEffectiveLibSymbol( sheet );
+
+    if( effectiveSym )
     {
-        std::vector<SCH_PIN*> libPins = m_part->GetGraphicalPins( GetUnit(), GetBodyStyle() );
+        bool usingAlternate = ( effectiveSym != m_part.get() );
+
+        std::vector<const SCH_PIN*> libPins = effectiveSym->GetGraphicalPins( GetUnit(), GetBodyStyle() );
 
         // Copy the source so we can re-orient and translate it.
-        LIB_SYMBOL            tempSymbol( *m_part );
+        LIB_SYMBOL            tempSymbol( *effectiveSym );
         std::vector<SCH_PIN*> tempPins = tempSymbol.GetGraphicalPins( GetUnit(), GetBodyStyle() );
+        std::vector<SCH_PIN*> symbolPins = MapLibPins( libPins, usingAlternate );
 
-        // Copy the pin info from the symbol to the temp pins
+        // Copy the pin info from the symbol to the temp pins.
         for( unsigned i = 0; i < tempPins.size(); ++i )
         {
-            SCH_PIN* symbolPin = GetPin( libPins[i] );
+            SCH_PIN* symbolPin = symbolPins[i];
             SCH_PIN* tempPin = tempPins[i];
 
             if( !symbolPin )
@@ -3594,8 +3824,7 @@ void SCH_SYMBOL::Plot( PLOTTER* aPlotter, bool aBackground, const SCH_PLOT_OPTS&
         renderSettings->m_Transform = GetTransform();
         aPlotter->StartBlock( nullptr );
 
-        wxString        variant = Schematic()->GetCurrentVariant();
-        SCH_SHEET_PATH* sheet = &Schematic()->CurrentSheet();
+        wxString variant = Schematic() ? Schematic()->GetCurrentVariant() : wxString();
         bool            dnp = GetDNP( sheet, variant );
 
         for( bool local_background : { true, false } )
@@ -3633,10 +3862,11 @@ void SCH_SYMBOL::Plot( PLOTTER* aPlotter, bool aBackground, const SCH_PLOT_OPTS&
                 properties.emplace_back( wxString::Format( wxT( "!%s = %s" ), field.GetName(), text_field ) );
             }
 
-            if( !m_part->GetKeyWords().IsEmpty() )
+            if( !effectiveSym->GetKeyWords().IsEmpty() )
             {
                 properties.emplace_back(
-                        wxString::Format( wxT( "!%s = %s" ), _( "Keywords" ), m_part->GetKeyWords() ) );
+                        wxString::Format( wxT( "!%s = %s" ), _( "Keywords" ),
+                                          effectiveSym->GetKeyWords() ) );
             }
 
             aPlotter->HyperlinkMenu( GetBoundingBox(), properties );
@@ -3645,7 +3875,7 @@ void SCH_SYMBOL::Plot( PLOTTER* aPlotter, bool aBackground, const SCH_PLOT_OPTS&
         aPlotter->EndBlock( nullptr );
         renderSettings->m_Transform = savedTransform;
 
-        if( !m_part->IsPower() )
+        if( !effectiveSym->IsPower() )
             aPlotter->Bookmark( GetBoundingBox(), GetRef( sheet ), _( "Symbols" ) );
     }
 }
@@ -3739,23 +3969,29 @@ void SCH_SYMBOL::PlotLocalPowerIconShape( PLOTTER* aPlotter ) const
 
 void SCH_SYMBOL::PlotPins( PLOTTER* aPlotter, bool aDnp ) const
 {
-    if( m_part )
+    SCH_SHEET_PATH*   sheet = Schematic() ? &Schematic()->CurrentSheet() : nullptr;
+    const LIB_SYMBOL* effectiveSym = GetEffectiveLibSymbol( sheet );
+
+    if( effectiveSym )
     {
+        bool usingAlternate = ( effectiveSym != m_part.get() );
+
         SCH_RENDER_SETTINGS* renderSettings = getRenderSettings( aPlotter );
         TRANSFORM            savedTransform = renderSettings->m_Transform;
         renderSettings->m_Transform = GetTransform();
 
-        std::vector<SCH_PIN*> libPins = m_part->GetGraphicalPins( GetUnit(), GetBodyStyle() );
+        std::vector<const SCH_PIN*> libPins = effectiveSym->GetGraphicalPins( GetUnit(), GetBodyStyle() );
 
         // Copy the source to stay const
-        LIB_SYMBOL            tempSymbol( *m_part );
+        LIB_SYMBOL            tempSymbol( *effectiveSym );
         std::vector<SCH_PIN*> tempPins = tempSymbol.GetGraphicalPins( GetUnit(), GetBodyStyle() );
+        std::vector<SCH_PIN*> symbolPins = MapLibPins( libPins, usingAlternate );
         SCH_PLOT_OPTS         plotOpts;
 
-        // Copy the pin info from the symbol to the temp pins
+        // Copy the pin info from the symbol to the temp pins.
         for( unsigned i = 0; i < tempPins.size(); ++i )
         {
-            SCH_PIN* symbolPin = GetPin( libPins[i] );
+            SCH_PIN* symbolPin = symbolPins[i];
             SCH_PIN* tempPin = tempPins[i];
 
             if( !symbolPin )
@@ -3967,6 +4203,135 @@ void SCH_SYMBOL::AddVariant( const SCH_SHEET_PATH& aInstance, const SCH_SYMBOL_V
 }
 
 
+LIB_SYMBOL* SCH_SYMBOL::GetVariantLibSymbol( const wxString&      aVariantName,
+                                              const SCH_SHEET_PATH& aPath ) const
+{
+    if( aVariantName.IsEmpty() )
+        return nullptr;
+
+    const SCH_SYMBOL_INSTANCE* instance = getInstance( aPath );
+
+    if( !instance || !instance->m_Variants.contains( aVariantName ) )
+        return nullptr;
+
+    const SCH_SYMBOL_VARIANT& variant = instance->m_Variants.at( aVariantName );
+
+    if( !variant.m_SymbolOverride )
+        return nullptr;
+
+    const LIB_ID& libId = *variant.m_SymbolOverride;
+    wxString      libIdStr = libId.Format();
+
+    // Cache by LIB_ID string so hierarchical instances sharing the same alternate symbol
+    // reuse a single flattened copy regardless of sheet path or variant name.  Failed
+    // resolutions are cached as nullptr to keep unresolvable overrides from hitting the
+    // library adapter on every paint.
+    auto cacheIt = m_variantSymbolCache.find( libIdStr );
+
+    if( cacheIt != m_variantSymbolCache.end() )
+        return cacheIt->second.get();
+
+    if( libId == m_lib_id )
+    {
+        m_variantSymbolCache[libIdStr] = nullptr;
+        return nullptr;
+    }
+
+    SCHEMATIC* schematic = Schematic();
+
+    if( !schematic )
+        return nullptr;
+
+    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &schematic->Project() );
+
+    if( !adapter )
+        return nullptr;
+
+    try
+    {
+        if( LIB_SYMBOL* libSymbol = adapter->LoadSymbol( libId ) )
+        {
+            std::unique_ptr<LIB_SYMBOL>& cached = m_variantSymbolCache[libIdStr];
+
+            cached = libSymbol->Flatten();
+
+            if( m_part && !ValidateVariantSymbolCompatibility( *m_part, *cached ).empty() )
+            {
+                cached.reset();
+                return nullptr;
+            }
+
+            return cached.get();
+        }
+    }
+    catch( const IO_ERROR& )
+    {
+    }
+
+    m_variantSymbolCache[libIdStr] = nullptr;
+    return nullptr;
+}
+
+
+const LIB_SYMBOL* SCH_SYMBOL::GetEffectiveLibSymbol( const SCH_SHEET_PATH* aPath ) const
+{
+    if( aPath && Schematic() )
+    {
+        const wxString& variantName = Schematic()->GetCurrentVariant();
+
+        if( !variantName.IsEmpty() )
+        {
+            LIB_SYMBOL* altSymbol = GetVariantLibSymbol( variantName, *aPath );
+
+            if( altSymbol )
+                return altSymbol;
+        }
+    }
+
+    return m_part.get();
+}
+
+
+std::vector<SCH_PIN*> SCH_SYMBOL::MapLibPins( const std::vector<const SCH_PIN*>& aLibPins,
+                                              bool aByNumber ) const
+{
+    std::vector<SCH_PIN*> mapped;
+
+    mapped.reserve( aLibPins.size() );
+
+    if( aByNumber )
+    {
+        const LIB_SYMBOL*           baseSymbol = m_part.get();
+        std::vector<const SCH_PIN*> basePins = baseSymbol->GetGraphicalPins( GetUnit(), GetBodyStyle() );
+        std::vector<bool>           matched( basePins.size(), false );
+
+        for( const SCH_PIN* alternatePin : aLibPins )
+        {
+            SCH_PIN* instancePin = nullptr;
+
+            for( size_t i = 0; i < basePins.size(); ++i )
+            {
+                if( matched[i] || !VariantSymbolPinsMatch( *basePins[i], *alternatePin ) )
+                    continue;
+
+                matched[i] = true;
+                instancePin = GetPin( const_cast<SCH_PIN*>( basePins[i] ) );
+                break;
+            }
+
+            mapped.push_back( instancePin );
+        }
+    }
+    else
+    {
+        for( const SCH_PIN* libPin : aLibPins )
+            mapped.push_back( GetPin( const_cast<SCH_PIN*>( libPin ) ) );
+    }
+
+    return mapped;
+}
+
+
 void SCH_SYMBOL::DeleteVariant( const KIID_PATH& aPath, const wxString& aVariantName )
 {
     SCH_SYMBOL_INSTANCE* instance = getInstance( aPath );
@@ -4009,6 +4374,46 @@ void SCH_SYMBOL::CopyVariant( const KIID_PATH& aPath, const wxString& aSourceVar
     SCH_SYMBOL_VARIANT variant = instance->m_Variants[aSourceVariant];
     variant.m_Name = aNewVariant;
     instance->m_Variants.insert( std::make_pair( aNewVariant, variant ) );
+}
+
+
+void SCH_SYMBOL::SetVariantSymbolOverride( const SCH_SHEET_PATH& aPath,
+                                           const wxString& aVariantName,
+                                           const LIB_ID& aLibId )
+{
+    SCH_SYMBOL_INSTANCE* instance = getInstance( aPath );
+
+    if( !instance )
+        return;
+
+    if( !instance->m_Variants.contains( aVariantName ) )
+    {
+        SCH_SYMBOL_VARIANT newVariant( aVariantName );
+        newVariant.InitializeAttributes( *this );
+        instance->m_Variants.insert( std::make_pair( aVariantName, newVariant ) );
+    }
+
+    instance->m_Variants[aVariantName].m_SymbolOverride = aLibId;
+    m_variantSymbolCache.clear();
+}
+
+
+bool SCH_SYMBOL::ClearVariantSymbolOverride( const SCH_SHEET_PATH& aPath,
+                                             const wxString& aVariantName )
+{
+    SCH_SYMBOL_INSTANCE* instance = getInstance( aPath );
+
+    if( !instance || !instance->m_Variants.contains( aVariantName ) )
+        return false;
+
+    SCH_SYMBOL_VARIANT& variant = instance->m_Variants[aVariantName];
+
+    if( !variant.m_SymbolOverride )
+        return false;
+
+    variant.m_SymbolOverride.reset();
+    m_variantSymbolCache.clear();
+    return true;
 }
 
 
@@ -4145,11 +4550,8 @@ void SCH_SYMBOL::BuildLocalPowerIconShape( std::vector<SCH_SHAPE>& aShapeList, c
 
 SCH_SYMBOL_INSTANCE* SCH_SYMBOL::getInstance( const KIID_PATH& aSheetPath )
 {
-    for( SCH_SYMBOL_INSTANCE& instance : m_instances )
-    {
-        if( instance.m_Path == aSheetPath )
-            return &instance;
-    }
+    if( auto it = m_instancePathIndex.find( aSheetPath ); it != m_instancePathIndex.end() )
+        return &m_instances[it->second];
 
     return nullptr;
 }
@@ -4157,11 +4559,8 @@ SCH_SYMBOL_INSTANCE* SCH_SYMBOL::getInstance( const KIID_PATH& aSheetPath )
 
 const SCH_SYMBOL_INSTANCE* SCH_SYMBOL::getInstance( const KIID_PATH& aSheetPath ) const
 {
-    for( const SCH_SYMBOL_INSTANCE& instance : m_instances )
-    {
-        if( instance.m_Path == aSheetPath )
-            return &instance;
-    }
+    if( auto it = m_instancePathIndex.find( aSheetPath ); it != m_instancePathIndex.end() )
+        return &m_instances[it->second];
 
     return nullptr;
 }

@@ -14,11 +14,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include <qa_utils/wx_utils/unit_test_utils.h>
@@ -31,13 +27,22 @@
 #include <pcbnew/pcbexpr_evaluator.h>
 
 #include <geometry/shape_circle.h>
+#include <geometry/shape_arc.h>
+#include <geometry/eda_angle.h>
 #include <router/pns_component_dragger.h>
+#include <router/pns_dragger.h>
+#include <router/pns_routing_settings.h>
+#include <router/pns_arc.h>
+#include <router/pns_line.h>
 #include <router/pns_item.h>
 #include <router/pns_kicad_iface.h>
 #include <router/pns_node.h>
 #include <router/pns_router.h>
 #include <router/pns_segment.h>
+#include <router/pns_shove.h>
+#include <router/pns_sizes_settings.h>
 #include <router/pns_solid.h>
+#include <router/pns_topology.h>
 #include <router/pns_via.h>
 
 static bool isCopper( const PNS::ITEM* aItem )
@@ -350,6 +355,12 @@ struct PNS_TEST_FIXTURE
         m_router->SetInterface( m_iface );
     }
 
+    ~PNS_TEST_FIXTURE()
+    {
+        delete m_router;
+        delete m_iface;
+    }
+
     SETTINGS_MANAGER      m_settingsManager;
     PNS::ROUTER*          m_router;
     MOCK_RULE_RESOLVER    m_ruleResolver;
@@ -361,6 +372,26 @@ struct PNS_TEST_FIXTURE
 PNS::RULE_RESOLVER* MOCK_PNS_KICAD_IFACE::GetRuleResolver()
 {
     return &m_testFixture->m_ruleResolver;
+}
+
+
+BOOST_FIXTURE_TEST_CASE( PNSShoveOwnsRootLineHistory, PNS_TEST_FIXTURE )
+{
+    PNS::NODE world;
+    world.SetRuleResolver( &m_ruleResolver );
+
+    PNS::SEGMENT segment( SEG( VECTOR2I( 0, 0 ), VECTOR2I( 1000000, 0 ) ),
+                          reinterpret_cast<PNS::NET_HANDLE>( 1 ) );
+    segment.SetLayers( PNS_LAYER_RANGE( F_Cu ) );
+
+    PNS::LINE line;
+    line.Line().Append( VECTOR2I( 0, 0 ) );
+    line.Line().Append( VECTOR2I( 1000000, 0 ) );
+    line.SetLayers( PNS_LAYER_RANGE( F_Cu ) );
+
+    PNS::SHOVE shove( &world, m_router );
+    shove.SetShovePolicy( &segment, PNS::SHOVE::SHP_SHOVE );
+    shove.SetShovePolicy( line, PNS::SHOVE::SHP_SHOVE );
 }
 
 static void dumpObstacles( const PNS::NODE::OBSTACLES &obstacles )
@@ -856,6 +887,246 @@ BOOST_FIXTURE_TEST_CASE( PNSComponentDraggerBasicDrag, PNS_TEST_FIXTURE )
 }
 
 
+// Dragging the apex of an isolated arc outward keeps a single arc in the chain and
+// changes its radius. Exercises the LINE::DragArc geometric core added for in-router
+// arc dragging.
+BOOST_AUTO_TEST_CASE( PNSLineDragArcResize )
+{
+    // 90-degree CCW arc, centre at origin, radius 1mm.
+    SHAPE_ARC arc( VECTOR2I( 0, 0 ), VECTOR2I( 1000000, 0 ), EDA_ANGLE( 90, DEGREES_T ), 250000 );
+
+    SHAPE_LINE_CHAIN chain;
+    chain.SetWidth( 250000 );
+    chain.Append( arc );
+
+    PNS::LINE line;
+    line.SetWidth( 250000 );
+    line.Line() = chain;
+
+    BOOST_REQUIRE_EQUAL( line.CLine().ArcCount(), 1 );
+
+    double oldRadius = line.CLine().CArcs()[0].GetRadius();
+    int    apexIdx = line.CLine().PointCount() / 2;
+
+    // Pull the apex toward the tangent corner at (1mm, 1mm) to grow the radius.
+    line.DragArc( VECTOR2I( 950000, 950000 ), apexIdx );
+
+    BOOST_CHECK_EQUAL( line.CLine().ArcCount(), 1 );
+    BOOST_CHECK( line.CLine().PointCount() >= 2 );
+    BOOST_CHECK( line.CLine().CArcs()[0].GetRadius() != oldRadius );
+}
+
+
+// Driving the arc endpoints together collapses the arc out of the chain (the
+// "collapse to nothing drops it from the route" path in LINE::DragArc).
+BOOST_AUTO_TEST_CASE( PNSLineDragArcCollapse )
+{
+    SHAPE_ARC arc( VECTOR2I( 0, 0 ), VECTOR2I( 1000000, 0 ), EDA_ANGLE( 90, DEGREES_T ), 250000 );
+
+    SHAPE_LINE_CHAIN chain;
+    chain.SetWidth( 250000 );
+    chain.Append( arc );
+
+    PNS::LINE line;
+    line.SetWidth( 250000 );
+    line.Line() = chain;
+
+    BOOST_REQUIRE_EQUAL( line.CLine().ArcCount(), 1 );
+
+    // Drag almost onto the tangent corner at (1mm, 1mm), shrinking the arc until its
+    // endpoints fall within the keep-track threshold and the arc is dropped. Staying a
+    // hair off the corner keeps the constructed radius positive.
+    line.DragArc( VECTOR2I( 999950, 999950 ), line.CLine().PointCount() / 2 );
+
+    BOOST_CHECK_EQUAL( line.CLine().ArcCount(), 0 );
+}
+
+
+// An arc whose central angle reaches 180 degrees cannot be dragged, and the refusal
+// is reported through the router's failure reason so the UI can surface it.
+BOOST_FIXTURE_TEST_CASE( PNSDragArcRejectsNear180, PNS_TEST_FIXTURE )
+{
+    PNS::ROUTING_SETTINGS settings( nullptr, "" );
+    m_router->LoadSettings( &settings );
+
+    PNS::NET_HANDLE net = (PNS::NET_HANDLE) 1;
+
+    auto makeArc = [&]( const EDA_ANGLE& aAngle ) -> PNS::ARC*
+    {
+        SHAPE_ARC sa( VECTOR2I( 0, 0 ), VECTOR2I( 1000000, 0 ), aAngle, 250000 );
+        PNS::ARC* a = new PNS::ARC( sa, net );
+        a->SetLayers( PNS_LAYER_RANGE( F_Cu ) );
+        return a;
+    };
+
+    // Shallow arc: drag starts and no failure is reported.
+    {
+        std::unique_ptr<PNS::NODE> world( new PNS::NODE );
+        world->SetMaxClearance( 10000000 );
+        world->SetRuleResolver( &m_ruleResolver );
+
+        PNS::ARC* arc = makeArc( EDA_ANGLE( 90, DEGREES_T ) );
+        world->AddRaw( arc );
+
+        PNS::DRAGGER dragger( m_router );
+        dragger.SetWorld( world.get() );
+        dragger.SetMode( PNS::DM_ARC );
+
+        PNS::ITEM_SET items;
+        items.Add( arc );
+
+        m_router->SetFailureReason( wxEmptyString );
+        BOOST_CHECK( dragger.Start( arc->Anchor( 0 ), items ) );
+        BOOST_CHECK( m_router->FailureReason().IsEmpty() );
+
+        world->KillChildren();
+    }
+
+    // Major arc (>= 180 deg): drag is refused with an explanatory failure reason.
+    {
+        std::unique_ptr<PNS::NODE> world( new PNS::NODE );
+        world->SetMaxClearance( 10000000 );
+        world->SetRuleResolver( &m_ruleResolver );
+
+        PNS::ARC* arc = makeArc( EDA_ANGLE( 270, DEGREES_T ) );
+        world->AddRaw( arc );
+
+        PNS::DRAGGER dragger( m_router );
+        dragger.SetWorld( world.get() );
+        dragger.SetMode( PNS::DM_ARC );
+
+        PNS::ITEM_SET items;
+        items.Add( arc );
+
+        m_router->SetFailureReason( wxEmptyString );
+        BOOST_CHECK( !dragger.Start( arc->Anchor( 0 ), items ) );
+        BOOST_CHECK( !m_router->FailureReason().IsEmpty() );
+
+        world->KillChildren();
+    }
+
+    // Clockwise major arc (negative central angle): the magnitude is what matters, so
+    // it must be refused just like its CCW counterpart.
+    {
+        std::unique_ptr<PNS::NODE> world( new PNS::NODE );
+        world->SetMaxClearance( 10000000 );
+        world->SetRuleResolver( &m_ruleResolver );
+
+        PNS::ARC* arc = makeArc( EDA_ANGLE( -270, DEGREES_T ) );
+        world->AddRaw( arc );
+
+        PNS::DRAGGER dragger( m_router );
+        dragger.SetWorld( world.get() );
+        dragger.SetMode( PNS::DM_ARC );
+
+        PNS::ITEM_SET items;
+        items.Add( arc );
+
+        m_router->SetFailureReason( wxEmptyString );
+        BOOST_CHECK( !dragger.Start( arc->Anchor( 0 ), items ) );
+        BOOST_CHECK( !m_router->FailureReason().IsEmpty() );
+
+        world->KillChildren();
+    }
+}
+
+
+// Base mock's NetCode() returns -1 for everything, which reads as unnetted; use a real net here
+namespace
+{
+struct NETCODE_RULE_RESOLVER : public MOCK_RULE_RESOLVER
+{
+    int NetCode( PNS::NET_HANDLE aNet ) override { return aNet ? 1 : -1; }
+};
+
+PNS::ITEM* queryFinishAnchor( PNS::NODE& aWorld, const PNS::LINE& aTrack )
+{
+    PNS::TOPOLOGY   topo( &aWorld );
+    VECTOR2I        anchorPoint;
+    PNS_LAYER_RANGE anchorLayers;
+    PNS::ITEM*      anchorItem = nullptr;
+
+    BOOST_REQUIRE( topo.NearestUnconnectedAnchorPoint( &aTrack, anchorPoint, anchorLayers,
+                                                       anchorItem ) );
+    return anchorItem;
+}
+} // namespace
+
+
+// F-key finish adds the track to a temporary branch node; a joint linking only to that
+// track must still yield a persistent-world anchor, not a dangling branch pointer
+//
+// Regression test for https://gitlab.com/kicad/code/kicad/-/issues/24985
+BOOST_FIXTURE_TEST_CASE( PNSFinishAnchorNoDanglingBranchItem, PNS_TEST_FIXTURE )
+{
+    NETCODE_RULE_RESOLVER resolver;
+
+    PNS::NODE world;
+    world.SetMaxClearance( 10000000 );
+    world.SetRuleResolver( &resolver );
+
+    PNS::NET_HANDLE net = (PNS::NET_HANDLE) 1;
+
+    // Persistent unconnected target on the same net, away from the track
+    PNS::SEGMENT* target = new PNS::SEGMENT( SEG( VECTOR2I( 10000000, 10000000 ),
+                                                 VECTOR2I( 12000000, 10000000 ) ), net );
+    target->SetWidth( 250000 );
+    target->SetLayers( PNS_LAYER_RANGE( F_Cu ) );
+    world.AddRaw( target );
+
+    // Closed loop; end joint's two links are both owned by the temporary branch node
+    PNS::LINE track;
+    track.SetLayers( PNS_LAYER_RANGE( F_Cu ) );
+    track.SetNet( net );
+    track.SetWidth( 250000 );
+    track.Line().Append( VECTOR2I( 0, 0 ) );
+    track.Line().Append( VECTOR2I( 2000000, 0 ) );
+    track.Line().Append( VECTOR2I( 2000000, 2000000 ) );
+    track.Line().Append( VECTOR2I( 0, 2000000 ) );
+    track.Line().Append( VECTOR2I( 0, 0 ) );
+
+    // Anchor must be the persistent target, never a link owned by the destroyed temp branch
+    BOOST_CHECK_EQUAL( queryFinishAnchor( world, track ), target );
+}
+
+
+// ConnectedJoints must cross arcs when subtracting the track; stopping at an arc left
+// temporary primitives beyond it selectable as the anchor, reviving the dangling pointer
+//
+// Regression test for https://gitlab.com/kicad/code/kicad/-/issues/24985
+BOOST_FIXTURE_TEST_CASE( PNSFinishAnchorCrossesArcInConnectivity, PNS_TEST_FIXTURE )
+{
+    NETCODE_RULE_RESOLVER resolver;
+
+    PNS::NODE world;
+    world.SetMaxClearance( 10000000 );
+    world.SetRuleResolver( &resolver );
+
+    PNS::NET_HANDLE net = (PNS::NET_HANDLE) 1;
+
+    // Farther from the track end than its own far segment, wins only once that's subtracted
+    PNS::SEGMENT* target = new PNS::SEGMENT( SEG( VECTOR2I( 7000000, 0 ),
+                                                 VECTOR2I( 8000000, 0 ) ), net );
+    target->SetWidth( 250000 );
+    target->SetLayers( PNS_LAYER_RANGE( F_Cu ) );
+    world.AddRaw( target );
+
+    // Segment-arc-segment track; far segment lies across the arc, so connectivity must cross it
+    PNS::LINE track;
+    track.SetLayers( PNS_LAYER_RANGE( F_Cu ) );
+    track.SetNet( net );
+    track.SetWidth( 250000 );
+    track.Line().Append( VECTOR2I( 0, 0 ) );
+    track.Line().Append( VECTOR2I( 1000000, 0 ) );
+    track.Line().Append( SHAPE_ARC( VECTOR2I( 1000000, 0 ), VECTOR2I( 1500000, 500000 ),
+                                    VECTOR2I( 2000000, 0 ), 0 ) );
+    track.Line().Append( VECTOR2I( 3000000, 0 ) );
+
+    // Anchor must be the persistent target, not a branch-owned primitive across the arc
+    BOOST_CHECK_EQUAL( queryFinishAnchor( world, track ), target );
+}
+
+
 // Regression tests for issues #18658 and #24132. Physical clearance rules must be
 // enforced for same-net and free-pad pairs without disturbing the fast path on
 // boards that do not define them.
@@ -1094,4 +1365,42 @@ BOOST_FIXTURE_TEST_CASE( PNSBothPhysicalConstraintsMaxWins, PNS_TEST_FIXTURE )
     for( const PNS::OBSTACLE& obs : obstacles )
         maxClearance = std::max( maxClearance, obs.m_clearance );
     BOOST_CHECK_EQUAL( maxClearance, 2000000 );
+}
+
+
+// Diff pair vias must respect copper-to-hole clearance, not just copper-to-copper and
+// hole-to-hole. EffectiveDiffPairViaGap() is the copper-edge-to-copper-edge distance the
+// placer fits vias to; it converts each clearance rule to that reference by subtracting the
+// annular ring(s) of via copper that sit between a hole edge and the copper edge.
+//
+// Regression test for https://gitlab.com/kicad/code/kicad/-/issues/21623 where the placer
+// ignored copper-to-hole clearance and produced DRC violations on diff pair vias.
+BOOST_AUTO_TEST_CASE( PNSDiffPairViaGapCopperToHoleClearance )
+{
+    PNS::SIZES_SETTINGS sizes;
+
+    // 600um copper diameter over a 300um drill leaves a 150um annular ring.
+    sizes.SetViaDiameter( 600000 );
+    sizes.SetViaDrill( 300000 );
+    sizes.SetDiffPairViaGapSameAsTraceGap( false );
+
+    BOOST_CHECK_EQUAL( sizes.GetDiffPairCopperToHole(), 0 );
+
+    // Copper-to-hole binds because 400um from a hole edge to the neighbour's copper edge is
+    // 400000 - 150000 = 250000 copper-to-copper, exceeding both other rules.
+    sizes.SetDiffPairViaGap( 200000 );
+    sizes.SetDiffPairHoleToHole( 500000 ); // 500000 - 300000 = 200000 copper-to-copper
+    sizes.SetDiffPairCopperToHole( 400000 );
+
+    BOOST_CHECK_EQUAL( sizes.GetDiffPairCopperToHole(), 400000 );
+    BOOST_CHECK_EQUAL( sizes.EffectiveDiffPairViaGap(), 250000 );
+
+    // Hole-to-hole binds when it is the largest converted rule.
+    sizes.SetDiffPairHoleToHole( 900000 ); // 900000 - 300000 = 600000 copper-to-copper
+    BOOST_CHECK_EQUAL( sizes.EffectiveDiffPairViaGap(), 600000 );
+
+    // Plain copper-to-copper gap binds when the hole-based rules are slack.
+    sizes.SetDiffPairHoleToHole( 0 );
+    sizes.SetDiffPairCopperToHole( 0 );
+    BOOST_CHECK_EQUAL( sizes.EffectiveDiffPairViaGap(), 200000 );
 }

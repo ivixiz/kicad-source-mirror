@@ -14,8 +14,8 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef _JSON_SETTINGS_H
@@ -36,6 +36,7 @@
 class wxConfigBase;
 class NESTED_SETTINGS;
 class PARAM_BASE;
+class PROJECT;
 class SETTINGS_MANAGER;
 
 class wxAuiPaneInfo;
@@ -93,10 +94,24 @@ public:
     void SetLocation( SETTINGS_LOC aLocation ) { m_location = aLocation; }
     SETTINGS_LOC GetLocation() const { return m_location; }
 
+    /**
+     * Project-located settings override this to report the project they belong to so their
+     * save path is resolved against that project rather than the active one.
+     */
+    virtual const PROJECT* GetOwningProject() const { return nullptr; }
+
     void SetLegacyFilename( const wxString& aFilename ) { m_legacy_filename = aFilename; }
 
     bool IsReadOnly() const { return !m_writeFile; }
     void SetReadOnly( bool aReadOnly ) { m_writeFile = !aReadOnly; }
+
+    /**
+     * @return true if a param absent from the file is reset to its default on load, meaning an
+     *         absent key whose value equals the default is a faithful round-trip of the file.
+     *         When false (e.g. board design settings), an absent key preserves the loaded value,
+     *         so absent-and-default must still be treated as a change.
+     */
+    bool ResetsParamsIfMissing() const { return m_resetParamsIfMissing; }
 
     /**
      * Wrappers for the underlying JSON API so that most consumers don't need json.hpp
@@ -133,6 +148,12 @@ public:
      * @return true if the file was saved
      */
     virtual bool SaveToFile( const wxString& aDirectory = "", bool aForce = false );
+
+    /**
+     * @return true once the in-memory store has been synchronized with an on-disk file, either
+     *         by loading an existing file or by a successful save
+     */
+    bool IsFileSynced() const { return m_fileSynced; }
 
     /**
      * Resets all parameters to default values.  Does NOT write to file or update underlying JSON.
@@ -338,6 +359,9 @@ protected:
 
     /// True if the JSON data store has been written to since the last file write
     bool m_modified;
+
+    /// True once the store has been synchronized with an on-disk file (loaded or saved)
+    bool m_fileSynced;
 
     /// Whether or not to delete legacy file after migration
     bool m_deleteLegacyAfterMigration;

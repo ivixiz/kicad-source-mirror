@@ -17,13 +17,10 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include <stack>
@@ -42,6 +39,7 @@ using namespace std::placeholders;
 #include <pcb_marker.h>
 #include <pad.h>
 #include <pcb_generator.h>
+#include <pcb_group.h>
 #include <pcb_base_edit_frame.h>
 #include <zone.h>
 #include <collectors.h>
@@ -54,6 +52,7 @@ using namespace std::placeholders;
 #include <tool/tool_manager.h>
 #include <tools/tool_event_utils.h>
 #include <tools/pcb_point_editor.h>
+#include <tools/constraint_edit_tool.h>
 #include <tools/pcb_selection_tool.h>
 #include <tools/pcb_actions.h>
 #include <tools/board_inspection_tool.h>
@@ -296,6 +295,19 @@ bool PCB_SELECTION_TOOL::Init()
     auto groupEnterCondition =
             SELECTION_CONDITIONS::Count( 1 ) && SELECTION_CONDITIONS::HasType( PCB_GROUP_T );
 
+    auto applyDesignBlockLayoutCondition = []( const SELECTION& aSel )
+    {
+        for( EDA_ITEM* item : aSel )
+        {
+            if( item->Type() == PCB_GROUP_T && static_cast<PCB_GROUP*>( item )->HasDesignBlockLink() )
+            {
+                return true;
+            }
+        }
+
+        return false;
+    };
+
     auto inGroupCondition =
             [this] ( const SELECTION& )
             {
@@ -325,7 +337,7 @@ bool PCB_SELECTION_TOOL::Init()
     menu.AddItem( ACTIONS::cancelInteractive,           activeToolCondition, 1 );
     menu.AddItem( ACTIONS::groupEnter,                  groupEnterCondition, 1 );
     menu.AddItem( ACTIONS::groupLeave,                  inGroupCondition,    1 );
-    menu.AddItem( PCB_ACTIONS::applyDesignBlockLayout,  groupEnterCondition, 1 );
+    menu.AddItem( PCB_ACTIONS::applyDesignBlockLayout, applyDesignBlockLayoutCondition, 1 );
     menu.AddItem( PCB_ACTIONS::placeLinkedDesignBlock,  groupEnterCondition, 1 );
     menu.AddItem( PCB_ACTIONS::saveToLinkedDesignBlock, groupEnterCondition, 1 );
     menu.AddItem( PCB_ACTIONS::clearHighlight,          haveHighlight,       1 );
@@ -437,24 +449,40 @@ int PCB_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
             {
                 m_disambiguateTimer.Stop();
 
+                // A click on a geometric-constraint badge selects that constraint instead of a
+                // board item (the badges have no selectable geometry of their own); a click that
+                // misses every badge clears any badge selection.
+                if( CONSTRAINT_EDIT_TOOL* constraintTool =
+                            m_toolMgr->GetTool<CONSTRAINT_EDIT_TOOL>() )
+                {
+                    if( constraintTool->SelectConstraintAt( evt->Position() ) )
+                    {
+                        m_canceledMenu = false;
+                        continue;
+                    }
+
+                    constraintTool->ClearConstraintSelection();
+                }
+
                 // Single click? Select single object
                 if( m_highlight_modifier && brd_editor )
                 {
-                    m_toolMgr->RunAction( PCB_ACTIONS::highlightNet );
+                    if( !toggleTableCellSelection( evt->Position() ) )
+                        m_toolMgr->RunAction( PCB_ACTIONS::highlightNet );
                 }
                 else
                 {
                     m_frame->ClearFocus();
 
-                    // Handle shift+click range selection within a PCB_TABLE before falling
-                    // back to a normal point selection.  Mirrors eeschema's SCH_TABLE behaviour.
+                    // Mirrors eeschema's SCH_TABLE shift+click range select.
                     if( !extendTableCellSelectionTo( evt->Position() ) )
                     {
-                        // Reset the range-selection anchor when the user does anything other
-                        // than extend a table-cell selection
-                        m_previousFirstCell = nullptr;
-
                         selectPoint( evt->Position() );
+
+                        // Anchor for a subsequent shift+click or shift+drag whose IsClick
+                        // jitter could otherwise promote into IsDrag, collapsing the range
+                        // rectangle to (DragOrigin, Position) at the press point.
+                        m_previousFirstCell = singleSelectedCell();
                     }
                 }
             }
@@ -491,6 +519,13 @@ int PCB_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
             if( frame && frame->IsType( FRAME_FOOTPRINT_VIEWER ) )
             {
                 evt->SetPassEvent();
+                continue;
+            }
+
+            // A double-click on a constraint badge edits that relation's value.
+            if( CONSTRAINT_EDIT_TOOL* constraintTool = m_toolMgr->GetTool<CONSTRAINT_EDIT_TOOL>();
+                constraintTool && constraintTool->EditConstraintAt( evt->Position() ) )
+            {
                 continue;
             }
 
@@ -548,16 +583,7 @@ int PCB_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
             m_toolMgr->ProcessEvent( EVENTS::InhibitSelectionEditing );
 
             GENERAL_COLLECTOR hoverCells;
-
-            if( m_isFootprintEditor && board()->GetFirstFootprint() )
-            {
-                hoverCells.Collect( board()->GetFirstFootprint(), { PCB_TABLECELL_T }, evt->DragOrigin(),
-                                    getCollectorsGuide() );
-            }
-            else
-            {
-                hoverCells.Collect( board(), { PCB_TABLECELL_T }, evt->DragOrigin(), getCollectorsGuide() );
-            }
+            collectTableCellsAt( evt->DragOrigin(), hoverCells );
 
             if( hoverCells.GetCount() )
             {
@@ -670,6 +696,12 @@ int PCB_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
             m_disambiguateTimer.Stop();
             m_frame->ClearFocus();
 
+            if( CONSTRAINT_EDIT_TOOL* constraintTool = m_toolMgr->GetTool<CONSTRAINT_EDIT_TOOL>();
+                constraintTool && constraintTool->ClearConstraintSelection() )
+            {
+                continue;
+            }
+
             if( !GetSelection().Empty() )
             {
                 ClearSelection();
@@ -747,6 +779,12 @@ void PCB_SELECTION_TOOL::EnterGroup()
 
     m_toolMgr->ProcessEvent( EVENTS::SelectedEvent );
 
+    // Processing the selection event can re-enter the tool and ExitGroup(), which clears
+    // m_enteredGroup. If that happened, don't operate on the now-stale (possibly null) group
+    // or we would hide/overlay a null item and crash (issue #24391).
+    if( m_enteredGroup != aGroup )
+        return;
+
     view()->Hide( m_enteredGroup, true );
     m_enteredGroupOverlay.Add( m_enteredGroup );
     view()->Update( &m_enteredGroupOverlay );
@@ -810,6 +848,15 @@ PCB_SELECTION& PCB_SELECTION_TOOL::RequestSelection( CLIENT_SELECTION_FILTER aCl
         }
 
         aClientFilter( VECTOR2I(), collector, this );
+
+        // Locked items were filtered with Override locks off. Keep the selection and return an
+        // empty one so the action does nothing. The banner then prompts to enable the override.
+        if( m_lockedItemsFiltered )
+        {
+            m_frame->GetCanvas()->ForceRefresh();
+            m_blockedSelection.Clear();
+            return m_blockedSelection;
+        }
 
         for( EDA_ITEM* item : collector )
         {
@@ -1125,16 +1172,7 @@ bool PCB_SELECTION_TOOL::extendTableCellSelectionTo( const VECTOR2I& aPosition )
     }
 
     GENERAL_COLLECTOR clickCells;
-
-    if( m_isFootprintEditor && board()->GetFirstFootprint() )
-    {
-        clickCells.Collect( board()->GetFirstFootprint(), { PCB_TABLECELL_T }, aPosition,
-                            getCollectorsGuide() );
-    }
-    else
-    {
-        clickCells.Collect( board(), { PCB_TABLECELL_T }, aPosition, getCollectorsGuide() );
-    }
+    collectTableCellsAt( aPosition, clickCells );
 
     if( clickCells.GetCount() != 1 )
         return false;
@@ -1143,19 +1181,27 @@ bool PCB_SELECTION_TOOL::extendTableCellSelectionTo( const VECTOR2I& aPosition )
     PCB_TABLECELL* firstCell    = static_cast<PCB_TABLECELL*>( m_selection.GetItem( 0 ) );
     PCB_TABLE*     parentTable  = static_cast<PCB_TABLE*>( clickedCell->GetParent() );
 
-    // Anchor on the first cell of the current selection (or refresh the anchor when
-    // the selection has been reset to a single cell).
-    if( m_previousFirstCell == nullptr || m_selection.GetSize() == 1 )
-        m_previousFirstCell = firstCell;
-
+    // Drop the cached anchor when the selection no longer holds only cells of the
+    // clicked table, so it cannot survive into a later shift+drag on a different table.
     for( EDA_ITEM* item : m_selection )
     {
         if( !dynamic_cast<PCB_TABLECELL*>( item ) || item->GetParent() != parentTable )
+        {
+            m_previousFirstCell = nullptr;
             return false;
+        }
     }
 
-    if( !m_previousFirstCell || m_previousFirstCell->GetParent() != parentTable )
+    // Contains() prevents reading GetCenter() on a cell freed by an external mutation
+    // that did not clear the cached anchor.
+    if( !m_previousFirstCell || !m_selection.Contains( m_previousFirstCell ) )
+        m_previousFirstCell = firstCell;
+
+    if( m_previousFirstCell->GetParent() != parentTable )
+    {
+        m_previousFirstCell = nullptr;
         return false;
+    }
 
     // Snapshot the prior selection so we can fire SelectedEvent/UnselectedEvent based
     // on the net delta rather than on every range change.
@@ -1202,10 +1248,98 @@ bool PCB_SELECTION_TOOL::extendTableCellSelectionTo( const VECTOR2I& aPosition )
 }
 
 
+void PCB_SELECTION_TOOL::collectTableCellsAt( const VECTOR2I& aPosition,
+                                              GENERAL_COLLECTOR& aCollector )
+{
+    BOARD_ITEM* scope = ( m_isFootprintEditor && board()->GetFirstFootprint() )
+                                ? static_cast<BOARD_ITEM*>( board()->GetFirstFootprint() )
+                                : static_cast<BOARD_ITEM*>( board() );
+
+    aCollector.Collect( scope, { PCB_TABLECELL_T }, aPosition, getCollectorsGuide() );
+}
+
+
+PCB_TABLECELL* PCB_SELECTION_TOOL::singleSelectedCell() const
+{
+    if( m_selection.GetSize() != 1 )
+        return nullptr;
+
+    return dynamic_cast<PCB_TABLECELL*>( m_selection.GetItem( 0 ) );
+}
+
+
+bool PCB_SELECTION_TOOL::toggleTableCellSelection( const VECTOR2I& aPosition )
+{
+    if( m_selection.GetSize() == 0 )
+        return false;
+
+    PCB_TABLECELL* firstCell = dynamic_cast<PCB_TABLECELL*>( m_selection.GetItem( 0 ) );
+
+    if( !firstCell )
+        return false;
+
+    // Suppress highlightNet only when every selected item is a cell of the same table;
+    // a mixed selection must fall through to the usual Ctrl+click action.
+    PCB_TABLE* selectedTable = static_cast<PCB_TABLE*>( firstCell->GetParent() );
+
+    for( EDA_ITEM* item : m_selection )
+    {
+        PCB_TABLECELL* cell = dynamic_cast<PCB_TABLECELL*>( item );
+
+        if( !cell || cell->GetParent() != selectedTable )
+            return false;
+    }
+
+    GENERAL_COLLECTOR clickCells;
+    collectTableCellsAt( aPosition, clickCells );
+
+    if( clickCells.GetCount() != 1 )
+        return false;
+
+    PCB_TABLECELL* clickedCell = static_cast<PCB_TABLECELL*>( clickCells[0] );
+
+    if( clickedCell->GetParent() != selectedTable )
+        return false;
+
+    if( clickedCell->IsSelected() )
+    {
+        unselect( clickedCell );
+        m_toolMgr->ProcessEvent( EVENTS::UnselectedEvent );
+    }
+    else
+    {
+        select( clickedCell );
+        m_toolMgr->ProcessEvent( EVENTS::PointSelectedEvent );
+    }
+
+    // A toggle breaks the contiguous-rectangle invariant the anchor represents.
+    m_previousFirstCell = nullptr;
+
+    return true;
+}
+
+
 bool PCB_SELECTION_TOOL::selectTableCells( PCB_TABLE* aTable )
 {
     bool cancelled = false;     // Was the tool canceled while it was running?
     m_multiple = true;          // Multiple selection mode is active
+
+    // Shift+click can jitter into IsDrag, collapsing DragOrigin..Position to the press
+    // point; honour the cached anchor instead.  Snapshot its coordinate so the drag loop
+    // never dereferences a cell that an external mutation could free underneath us.
+    bool     haveAnchorStart = false;
+    VECTOR2D anchorStart;
+
+    if( m_additive && m_previousFirstCell && m_selection.Contains( m_previousFirstCell )
+        && m_previousFirstCell->GetParent() == aTable )
+    {
+        anchorStart = VECTOR2D( m_previousFirstCell->GetCenter() );
+        haveAnchorStart = true;
+    }
+    else if( m_previousFirstCell && !m_selection.Contains( m_previousFirstCell ) )
+    {
+        m_previousFirstCell = nullptr;
+    }
 
     initializeTableCellSelectionState( aTable );
 
@@ -1225,7 +1359,11 @@ bool PCB_SELECTION_TOOL::selectTableCells( PCB_TABLE* aTable )
         else if( evt->IsDrag( BUT_LEFT ) )
         {
             getViewControls()->SetAutoPan( true );
-            selectCellsBetween( evt->DragOrigin(), evt->Position() - evt->DragOrigin(), aTable );
+
+            VECTOR2D start = haveAnchorStart ? anchorStart : VECTOR2D( evt->DragOrigin() );
+            VECTOR2D end   = VECTOR2D( evt->Position() );
+
+            selectCellsBetween( start, end - start, aTable );
         }
         else if( evt->IsMouseUp( BUT_LEFT ) )
         {
@@ -1419,7 +1557,7 @@ int PCB_SELECTION_TOOL::SelectPolyArea( const TOOL_EVENT& aEvent )
             evt->SetPassEvent( false );
             break;
         }
-        else if(   evt->IsAction( &PCB_ACTIONS::deleteLastPoint )
+        else if(   evt->IsAction( &ACTIONS::deleteLastPoint )
                 || evt->IsAction( &ACTIONS::doDelete )
                 || evt->IsAction( &ACTIONS::undo ) )
         {
@@ -2127,6 +2265,12 @@ void PCB_SELECTION_TOOL::selectAllConnectedTracks( const std::vector<BOARD_CONNE
 
     auto connectivity = board()->GetConnectivity();
 
+    // Don't let expansion select outside an entered group, or select() would ExitGroup mid-walk.
+    auto inScope = [this]( BOARD_ITEM* aItem )
+    {
+        return isWithinEnteredGroup( aItem, m_enteredGroup, m_isFootprintEditor );
+    };
+
     std::set<PAD*>                     startPadSet;
     std::vector<BOARD_CONNECTED_ITEM*> cleanupItems;
 
@@ -2139,7 +2283,7 @@ void PCB_SELECTION_TOOL::selectAllConnectedTracks( const std::vector<BOARD_CONNE
         // Select any starting track items
         if( startItem->IsType( { PCB_TRACE_T, PCB_ARC_T, PCB_VIA_T } ) )
         {
-            if( itemPassesFilter( startItem, true ) )
+            if( itemPassesFilter( startItem, true ) && inScope( startItem ) )
                 select( startItem );
         }
     }
@@ -2352,7 +2496,7 @@ void PCB_SELECTION_TOOL::selectAllConnectedTracks( const std::vector<BOARD_CONNE
                     if( !itemPassesFilter( track, true ) )
                         continue;
 
-                    if( !track->IsSelected() )
+                    if( !track->IsSelected() && inScope( track ) )
                         select( track );
 
                     if( !track->HasFlag( SKIP_STRUCT ) )
@@ -2378,7 +2522,7 @@ void PCB_SELECTION_TOOL::selectAllConnectedTracks( const std::vector<BOARD_CONNE
                     if( !itemPassesFilter( shape, true ) )
                         continue;
 
-                    if( !shape->IsSelected() )
+                    if( !shape->IsSelected() && inScope( shape ) )
                         select( shape );
 
                     if( !shape->HasFlag( SKIP_STRUCT ) )
@@ -2401,7 +2545,7 @@ void PCB_SELECTION_TOOL::selectAllConnectedTracks( const std::vector<BOARD_CONNE
 
                 if( hitVia )
                 {
-                    if( !hitVia->IsSelected() )
+                    if( !hitVia->IsSelected() && inScope( hitVia ) )
                         select( hitVia );
 
                     if( !hitVia->HasFlag( SKIP_STRUCT ) )
@@ -2627,52 +2771,82 @@ int PCB_SELECTION_TOOL::grabUnconnected( const TOOL_EVENT& aEvent )
 {
     PCB_SELECTION originalSelection = m_selection;
 
-    // Get all pads
-    std::vector<PAD*> pads;
+    // Get all connected items that can represent the source side of the ratsnest.
+    std::vector<BOARD_CONNECTED_ITEM*> sourceItems;
 
     for( EDA_ITEM* item : m_selection.GetItems() )
     {
         if( item->Type() == PCB_FOOTPRINT_T )
         {
             for( PAD* pad : static_cast<FOOTPRINT*>( item )->Pads() )
-                pads.push_back( pad );
+                sourceItems.push_back( pad );
         }
-        else if( item->Type() == PCB_PAD_T )
+        else if( BOARD_CONNECTED_ITEM* connItem = dynamic_cast<BOARD_CONNECTED_ITEM*>( item ) )
         {
-            pads.push_back( static_cast<PAD*>( item ) );
+            sourceItems.push_back( connItem );
         }
     }
 
     ClearSelection();
 
-    // Select every footprint on the end of the ratsnest for each pad in our selection
     std::shared_ptr<CONNECTIVITY_DATA> conn = board()->GetConnectivity();
+    std::shared_ptr<CN_CONNECTIVITY_ALGO> connAlgo = conn->GetConnectivityAlgo();
 
-    for( PAD* pad : pads )
+    for( BOARD_CONNECTED_ITEM* sourceItem : sourceItems )
     {
-        const std::vector<CN_EDGE> edges = conn->GetRatsnestForPad( pad );
+        RN_NET* net = conn->GetRatsnestForNet( sourceItem->GetNetCode() );
 
         // Need to have something unconnected to grab
-        if( edges.size() == 0 )
+        if( !net || net->GetEdges().empty() || !connAlgo->ItemExists( sourceItem ) )
             continue;
+
+        std::vector<std::shared_ptr<CN_CLUSTER>> sourceClusters;
+
+        for( CN_ITEM* cnItem : connAlgo->ItemEntry( sourceItem ).GetItems() )
+        {
+            for( const std::shared_ptr<CN_ANCHOR>& anchor : cnItem->Anchors() )
+            {
+                if( anchor->GetCluster() )
+                    sourceClusters.push_back( anchor->GetCluster() );
+            }
+        }
+
+        if( sourceClusters.empty() )
+            continue;
+
+        auto isSourceAnchor =
+                [&]( const std::shared_ptr<const CN_ANCHOR>& aAnchor )
+                {
+                    if( aAnchor->Parent() == sourceItem )
+                        return true;
+
+                    return std::find( sourceClusters.begin(), sourceClusters.end(),
+                                      aAnchor->GetCluster() ) != sourceClusters.end();
+                };
 
         double     currentDistance = DBL_MAX;
         FOOTPRINT* nearest = nullptr;
 
         // Check every ratsnest line for the nearest one
-        for( const CN_EDGE& edge : edges )
+        for( const CN_EDGE& edge : net->GetEdges() )
         {
-            if( edge.GetSourceNode()->Parent()->GetParentFootprint()
-                == edge.GetTargetNode()->Parent()->GetParentFootprint() )
+            const std::shared_ptr<const CN_ANCHOR>& source = edge.GetSourceNode();
+            const std::shared_ptr<const CN_ANCHOR>& target = edge.GetTargetNode();
+
+            wxCHECK2( source && !source->Dirty() && target && !target->Dirty(), continue );
+
+            if( source->Parent()->GetParentFootprint() == target->Parent()->GetParentFootprint() )
             {
                 continue; // This edge is a loop on the same footprint
             }
 
-            // Figure out if we are the source or the target node on the ratnest
-            const CN_ANCHOR* other = edge.GetSourceNode()->Parent() == pad ? edge.GetTargetNode().get()
-                                                                           : edge.GetSourceNode().get();
+            bool sourceMatches = isSourceAnchor( source );
+            bool targetMatches = isSourceAnchor( target );
 
-            wxCHECK2( other && !other->Dirty(), continue );
+            if( sourceMatches == targetMatches )
+                continue;
+
+            const CN_ANCHOR* other = sourceMatches ? target.get() : source.get();
 
             // We only want to grab footprints, so the ratnest has to point to a pad
             if( other->Parent()->Type() != PCB_PAD_T )
@@ -3969,6 +4143,7 @@ bool PCB_SELECTION_TOOL::Selectable( const BOARD_ITEM* aItem, bool checkVisibili
 
     // These are not selectable
     case PCB_NETINFO_T:
+    case PCB_CONSTRAINT_T:   // geometry-free, never rendered or hit-tested (#2329)
     case NOT_USED:
     case TYPE_NOT_INIT:
         return false;
@@ -4612,7 +4787,7 @@ void PCB_SELECTION_TOOL::GuessSelectionCandidates( GENERAL_COLLECTOR& aCollector
 }
 
 
-void PCB_SELECTION_TOOL::ReportFilteredLockedItems()
+bool PCB_SELECTION_TOOL::ReportFilteredLockedItems()
 {
     if( m_lockedItemsFiltered && m_frame )
     {
@@ -4620,6 +4795,35 @@ void PCB_SELECTION_TOOL::ReportFilteredLockedItems()
                                         "Enable 'Override locks' to operate on them." ),
                                      true );
     }
+
+    return m_lockedItemsFiltered;
+}
+
+
+bool PCB_SELECTION_TOOL::HasLockedDescendant( const BOARD_ITEM* aItem )
+{
+    bool lockedDescendant = false;
+
+    aItem->RunOnChildren(
+            [&]( BOARD_ITEM* curr_item )
+            {
+                if( !curr_item->GetParentFootprint() && curr_item->IsLocked() )
+                    lockedDescendant = true;
+            },
+            RECURSE_MODE::RECURSE );
+
+    return lockedDescendant;
+}
+
+
+bool PCB_SELECTION_TOOL::isWithinEnteredGroup( BOARD_ITEM* aItem, PCB_GROUP* aEnteredGroup, bool aIsFootprintEditor )
+{
+    if( aEnteredGroup )
+        return PCB_GROUP::WithinScope( aItem, aEnteredGroup, aIsFootprintEditor );
+
+    // Not entered: keep expansion at the top level so it can't reach into a group and
+    // silently pull the whole group into a later delete.
+    return aItem->GetParentGroup() == nullptr;
 }
 
 
@@ -4633,17 +4837,8 @@ void PCB_SELECTION_TOOL::FilterCollectorForLockedItems( GENERAL_COLLECTOR& aColl
         for( int i = (int) aCollector.GetCount() - 1; i >= 0; --i )
         {
             BOARD_ITEM* item = aCollector[i];
-            bool        lockedDescendant = false;
 
-            item->RunOnChildren(
-                    [&]( BOARD_ITEM* curr_item )
-                    {
-                        if( curr_item->IsLocked() )
-                            lockedDescendant = true;
-                    },
-                    RECURSE_MODE::RECURSE );
-
-            if( item->IsLocked() || lockedDescendant )
+            if( item->IsLocked() || HasLockedDescendant( item ) )
             {
                 aCollector.Remove( item );
                 m_lockedItemsFiltered = true;

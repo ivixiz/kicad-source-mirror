@@ -14,11 +14,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef PREVIEW_ITEMS_ARC_ASSISTANT_H
@@ -75,6 +71,10 @@ private:
     const ARC_GEOM_MANAGER& m_constructMan;
     const EDA_IU_SCALE&     m_iuScale;
     EDA_UNITS               m_units;
+
+    /// Draw the arc segment (or just the radius lines). May be false if the assistant
+    /// is secondary to an in-progress drawing of a real arc object.
+    bool m_drawArc;
 };
 
 } // namespace PREVIEW

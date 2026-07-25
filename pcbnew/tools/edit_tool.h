@@ -18,11 +18,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef __EDIT_TOOL_H
@@ -33,11 +29,13 @@
 #include <tools/pcb_selection_tool.h>
 #include <status_popup.h>
 #include <unordered_set>
+#include <vector>
 
 
 class BOARD_COMMIT;
 class BOARD_ITEM;
 class CONNECTIVITY_DATA;
+class PCB_SHAPE;
 class STATUS_TEXT_POPUP;
 
 namespace KIGFX::PREVIEW
@@ -76,11 +74,6 @@ public:
      * if a single arc track is selected.
      */
     int Drag( const TOOL_EVENT& aEvent );
-
-    /**
-     * Drag-resize an arc (and change end points of connected straight segments).
-     */
-    int DragArcTrack( const TOOL_EVENT& aTrack );
 
     /**
      * Display properties window for the selected object.
@@ -126,6 +119,8 @@ public:
      * Try to fit selected footprints inside a minimal area and start movement.
      */
     int PackAndMoveFootprints( const TOOL_EVENT& aEvent );
+
+    int ToggleFootprintAttribute( const TOOL_EVENT& aEvent );
 
     int ChangeTrackWidth( const TOOL_EVENT& aEvent );
     int ChangeTrackLayer( const TOOL_EVENT& aEvent );
@@ -232,10 +227,21 @@ private:
     bool pickReferencePoint( const wxString& aTooltip, const wxString& aSuccessMessage,
                              const wxString& aCanceledMessage, VECTOR2I& aReferencePoint );
 
-    bool doMoveSelection( const TOOL_EVENT& aEvent, BOARD_COMMIT* aCommit, bool aAutoStart );
+    /// Runs interactive move drag when @p aConstraintShapes is non null previews constraint solve live
+    /// each tick and returns moved shapes for a final settle solve other callers pass null and skip it
+    bool doMoveSelection( const TOOL_EVENT& aEvent, BOARD_COMMIT* aCommit, bool aAutoStart,
+                          std::vector<PCB_SHAPE*>* aConstraintShapes = nullptr );
 
     ///< Rebuilds the ratsnest for operations that require it outside the commit rebuild
     void rebuildConnectivity();
+
+    ///< Re-solve the geometric constraints of any shapes in @p aSelection after a transform.
+    void reSolveConstraintsAfterEdit( const PCB_SELECTION& aSelection );
+
+public:
+    ///< Collect constrainable PCB_SHAPEs in @p aSelection recursing groups and footprints so
+    ///< contained shapes seed clusters too shared with properties panel for drag like settle on edit
+    static void collectConstraintShapes( const SELECTION& aSelection, std::vector<PCB_SHAPE*>& aShapes );
 
 private:
     PCB_SELECTION_TOOL*   m_selectionTool;

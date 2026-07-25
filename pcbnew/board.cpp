@@ -18,17 +18,14 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include <iterator>
 #include <algorithm>
 
 #include <wx/log.h>
+#include <wx/filename.h>
 
 #include <drc/drc_engine.h>
 #include <drc/drc_rtree.h>
@@ -42,6 +39,7 @@
 #include <connectivity/connectivity_data.h>
 #include <convert_shape_list_to_polygon.h>
 #include <footprint.h>
+#include <footprint_courtyard_index.h>
 #include <board_text_var_adapter.h>
 #include <font/outline_font.h>
 #include <length_delay_calculation/length_delay_calculation.h>
@@ -53,6 +51,7 @@
 #include <pcb_group.h>
 #include <pcb_generator.h>
 #include <pcb_point.h>
+#include <constraints/pcb_constraint.h>
 #include <pcb_target.h>
 #include <pcb_shape.h>
 #include <pcb_barcode.h>
@@ -170,8 +169,7 @@ BOARD::BOARD() :
 
 BOARD::~BOARD()
 {
-    m_itemByIdCache.clear();
-    m_cachedIdByItem.clear();
+    ClearItemByIdCache();
 
     // Clean up the owned elements
     DeleteMARKERs();
@@ -185,6 +183,7 @@ BOARD::~BOARD()
     m_tracks.clear();
     m_drawings.clear();
     m_groups.clear();
+    m_constraints.clear();
     m_points.clear();
 
     delete m_boardOutline;
@@ -258,16 +257,27 @@ void BOARD::ClearProject()
 
     PROJECT_FILE& project = m_project->GetProjectFile();
 
-    // Owned by the BOARD
-    if( project.m_BoardSettings )
-    {
-        project.ReleaseNestedSettings( project.m_BoardSettings );
+    // Release this board's own design settings, not project.m_BoardSettings; a second board
+    // sharing the project (e.g. diffing a file against itself) overwrites m_BoardSettings, so
+    // trusting it would orphan our settings as a dangling entry in the project's nested list
+    project.ReleaseNestedSettings( &GetDesignSettings() );
+
+    if( project.m_BoardSettings == &GetDesignSettings() )
         project.m_BoardSettings = nullptr;
-    }
 
     GetDesignSettings().m_NetSettings = nullptr;
-    GetDesignSettings().SetParent( nullptr );
     m_project = nullptr;
+}
+
+
+wxString BOARD::GetDesignRulesPath() const
+{
+    if( m_fileName.IsEmpty() || !m_project )
+        return wxEmptyString;
+
+    wxFileName fn( m_fileName );
+    fn.SetExt( FILEEXT::DesignRulesFileExtension );
+    return m_project->AbsolutePath( fn.GetFullName() );
 }
 
 
@@ -277,17 +287,29 @@ void BOARD::IncrementTimeStamp()
 
     m_timeStamp++;
 
-    if( !m_IntersectsAreaCache.empty() || !m_EnclosedByAreaCache.empty() || !m_IntersectsCourtyardCache.empty()
-        || !m_IntersectsFCourtyardCache.empty() || !m_IntersectsBCourtyardCache.empty()
+    m_footprintCourtyardIndex.reset();
+
+    if( !m_IntersectsAreaCache.Empty() || !m_EnclosedByAreaCache.Empty() || !m_IntersectsCourtyardCache.Empty()
+        || !m_IntersectsFCourtyardCache.Empty() || !m_IntersectsBCourtyardCache.Empty()
+        || !m_IntersectsCourtyardResultCache.Empty() || !m_IntersectsFCourtyardResultCache.Empty()
+        || !m_IntersectsBCourtyardResultCache.Empty() || !m_IntersectsAreaResultCache.Empty()
+        || !m_EnclosedByAreaResultCache.Empty()
         || !m_LayerExpressionCache.empty() || !m_ZoneBBoxCache.empty() || m_CopperItemRTreeCache
         || m_maxClearanceValue.has_value() || !m_ItemNetclassCache.empty()
-        || !m_ZonesByNameCache.empty() || !m_DeflatedZoneOutlineCache.empty() )
+        || !m_ZonesByNameCache.empty() || !m_DeflatedZoneOutlineCache.empty()
+        || !m_ItemFieldCache.Empty() )
     {
-        m_IntersectsAreaCache.clear();
-        m_EnclosedByAreaCache.clear();
-        m_IntersectsCourtyardCache.clear();
-        m_IntersectsFCourtyardCache.clear();
-        m_IntersectsBCourtyardCache.clear();
+        m_IntersectsAreaCache.Clear();
+        m_EnclosedByAreaCache.Clear();
+        m_IntersectsCourtyardCache.Clear();
+        m_IntersectsFCourtyardCache.Clear();
+        m_IntersectsBCourtyardCache.Clear();
+        m_IntersectsCourtyardResultCache.Clear();
+        m_IntersectsFCourtyardResultCache.Clear();
+        m_IntersectsBCourtyardResultCache.Clear();
+        m_IntersectsAreaResultCache.Clear();
+        m_EnclosedByAreaResultCache.Clear();
+        m_ItemFieldCache.Clear();
         m_LayerExpressionCache.clear();
         m_ItemNetclassCache.clear();
         m_ZonesByNameCache.clear();
@@ -309,6 +331,30 @@ void BOARD::IncrementTimeStamp()
 
         m_maxClearanceValue.reset();
     }
+}
+
+
+std::shared_ptr<const FOOTPRINT_COURTYARD_INDEX> BOARD::GetFootprintCourtyardIndex()
+{
+    {
+        std::shared_lock<std::shared_mutex> readLock( m_CachesMutex );
+
+        if( m_footprintCourtyardIndex )
+            return m_footprintCourtyardIndex;
+    }
+
+    // Build outside the lock; FOOTPRINT::GetCourtyard guards its own cache with a per-footprint
+    // mutex, so building here is safe even when it has to lazily populate that cache.  Publish under
+    // the write lock, letting the first builder win if several worker threads race here on the
+    // first courtyard predicate.
+    auto index = std::make_shared<FOOTPRINT_COURTYARD_INDEX>( this );
+
+    std::unique_lock<std::shared_mutex> writeLock( m_CachesMutex );
+
+    if( !m_footprintCourtyardIndex )
+        m_footprintCourtyardIndex = std::move( index );
+
+    return m_footprintCourtyardIndex;
 }
 
 
@@ -350,6 +396,11 @@ void BOARD::RecordDRCExclusions()
 
     for( PCB_MARKER* marker : m_markers )
     {
+        // SerializeToString() dereferences the RC_ITEM, so a marker carrying none would fault
+        // while persisting exclusions during a save or window close.
+        if( !marker->GetRCItem() )
+            continue;
+
         if( marker->IsExcluded() )
         {
             wxString serialized = marker->SerializeToString();
@@ -594,18 +645,21 @@ bool BOARD::ResolveTextVar( wxString* token, int aDepth ) const
 
     wxString var = *token;
 
+    if( GetTitleBlock().TextVarResolver( token, m_project ) )
+        return true;
+
+    // Resolve from the project's live text variables before the board's cached properties so
+    // changes made outside the board (schematic, project settings) are always reflected.
+    if( GetProject() && GetProject()->TextVarResolver( token ) )
+        return true;
+
+    // Fall back to the board's cached properties for backward compatibility with boards that
+    // may carry properties not present in the project.
     if( m_properties.count( var ) )
     {
         *token = m_properties.at( var );
         return true;
     }
-    else if( GetTitleBlock().TextVarResolver( token, m_project ) )
-    {
-        return true;
-    }
-
-    if( GetProject() && GetProject()->TextVarResolver( token ) )
-        return true;
 
     return false;
 }
@@ -665,6 +719,9 @@ void BOARD::RunOnChildren( const std::function<void( BOARD_ITEM* )>& aFunction, 
 
         for( PCB_GROUP* group : m_groups )
             aFunction( group );
+
+        for( PCB_CONSTRAINT* constraint : m_constraints )
+            aFunction( constraint );
 
         for( PCB_POINT* point : m_points )
             aFunction( point );
@@ -1244,6 +1301,57 @@ void BOARD::FixupEmbeddedData()
 }
 
 
+wxString BOARD::GetUniqueZoneName( const wxString& aBaseName, const ZONE* aExclude ) const
+{
+    if( aBaseName.IsEmpty() )
+        return aBaseName;
+
+    auto inUse = [&]( const wxString& aName )
+    {
+        for( const ZONE* zone : m_zones )
+        {
+            if( zone != aExclude && zone->GetZoneName() == aName )
+                return true;
+        }
+
+        return false;
+    };
+
+    if( !inUse( aBaseName ) )
+        return aBaseName;
+
+    // Strip a trailing _<number> so repeated copies increment the root (foo_1 -> foo_2),
+    // instead of stacking suffixes (foo_1_1_1).
+    wxString root = aBaseName;
+
+    if( aBaseName.Find( '_' ) != wxNOT_FOUND )
+    {
+        wxString suffix = aBaseName.AfterLast( '_' );
+        bool     allDigits = !suffix.IsEmpty();
+
+        for( wxUniChar ch : suffix )
+        {
+            if( !wxIsdigit( ch ) )
+            {
+                allDigits = false;
+                break;
+            }
+        }
+
+        if( allDigits )
+            root = aBaseName.BeforeLast( '_' );
+    }
+
+    for( int i = 1;; ++i )
+    {
+        wxString candidate = wxString::Format( wxT( "%s_%d" ), root, i );
+
+        if( !inUse( candidate ) )
+            return candidate;
+    }
+}
+
+
 void BOARD::Add( BOARD_ITEM* aBoardItem, ADD_MODE aMode, bool aSkipConnectivity )
 {
     if( aBoardItem == nullptr )
@@ -1251,8 +1359,6 @@ void BOARD::Add( BOARD_ITEM* aBoardItem, ADD_MODE aMode, bool aSkipConnectivity 
         wxFAIL_MSG( wxT( "BOARD::Add() param error: aBoardItem nullptr" ) );
         return;
     }
-
-    CacheItemById( aBoardItem );
 
     switch( aBoardItem->Type() )
     {
@@ -1263,6 +1369,8 @@ void BOARD::Add( BOARD_ITEM* aBoardItem, ADD_MODE aMode, bool aSkipConnectivity 
 
     // this one uses a vector
     case PCB_GROUP_T: m_groups.push_back( (PCB_GROUP*) aBoardItem ); break;
+
+    case PCB_CONSTRAINT_T: m_constraints.push_back( (PCB_CONSTRAINT*) aBoardItem ); break;
 
     // this one uses a vector
     case PCB_GENERATOR_T: m_generators.push_back( (PCB_GENERATOR*) aBoardItem ); break;
@@ -1306,7 +1414,6 @@ void BOARD::Add( BOARD_ITEM* aBoardItem, ADD_MODE aMode, bool aSkipConnectivity 
         else
             m_footprints.push_front( footprint );
 
-        CacheChildrenById( footprint );
         break;
     }
 
@@ -1329,11 +1436,6 @@ void BOARD::Add( BOARD_ITEM* aBoardItem, ADD_MODE aMode, bool aSkipConnectivity 
         else
             m_drawings.push_front( aBoardItem );
 
-        if( aBoardItem->Type() == PCB_TABLE_T )
-        {
-            CacheChildrenById( aBoardItem );
-        }
-
         break;
     }
 
@@ -1353,6 +1455,13 @@ void BOARD::Add( BOARD_ITEM* aBoardItem, ADD_MODE aMode, bool aSkipConnectivity 
 
     aBoardItem->SetParent( this );
     aBoardItem->ClearEditFlags();
+
+    // Index only after the item is accepted and parented, so a rejected item never lingers as a
+    // dangling cache entry and an indexed item can always reach its board through its parent.
+    CacheItemById( aBoardItem );
+
+    if( aBoardItem->Type() == PCB_FOOTPRINT_T || aBoardItem->Type() == PCB_TABLE_T )
+        CacheChildrenById( aBoardItem );
 
     if( !aSkipConnectivity )
         m_connectivity->Add( aBoardItem );
@@ -1426,6 +1535,8 @@ void BOARD::Remove( BOARD_ITEM* aBoardItem, REMOVE_MODE aRemoveMode )
     case PCB_MARKER_T: std::erase( m_markers, aBoardItem ); break;
 
     case PCB_GROUP_T: std::erase( m_groups, aBoardItem ); break;
+
+    case PCB_CONSTRAINT_T: std::erase( m_constraints, aBoardItem ); break;
 
     case PCB_ZONE_T: std::erase( m_zones, aBoardItem ); break;
 
@@ -1518,6 +1629,11 @@ void BOARD::RemoveAll( std::initializer_list<KICAD_T> aTypes )
             m_groups.clear();
             break;
 
+        case PCB_CONSTRAINT_T:
+            std::copy( m_constraints.begin(), m_constraints.end(), std::back_inserter( removed ) );
+            m_constraints.clear();
+            break;
+
         case PCB_POINT_T:
             std::copy( m_points.begin(), m_points.end(), std::back_inserter( removed ) );
             m_points.clear();
@@ -1568,8 +1684,7 @@ void BOARD::RemoveAll( std::initializer_list<KICAD_T> aTypes )
         }
     }
 
-    m_itemByIdCache.clear();
-    m_cachedIdByItem.clear();
+    ClearItemByIdCache();
 
     IncrementTimeStamp();
 
@@ -1795,6 +1910,21 @@ void BOARD::DetachAllFootprints()
 }
 
 
+static PCB_TABLECELL* findTableCell( const BOARD_ITEM* aDrawing, const KIID& aID )
+{
+    if( aDrawing->Type() != PCB_TABLE_T )
+        return nullptr;
+
+    for( PCB_TABLECELL* cell : static_cast<const PCB_TABLE*>( aDrawing )->GetCells() )
+    {
+        if( cell->m_Uuid == aID )
+            return cell;
+    }
+
+    return nullptr;
+}
+
+
 BOARD_ITEM* BOARD::ResolveItem( const KIID& aID, bool aAllowNullptrReturn ) const
 {
     if( aID == niluuid )
@@ -1810,6 +1940,12 @@ BOARD_ITEM* BOARD::ResolveItem( const KIID& aID, bool aAllowNullptrReturn ) cons
     {
         if( group->m_Uuid == aID )
             return CacheAndReturnItemById( aID, group );
+    }
+
+    for( PCB_CONSTRAINT* constraint : m_constraints )
+    {
+        if( constraint->m_Uuid == aID )
+            return CacheAndReturnItemById( aID, constraint );
     }
 
     for( PCB_GENERATOR* generator : m_generators )
@@ -1845,6 +1981,9 @@ BOARD_ITEM* BOARD::ResolveItem( const KIID& aID, bool aAllowNullptrReturn ) cons
 
         for( BOARD_ITEM* drawing : footprint->GraphicalItems() )
         {
+            if( PCB_TABLECELL* cell = findTableCell( drawing, aID ) )
+                return CacheAndReturnItemById( aID, cell );
+
             if( drawing->m_Uuid == aID )
                 return CacheAndReturnItemById( aID, drawing );
         }
@@ -1859,6 +1998,12 @@ BOARD_ITEM* BOARD::ResolveItem( const KIID& aID, bool aAllowNullptrReturn ) cons
         {
             if( group->m_Uuid == aID )
                 return CacheAndReturnItemById( aID, group );
+        }
+
+        for( PCB_CONSTRAINT* constraint : footprint->Constraints() )
+        {
+            if( constraint->m_Uuid == aID )
+                return CacheAndReturnItemById( aID, constraint );
         }
 
         for( PCB_POINT* point : footprint->Points() )
@@ -1876,14 +2021,8 @@ BOARD_ITEM* BOARD::ResolveItem( const KIID& aID, bool aAllowNullptrReturn ) cons
 
     for( BOARD_ITEM* drawing : Drawings() )
     {
-        if( drawing->Type() == PCB_TABLE_T )
-        {
-            for( PCB_TABLECELL* cell : static_cast<PCB_TABLE*>( drawing )->GetCells() )
-            {
-                if( cell->m_Uuid == aID )
-                    return CacheAndReturnItemById( aID, drawing );
-            }
-        }
+        if( PCB_TABLECELL* cell = findTableCell( drawing, aID ) )
+            return CacheAndReturnItemById( aID, cell );
 
         if( drawing->m_Uuid == aID )
             return CacheAndReturnItemById( aID, drawing );
@@ -1955,12 +2094,14 @@ void BOARD::CacheItemById( BOARD_ITEM* aItem ) const
         if( auto prev = m_cachedIdByItem.find( existing->second );
             prev != m_cachedIdByItem.end() && prev->second == aItem->m_Uuid )
         {
+            existing->second->m_indexedInBoard = false;
             m_cachedIdByItem.erase( prev );
         }
     }
 
     m_itemByIdCache.insert_or_assign( aItem->m_Uuid, aItem );
     m_cachedIdByItem.insert_or_assign( aItem, aItem->m_Uuid );
+    aItem->m_indexedInBoard = true;
 }
 
 
@@ -1978,6 +2119,7 @@ void BOARD::UncacheItemById( const KIID& aId ) const
     if( auto cached = m_cachedIdByItem.find( item );
         cached != m_cachedIdByItem.end() && cached->second == aId )
     {
+        item->m_indexedInBoard = false;
         m_cachedIdByItem.erase( cached );
     }
 }
@@ -1985,6 +2127,9 @@ void BOARD::UncacheItemById( const KIID& aId ) const
 
 BOARD_ITEM* BOARD::CacheAndReturnItemById( const KIID& aId, BOARD_ITEM* aItem ) const
 {
+    if( IsFootprintHolder() )
+        return aItem;
+
     if( auto prev = m_cachedIdByItem.find( aItem );
         prev != m_cachedIdByItem.end() && prev->second != aId )
     {
@@ -2000,12 +2145,14 @@ BOARD_ITEM* BOARD::CacheAndReturnItemById( const KIID& aId, BOARD_ITEM* aItem ) 
         if( auto prev = m_cachedIdByItem.find( existing->second );
             prev != m_cachedIdByItem.end() && prev->second == aId )
         {
+            existing->second->m_indexedInBoard = false;
             m_cachedIdByItem.erase( prev );
         }
     }
 
     m_itemByIdCache.insert_or_assign( aId, aItem );
     m_cachedIdByItem.insert_or_assign( aItem, aId );
+    aItem->m_indexedInBoard = true;
 
     return aItem;
 }
@@ -2013,6 +2160,8 @@ BOARD_ITEM* BOARD::CacheAndReturnItemById( const KIID& aId, BOARD_ITEM* aItem ) 
 
 void BOARD::UncacheItemByPtr( const BOARD_ITEM* aItem )
 {
+    aItem->m_indexedInBoard = false;
+
     if( auto cached = m_cachedIdByItem.find( aItem ); cached != m_cachedIdByItem.end() )
     {
         auto it = m_itemByIdCache.find( cached->second );
@@ -2031,6 +2180,16 @@ void BOARD::UncacheItemByPtr( const BOARD_ITEM* aItem )
         else
             ++it;
     }
+}
+
+
+void BOARD::ClearItemByIdCache()
+{
+    for( const auto& [item, id] : m_cachedIdByItem )
+        item->m_indexedInBoard = false;
+
+    m_itemByIdCache.clear();
+    m_cachedIdByItem.clear();
 }
 
 
@@ -2166,6 +2325,9 @@ void BOARD::FillItemMap( std::map<KIID, EDA_ITEM*>& aMap )
 
     for( PCB_GROUP* group : m_groups )
         aMap[group->m_Uuid] = group;
+
+    for( PCB_CONSTRAINT* constraint : m_constraints )
+        aMap[constraint->m_Uuid] = constraint;
 
     for( PCB_POINT* point : m_points )
         aMap[point->m_Uuid] = point;
@@ -2589,6 +2751,15 @@ INSPECT_RESULT BOARD::Visit( INSPECTOR inspector, void* testData, const std::vec
 
         case PCB_GROUP_T:
             if( IterateForward<PCB_GROUP*>( m_groups, inspector, testData, { scanType } ) == INSPECT_RESULT::QUIT )
+            {
+                return INSPECT_RESULT::QUIT;
+            }
+
+            break;
+
+        case PCB_CONSTRAINT_T:
+            if( IterateForward<PCB_CONSTRAINT*>( m_constraints, inspector, testData, { scanType } )
+                == INSPECT_RESULT::QUIT )
             {
                 return INSPECT_RESULT::QUIT;
             }
@@ -3541,6 +3712,14 @@ void BOARD::OnRatsnestChanged()
 }
 
 
+void BOARD::CompileRatsnest()
+{
+    GetConnectivity()->RecalculateRatsnest();
+    UpdateRatsnestExclusions();
+    OnRatsnestChanged();
+}
+
+
 void BOARD::ResetNetHighLight()
 {
     m_highLight.Clear();
@@ -3843,9 +4022,19 @@ const BOARD_ITEM_SET BOARD::GetItemSet()
     std::copy( m_drawings.begin(), m_drawings.end(), std::inserter( items, items.end() ) );
     std::copy( m_markers.begin(), m_markers.end(), std::inserter( items, items.end() ) );
     std::copy( m_groups.begin(), m_groups.end(), std::inserter( items, items.end() ) );
+    std::copy( m_constraints.begin(), m_constraints.end(), std::inserter( items, items.end() ) );
     std::copy( m_points.begin(), m_points.end(), std::inserter( items, items.end() ) );
 
     return items;
+}
+
+
+const BOARD_ITEM_SET BOARD::GetItemSet() const
+{
+    // Delegate to the non-const overload via a single safe const_cast on the
+    // *this pointer.  GetItemSet doesn't mutate the BOARD; the non-const
+    // signature is historical.
+    return const_cast<BOARD*>( this )->GetItemSet();
 }
 
 

@@ -17,11 +17,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * https://www.gnu.org/licenses/gpl-3.0.html
- * or you may search the http://www.gnu.org website for the version 3 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include <wx/debug.h>
@@ -410,6 +406,43 @@ void SIMULATOR_FRAME::ReloadSimulator( const wxString& aSimCommand, unsigned aSi
 }
 
 
+void SIMULATOR_FRAME::destroyTabPlot( SIM_TAB* aSimTab )
+{
+    wxString oldPlotName = aSimTab->GetSpicePlotName();
+
+    if( oldPlotName.IsEmpty() )
+        return;
+
+    // A run may report a plot that another tab still owns (e.g. an FFT deriving from a TRAN plot,
+    // or an aborted run that produced nothing new).  Never destroy such a shared plot; just forget
+    // this tab's reference to it.
+    if( m_ui->IsPlotOwnedByOtherTab( aSimTab, oldPlotName ) )
+    {
+        aSimTab->SetSpicePlotName( wxEmptyString );
+        return;
+    }
+
+    // A noise run produces a pair of plots (odd spectral density noiseN, even integrated noiseN+1).
+    // Destroy both regardless of which of the pair the tab happened to record.
+    long noiseNumber = 0;
+
+    if( oldPlotName.StartsWith( wxS( "noise" ) ) && oldPlotName.Mid( 5 ).ToLong( &noiseNumber ) )
+    {
+        long spectral = ( noiseNumber % 2 == 0 ) ? noiseNumber - 1 : noiseNumber;
+
+        m_simulator->Command( wxString::Format( wxT( "destroy noise%ld" ), spectral ).ToStdString() );
+        m_simulator->Command(
+                wxString::Format( wxT( "destroy noise%ld" ), spectral + 1 ).ToStdString() );
+    }
+    else
+    {
+        m_simulator->Command( "destroy " + oldPlotName.ToStdString() );
+    }
+
+    aSimTab->SetSpicePlotName( wxEmptyString );
+}
+
+
 void SIMULATOR_FRAME::StartSimulation()
 {
     SIM_TAB* simTab = m_ui->GetCurrentSimTab();
@@ -432,6 +465,10 @@ void SIMULATOR_FRAME::StartSimulation()
         }
         else
         {
+            // Free the tab's previous FFT plot before recomputing; destroyTabPlot() leaves the
+            // shared TRAN plot it derives from untouched.
+            destroyTabPlot( simTab );
+
             m_simulator->Command( "setplot " + tranSpicePlot.ToStdString() );
 
             wxArrayString commands = wxSplit( simTab->GetSimCommand(), '\n' );
@@ -477,6 +514,11 @@ void SIMULATOR_FRAME::StartSimulation()
     if( simulatorLock.owns_lock() )
     {
         m_simFinished = false;
+
+        // Free this tab's previous plot only once the rerun is committed, so a failed netlist or
+        // a busy simulator leaves the existing results intact.  Other tabs' plots must survive
+        // (e.g. an FFT consumes a prior TRAN plot).
+        destroyTabPlot( simTab );
 
         m_ui->OnSimUpdate();
         m_simulator->Run();
@@ -602,6 +644,12 @@ void SIMULATOR_FRAME::ToggleSimConsole()
 void SIMULATOR_FRAME::ToggleSimSidePanel()
 {
     m_ui->ToggleSimSidePanel();
+}
+
+
+void SIMULATOR_FRAME::ToggleSmithChart()
+{
+    m_ui->ToggleSmithChart();
 }
 
 
@@ -783,6 +831,20 @@ void SIMULATOR_FRAME::setupUIConditions()
                 return m_ui->DarkModePlots();
             };
 
+    auto smithChartCondition =
+            [this]( const SELECTION& aSel )
+            {
+                SIM_PLOT_TAB* plotTab = dynamic_cast<SIM_PLOT_TAB*>( GetCurrentSimTab() );
+                return plotTab && plotTab->IsSmithMode();
+            };
+
+    auto haveSPPlot =
+            [this]( const SELECTION& aSel )
+            {
+                SIM_PLOT_TAB* plotTab = dynamic_cast<SIM_PLOT_TAB*>( GetCurrentSimTab() );
+                return plotTab && plotTab->GetSimType() == ST_SP;
+            };
+
     auto simRunning =
             [this]( const SELECTION& aSel )
             {
@@ -865,6 +927,8 @@ void SIMULATOR_FRAME::setupUIConditions()
     mgr->SetConditions( SCH_ACTIONS::toggleGrid,            CHECK( showGridCondition ) );
     mgr->SetConditions( SCH_ACTIONS::toggleLegend,          CHECK( showLegendCondition ) );
     mgr->SetConditions( SCH_ACTIONS::toggleDottedSecondary, CHECK( showDottedCondition ) );
+    mgr->SetConditions( SCH_ACTIONS::toggleSmithChart,
+                        ACTION_CONDITIONS().Check( smithChartCondition ).Enable( haveSPPlot ) );
     mgr->SetConditions( SCH_ACTIONS::toggleDarkModePlots,   CHECK( darkModePlotCondition ) );
 
     mgr->SetConditions( SCH_ACTIONS::newAnalysisTab,        ENABLE( SELECTION_CONDITIONS::ShowAlways ) );
@@ -940,6 +1004,12 @@ void SIMULATOR_FRAME::onUpdateSim( wxCommandEvent& aEvent )
 
     if( simulatorLock.owns_lock() )
     {
+        // Tuner drags and multi-run steps rerun through here without going through
+        // StartSimulation(), so free the prior plot to keep repeated updates from leaking.  A
+        // multi-run step's data is already copied into m_multiRunState before the next step.
+        if( SIM_TAB* simTab = m_ui->GetCurrentSimTab() )
+            destroyTabPlot( simTab );
+
         m_ui->OnSimUpdate();
         m_simulator->Run();
     }

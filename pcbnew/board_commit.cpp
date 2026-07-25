@@ -16,11 +16,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include <macros.h>
@@ -47,8 +43,18 @@
 #include <pcb_board_outline.h>
 
 #include <functional>
+#include <unordered_set>
 #include <project/project_file.h>
 using namespace std::placeholders;
+
+
+// A no-geometry board item (net metadata or a geometric constraint) is never pushed into the
+// VIEW or the connectivity graph.  VIEW::Add early-returns on an empty layer set but still
+// stamps the item's view private data, which a later VIEW::Remove would mis-index.
+static bool isNoGeometryItem( const BOARD_ITEM* aItem )
+{
+    return aItem->Type() == PCB_NETINFO_T || aItem->Type() == PCB_CONSTRAINT_T;
+}
 
 
 BOARD_COMMIT::BOARD_COMMIT( TOOL_BASE* aTool ) :
@@ -198,6 +204,8 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
     bool                itemsDeselected = false;
     bool                selectedModified = false;
 
+    std::unordered_set<EDA_ITEM*> removedItems;
+
     // Dirty flags and lists
     bool                     solderMaskDirty = false;
     bool                     autofillZones = false;
@@ -327,7 +335,8 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
 
             if( !( changeFlags & CHT_DONE ) )
             {
-                if( m_isFootprintEditor )
+                // Markers are always stored at the board level, even in the footprint editor
+                if( m_isFootprintEditor && boardItem->Type() != PCB_MARKER_T )
                 {
                     if( FOOTPRINT* parentFP = board->GetFirstFootprint() )
                         parentFP->Add( boardItem );
@@ -342,7 +351,7 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
             if( boardItem->Type() != PCB_MARKER_T )
                 propagateDamage( boardItem, staleZones, staleRuleAreas );
 
-            if( view && boardItem->Type() != PCB_NETINFO_T )
+            if( view && !isNoGeometryItem( boardItem ) )
                 view->Add( boardItem );
 
             updateComponentClasses( boardItem );
@@ -355,7 +364,8 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
 
             if( !( aCommitFlags & SKIP_UNDO ) )
             {
-                ITEM_PICKER itemWrapper( nullptr, boardItem, UNDO_REDO::DELETED );
+                UNDO_REDO   status = boardItem->Type() == PCB_FIELD_T ? UNDO_REDO::CHANGED : UNDO_REDO::DELETED;
+                ITEM_PICKER itemWrapper( nullptr, boardItem, status );
                 itemWrapper.SetLink( entry.m_copy );
                 entry.m_copy = nullptr;   // We've transferred ownership to the undo list
                 undoList.PushItem( itemWrapper );
@@ -369,6 +379,8 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
                 itemsDeselected = true;
             }
 
+            removedItems.insert( boardItem );
+
             if( parentGroup && !( parentGroup->AsEdaItem()->GetFlags() & STRUCT_DELETED ) )
                 parentGroup->RemoveItem( boardItem );
 
@@ -379,6 +391,10 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
             {
             case PCB_FIELD_T:
                 static_cast<PCB_FIELD*>( boardItem )->SetVisible( false );
+
+                if( view )
+                    view->Update( boardItem );
+
                 break;
 
             case PCB_TEXT_T:
@@ -398,7 +414,6 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
             case PCB_DIM_ORTHOGONAL_T:
             case PCB_DIM_LEADER_T:
             case PCB_TARGET_T:
-            case PCB_MARKER_T:
             case PCB_POINT_T:
             case PCB_ZONE_T:
             case PCB_FOOTPRINT_T:
@@ -406,6 +421,41 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
                 if( view )
                     view->Remove( boardItem );
 
+                if( !( changeFlags & CHT_DONE ) )
+                {
+                    if( m_isFootprintEditor && boardItem->Type() != PCB_MARKER_T )
+                    {
+                        if( FOOTPRINT* parentFP = board->GetFirstFootprint() )
+                            parentFP->Remove( boardItem );
+                    }
+                    else if( FOOTPRINT* parentFP = boardItem->GetParentFootprint() )
+                    {
+                        parentFP->Remove( boardItem );
+                    }
+                    else
+                    {
+                        board->Remove( boardItem, REMOVE_MODE::BULK );
+                        bulkRemovedItems.push_back( boardItem );
+                    }
+                }
+
+                break;
+
+            case PCB_MARKER_T:
+                if( view )
+                    view->Remove( boardItem );
+
+                if( !( changeFlags & CHT_DONE ) )
+                {
+                    // Markers are always stored at the board level, even in the footprint editor
+                    board->Remove( boardItem, REMOVE_MODE::BULK );
+                    bulkRemovedItems.push_back( boardItem );
+                }
+
+                break;
+
+            // No-geometry items: never in the view, so skip view->Remove.
+            case PCB_CONSTRAINT_T:
                 if( !( changeFlags & CHT_DONE ) )
                 {
                     if( m_isFootprintEditor )
@@ -437,8 +487,10 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
                 break;
             }
 
-            // The item has been removed from the board; it is now owned by undo/redo.
-            boardItem->SetFlags( UR_TRANSIENT );
+            // Removed items are owned by undo/redo, but a hidden field still belongs to its footprint
+            if( boardItem->Type() != PCB_FIELD_T )
+                boardItem->SetFlags( UR_TRANSIENT );
+
             break;
         }
 
@@ -454,7 +506,7 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
                 undoList.PushItem( itemWrapper );
             }
 
-            if( !( aCommitFlags & SKIP_CONNECTIVITY ) )
+            if( !( aCommitFlags & SKIP_CONNECTIVITY ) && !isNoGeometryItem( boardItem ) )
             {
                 connectivity->MarkItemNetAsDirty( boardItemCopy );
                 connectivity->Update( boardItem );
@@ -468,7 +520,7 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
 
             updateComponentClasses( boardItem );
 
-            if( view && boardItem->Type() != PCB_NETINFO_T )
+            if( view && !isNoGeometryItem( boardItem ) )
                 view->Update( boardItem );
 
             itemsChanged.push_back( boardItem );
@@ -492,6 +544,26 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
                 },
                 RECURSE_MODE::RECURSE );
     } // ... and regenerate them.
+
+    // Deselection above keys off the SELECTED flag on the removed item itself, but the selection
+    // may separately hold an owned descendant such as a pad, field or table cell.  Descendants
+    // are freed along with the removed parent, so prune them here or the selection keeps a
+    // dangling pointer that the next repaint dereferences.
+    if( selTool && !removedItems.empty() )
+    {
+        for( EDA_ITEM* selectedItem : selTool->GetSelection().GetItems() )
+        {
+            for( EDA_ITEM* ancestor = selectedItem; ancestor; ancestor = ancestor->GetParent() )
+            {
+                if( removedItems.count( ancestor ) )
+                {
+                    selTool->RemoveItemFromSel( selectedItem, true /* quiet mode */ );
+                    itemsDeselected = true;
+                    break;
+                }
+            }
+        }
+    }
 
     // Invalidate component classes
     board->GetComponentClassManager().InvalidateComponentClasses();
@@ -580,7 +652,7 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
                 delete entry.m_copy;
             }
 
-            if( view && boardItem->Type() != PCB_NETINFO_T )
+            if( view && !isNoGeometryItem( boardItem ) )
             {
                 if( ( entry.m_type & CHT_TYPE ) == CHT_ADD )
                     view->Add( boardItem );
@@ -684,7 +756,7 @@ EDA_ITEM* BOARD_COMMIT::MakeImage( EDA_ITEM* aItem )
 void BOARD_COMMIT::Revert()
 {
     PICKED_ITEMS_LIST                  undoList;
-    KIGFX::VIEW*                       view = m_toolMgr->GetView();
+    KIGFX::VIEW*                       view = m_toolMgr->GetView();   // null in headless sessions
     BOARD*                             board = (BOARD*) m_toolMgr->GetModel();
     std::shared_ptr<CONNECTIVITY_DATA> connectivity = board->GetConnectivity();
 
@@ -719,7 +791,7 @@ void BOARD_COMMIT::Revert()
         case CHT_ADD:
             if( changeFlags & CHT_DONE )
             {
-                if( boardItem->Type() != PCB_NETINFO_T )
+                if( view && !isNoGeometryItem( boardItem ) )
                     view->Remove( boardItem );
 
                 connectivity->Remove( boardItem );
@@ -751,7 +823,7 @@ void BOARD_COMMIT::Revert()
             if( !( changeFlags & CHT_DONE ) )
                 break;
 
-            if( boardItem->Type() != PCB_NETINFO_T )
+            if( view && !isNoGeometryItem( boardItem ) )
                 view->Add( boardItem );
 
             if( m_isFootprintEditor )
@@ -775,7 +847,7 @@ void BOARD_COMMIT::Revert()
 
         case CHT_MODIFY:
         {
-            if( boardItem->Type() != PCB_NETINFO_T )
+            if( view && !isNoGeometryItem( boardItem ) )
                 view->Remove( boardItem );
 
             connectivity->Remove( boardItem );
@@ -784,7 +856,7 @@ void BOARD_COMMIT::Revert()
             BOARD_ITEM* boardItemCopy = static_cast<BOARD_ITEM*>( entry.m_copy );
             boardItem->SwapItemData( boardItemCopy );
 
-            if( boardItem->Type() != PCB_NETINFO_T )
+            if( view && !isNoGeometryItem( boardItem ) )
                 view->Add( boardItem );
 
             connectivity->Add( boardItem );
@@ -828,8 +900,8 @@ void BOARD_COMMIT::Revert()
         board->OnRatsnestChanged();
     }
 
-    PCB_SELECTION_TOOL* selTool = m_toolMgr->GetTool<PCB_SELECTION_TOOL>();
-    selTool->RebuildSelection();
+    if( PCB_SELECTION_TOOL* selTool = m_toolMgr->GetTool<PCB_SELECTION_TOOL>() )
+        selTool->RebuildSelection();
 
     // Property panel needs to know about the reselect
     m_toolMgr->PostEvent( EVENTS::SelectedItemsModified );

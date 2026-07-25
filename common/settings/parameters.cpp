@@ -14,8 +14,8 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include <wx/string.h>
@@ -51,7 +51,7 @@ bool PARAM_PATH_LIST::MatchesFile( const JSON_SETTINGS& aSettings ) const
         }
     }
 
-    return false;
+    return aSettings.ResetsParamsIfMissing() && *m_ptr == m_default;
 }
 
 
@@ -112,7 +112,7 @@ bool PARAM_WXSTRING_MAP::MatchesFile( const JSON_SETTINGS& aSettings ) const
         }
     }
 
-    return false;
+    return aSettings.ResetsParamsIfMissing() && *m_ptr == m_default;
 }
 
 #if !defined( __MINGW32__ )

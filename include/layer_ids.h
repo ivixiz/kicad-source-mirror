@@ -16,11 +16,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef LAYER_IDS_H
@@ -320,6 +316,9 @@ enum GAL_LAYER_ID: int
     /// PCB reference/manual snap points visibility
     LAYER_POINTS             = GAL_LAYER_ID_START + 45,
 
+    /// Shadow layer for items bound to a constraint
+    LAYER_CONSTRAINT_SHADOW  = GAL_LAYER_ID_START + 46,
+
     // Add layers below this point that do not have visibility controls, so don't need explicit
     // enum values
 
@@ -330,6 +329,11 @@ enum GAL_LAYER_ID: int
                                    ///< PCBNEW_SETTINGS::m_ShowPageLimits)
 
     LAYER_DRC_HIGHLIGHTED,          ///< Color for highlighted DRC markers.
+
+    // Constraint tints themed and drawn by overlay with no visibility control of their own
+    LAYER_CONSTRAINT_UNDER,         ///< Under-constrained (free DOF remain).
+    LAYER_CONSTRAINT_WELL,          ///< Fully constrained.
+    LAYER_CONSTRAINT_OVER,          ///< Over-constrained / conflicting.
 
     /// Virtual layers for stacking zones and tracks on a given copper layer.
     LAYER_ZONE_START,

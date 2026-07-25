@@ -14,15 +14,14 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef PCB_ITEM_CONTAINERS_H_
 #define PCB_ITEM_CONTAINERS_H_
+
+#include <deque>
+#include <vector>
 
 // Board-level items
 class FOOTPRINT;
@@ -31,6 +30,7 @@ class PCB_GROUP;
 class PCB_GENERATOR;
 class PCB_POINT;
 class PCB_MARKER;
+class PCB_CONSTRAINT;
 class ZONE;
 
 typedef std::vector<PCB_MARKER*> MARKERS;
@@ -40,6 +40,7 @@ typedef std::deque<FOOTPRINT*> FOOTPRINTS;
 typedef std::deque<PCB_GROUP*> GROUPS;
 typedef std::deque<PCB_GENERATOR*> GENERATORS;
 typedef std::deque<PCB_POINT*> PCB_POINTS;
+typedef std::deque<PCB_CONSTRAINT*> CONSTRAINTS;
 
 
 // Shared with board and footprint

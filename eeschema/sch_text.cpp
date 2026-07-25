@@ -16,11 +16,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include "markup_parser.h"
@@ -375,27 +371,28 @@ wxString SCH_TEXT::GetShownText( const SCH_SHEET_PATH* aPath, bool aAllowExtraTe
     else if( SCHEMATIC* schematic = Schematic() )
         sheet = schematic->CurrentSheet().Last();
 
-    std::function<bool( wxString* )> textResolver = [&]( wxString* token ) -> bool
-    {
-        if( SCH_SYMBOL* sch_symbol = dynamic_cast<SCH_SYMBOL*>( m_parent ) )
-        {
-            if( sch_symbol->ResolveTextVar( aPath, token, depth + 1 ) )
-                return true;
-        }
-        else if( LIB_SYMBOL* lib_symbol = dynamic_cast<LIB_SYMBOL*>( m_parent ) )
-        {
-            if( lib_symbol->ResolveTextVar( token, depth + 1 ) )
-                return true;
-        }
+    std::function<bool( wxString* )> textResolver =
+            [&]( wxString* token ) -> bool
+            {
+                if( SCH_SYMBOL* sch_symbol = dynamic_cast<SCH_SYMBOL*>( m_parent ) )
+                {
+                    if( sch_symbol->ResolveTextVar( aPath, token, depth + 1 ) )
+                        return true;
+                }
+                else if( LIB_SYMBOL* lib_symbol = dynamic_cast<LIB_SYMBOL*>( m_parent ) )
+                {
+                    if( lib_symbol->ResolveTextVar( token, depth + 1 ) )
+                        return true;
+                }
 
-        if( sheet )
-        {
-            if( sheet->ResolveTextVar( aPath, token, depth + 1 ) )
-                return true;
-        }
+                if( sheet )
+                {
+                    if( sheet->ResolveTextVar( aPath, token, depth + 1 ) )
+                        return true;
+                }
 
-        return false;
-    };
+                return false;
+            };
 
     wxString text = EDA_TEXT::GetShownText( aAllowExtraText, depth );
 

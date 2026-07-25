@@ -18,11 +18,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef PCB_SELECTION_TOOL_H
@@ -220,17 +216,52 @@ public:
 
     PCB_LAYER_ID GetActiveLayer() { return m_frame->GetActiveLayer(); }
 
+    enum STOP_CONDITION
+    {
+        /**
+         * Stop at any place where more than two traces meet.
+         *
+         * Because vias are also traces, this makes selection stop at a via if there is a trace
+         * on another layer as well, but a via with only one connection will be selected.
+         */
+        STOP_AT_JUNCTION,
+        /** Stop when reaching a segment (next track/arc/via). */
+        STOP_AT_SEGMENT,
+        /** Stop when reaching a pad. */
+        STOP_AT_PAD,
+        /** Select the entire net. */
+        STOP_NEVER
+    };
+
+    /**
+     * Select connected tracks and vias.
+     *
+     * @param aStopCondition Indicates where to stop selecting more items.
+     */
+    void selectAllConnectedTracks( const std::vector<BOARD_CONNECTED_ITEM*>& aStartItems,
+                                   STOP_CONDITION                            aStopCondition );
+
     /**
      * In the PCB editor strip out any locked items unless the OverrideLocks checkbox is set.
      */
     void FilterCollectorForLockedItems( GENERAL_COLLECTOR& aCollector );
 
     /**
-     * If the most recent FilterCollectorForLockedItems call removed at least one item,
-     * show an InfoBar warning prompting the user to enable Override Locks.  No-op
-     * otherwise.
+     * @return true if a locked descendant should pin aItem in place.  Locked items inside a
+     * footprint move rigidly with it, so only descendants outside a parent footprint count
+     * (group members, see issue 6841).
      */
-    void ReportFilteredLockedItems();
+    static bool HasLockedDescendant( const BOARD_ITEM* aItem );
+
+    /// True if aItem may be selected while aEnteredGroup is entered (24967).
+    static bool isWithinEnteredGroup( BOARD_ITEM* aItem, PCB_GROUP* aEnteredGroup, bool aIsFootprintEditor );
+
+    /**
+     * If the most recent FilterCollectorForLockedItems call filtered a locked item, show an
+     * InfoBar warning prompting the user to enable Override locks and return true.  The caller
+     * should stop the action in that case.  Return false otherwise.
+     */
+    bool ReportFilteredLockedItems();
 
     /**
      * In general we don't want to select both a parent and any of it's children.  This includes
@@ -358,6 +389,29 @@ private:
     bool extendTableCellSelectionTo( const VECTOR2I& aPosition );
 
     /**
+     * When the user Ctrl-clicks inside a PCB_TABLE whose cells are already in the selection,
+     * toggle that cell into or out of the selection instead of triggering the net-highlight
+     * action.  Matches eeschema's table behaviour and mirrors eeschema 10.0.1, where Ctrl-
+     * (then Shift-) click could be used to build a discontinuous cell selection.
+     *
+     * @return true if a toggle was performed; false if the caller should fall back to the
+     *         usual Ctrl-click action (net highlight).
+     */
+    bool toggleTableCellSelection( const VECTOR2I& aPosition );
+
+    /**
+     * Collect PCB_TABLECELL items at @p aPosition into @p aCollector, scoped to either
+     * the active footprint (in the footprint editor) or the full board.
+     */
+    void collectTableCellsAt( const VECTOR2I& aPosition, GENERAL_COLLECTOR& aCollector );
+
+    /**
+     * @return the single PCB_TABLECELL in the current selection, or nullptr if the
+     *         selection is empty, has more than one item, or holds something else.
+     */
+    PCB_TABLECELL* singleSelectedCell() const;
+
+    /**
      * Handle disambiguation actions including displaying the menu.
      */
     int disambiguateCursor( const TOOL_EVENT& aEvent );
@@ -396,31 +450,6 @@ private:
      * Select and move other nearest footprint unconnected on same net as selected items.
      */
     int grabUnconnected( const TOOL_EVENT& aEvent );
-
-    enum STOP_CONDITION
-    {
-        /**
-         * Stop at any place where more than two traces meet.
-         *
-         * Because vias are also traces, this makes selection stop at a via if there is a trace
-         * on another layer as well, but a via with only one connection will be selected.
-         */
-        STOP_AT_JUNCTION,
-        /** Stop when reaching a segment (next track/arc/via). */
-        STOP_AT_SEGMENT,
-        /** Stop when reaching a pad. */
-        STOP_AT_PAD,
-        /** Select the entire net. */
-        STOP_NEVER
-    };
-
-    /**
-     * Select connected tracks and vias.
-     *
-     * @param aStopCondition Indicates where to stop selecting more items.
-     */
-    void selectAllConnectedTracks( const std::vector<BOARD_CONNECTED_ITEM*>& aStartItems,
-                                   STOP_CONDITION aStopCondition );
 
     /**
      * Select all non-closed shapes that are graphically connected to the given start items.
@@ -520,6 +549,9 @@ private:
     bool                     m_isFootprintEditor;
 
     PCB_SELECTION            m_selection;            // Current state of selection
+
+    PCB_SELECTION m_blockedSelection; // Empty selection returned when locked items
+                                      // block an action, real selection stays intact
 
     PCB_SELECTION_FILTER_OPTIONS m_filter;
 

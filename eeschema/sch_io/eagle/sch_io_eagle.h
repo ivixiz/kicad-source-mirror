@@ -18,8 +18,8 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef SCH_IO_EAGLE_H_
@@ -147,16 +147,18 @@ private:
 
     void          loadSegments( const std::vector<std::unique_ptr<ESEGMENT>>& aSegments,
                                 const wxString& aNetName,
-                                const wxString& aNetClass );
+                                const wxString& aNetClass,
+                                bool aIsBus = false );
     SCH_SHAPE*    loadPolyLine( const std::unique_ptr<EPOLYGON>& aPolygon );
     SCH_ITEM*     loadWire( const std::unique_ptr<EWIRE>& aWire, SEG& endpoints );
     SCH_SHAPE*    loadCircle( const std::unique_ptr<ECIRCLE>& aCircle );
     SCH_SHAPE*    loadRectangle( const std::unique_ptr<ERECT>& aRect );
-    SCH_LABEL_BASE* loadLabel( const std::unique_ptr<ELABEL>& aLabel, const wxString& aNetName );
+    SCH_LABEL_BASE* loadLabel( const std::unique_ptr<ELABEL>& aLabel, const wxString& aNetName,
+                               bool aIsBus = false );
     SCH_JUNCTION* loadJunction( const std::unique_ptr<EJUNCTION>&  aJunction );
     SCH_TEXT*     loadPlainText( const std::unique_ptr<ETEXT>& aSchText );
-    void          loadFrame( const std::unique_ptr<EFRAME>& aFrame,
-                             std::vector<SCH_ITEM*>& aItems );
+    void          loadFrame( const std::unique_ptr<EFRAME>& aFrame, std::vector<SCH_ITEM*>& aItems,
+                             SCH_LAYER_ID aLayer = LAYER_NOTES );
 
     bool          loadSymbol( const std::unique_ptr<ESYMBOL>& aEsymbol,
                               std::unique_ptr<LIB_SYMBOL>& aSymbol,

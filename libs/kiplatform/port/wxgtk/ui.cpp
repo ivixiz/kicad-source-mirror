@@ -14,13 +14,14 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include <kiplatform/ui.h>
 
 #include <wx/choice.h>
+#include <wx/dataview.h>
 #include <wx/dialog.h>
 #include <wx/nonownedwnd.h>
 #include <wx/settings.h>
@@ -32,6 +33,7 @@
 
 #ifdef GDK_WINDOWING_X11
 #include <gdk/gdkx.h>
+#include <X11/Xutil.h>
 #endif
 
 #ifdef GDK_WINDOWING_WAYLAND
@@ -162,6 +164,90 @@ bool KIPLATFORM::UI::IsWindowActive( wxWindow* aWindow )
 void KIPLATFORM::UI::EnsureVisible( wxWindow* aWindow )
 {
     // Not needed on this platform
+}
+
+
+void KIPLATFORM::UI::StabilizeWindowPosition( wxWindow* aWindow )
+{
+    if( !aWindow )
+        return;
+
+    GtkWidget* widget = static_cast<GtkWidget*>( aWindow->GetHandle() );
+
+    if( widget && GTK_IS_WINDOW( widget ) )
+        gtk_window_set_gravity( GTK_WINDOW( widget ), GDK_GRAVITY_STATIC );
+}
+
+
+static const char* const WM_CLASS_DATA_KEY = "kicad-wm-class";
+
+
+// Re-assert our application id on the widget's window.  Bound to "realize" and "map" because GTK
+// writes WM_CLASS from the program class when it realizes the window, so ours must be applied
+// afterwards to survive; the Wayland application id additionally requires a mapped surface.  The
+// id is read from the widget's object data so its lifetime is not tied to the signal closures.
+static void setWindowClassHint( GtkWidget* aWidget, gpointer )
+{
+    const char* id = static_cast<const char*>( g_object_get_data( G_OBJECT( aWidget ),
+                                                                  WM_CLASS_DATA_KEY ) );
+
+    if( !id || !*id )
+        return;
+
+    GdkWindow* window = gtk_widget_get_window( aWidget );
+
+    if( !window )
+        return;
+
+#ifdef GDK_WINDOWING_X11
+    if( GDK_IS_X11_WINDOW( window ) )
+    {
+        // wxGTK sets res_class from the app display name; overwrite both WM_CLASS fields with
+        // the desktop id so the window manager matches us to our installed .desktop launcher.
+        if( XClassHint* hints = XAllocClassHint() )
+        {
+            hints->res_name  = const_cast<char*>( id );
+            hints->res_class = const_cast<char*>( id );
+
+            XSetClassHint( GDK_WINDOW_XDISPLAY( window ), GDK_WINDOW_XID( window ), hints );
+            XFree( hints );
+        }
+    }
+#endif
+
+#if defined( GDK_WINDOWING_WAYLAND ) && GTK_CHECK_VERSION( 3, 24, 22 )
+    // Covers wx < 3.3.1, which never propagates the class name to the Wayland application id.
+    if( GDK_IS_WAYLAND_WINDOW( window ) && gtk_check_version( 3, 24, 22 ) == nullptr )
+        gdk_wayland_window_set_application_id( window, id );
+#endif
+}
+
+
+void KIPLATFORM::UI::SetWMClass( wxWindow* aWindow, const wxString& aClass )
+{
+    if( !aWindow || aClass.IsEmpty() )
+        return;
+
+    GtkWidget* widget = static_cast<GtkWidget*>( aWindow->GetHandle() );
+
+    if( !widget )
+        return;
+
+    // Own a single copy of the id on the widget; it is freed when the widget is destroyed.  The
+    // signal handlers read it back from here rather than capturing it, so repeated calls stay safe.
+    g_object_set_data_full( G_OBJECT( widget ), WM_CLASS_DATA_KEY, g_strdup( aClass.utf8_str() ),
+                            g_free );
+
+    // Guard against stacking duplicate handlers if this is called more than once for a widget.
+    g_signal_handlers_disconnect_by_func( widget, reinterpret_cast<void*>( setWindowClassHint ),
+                                          nullptr );
+
+    g_signal_connect_after( widget, "realize", G_CALLBACK( setWindowClassHint ), nullptr );
+    g_signal_connect_after( widget, "map", G_CALLBACK( setWindowClassHint ), nullptr );
+
+    // Apply immediately for windows already realized when this is called.
+    if( gtk_widget_get_realized( widget ) )
+        setWindowClassHint( widget, nullptr );
 }
 
 
@@ -438,6 +524,38 @@ void KIPLATFORM::UI::AllowNetworkFileSystems( wxDialog* aDialog )
 
     if( widget && GTK_IS_FILE_CHOOSER( widget ) )
         gtk_file_chooser_set_local_only( GTK_FILE_CHOOSER( widget ), FALSE );
+}
+
+
+void KIPLATFORM::UI::CancelPendingScroll( wxDataViewCtrl* aCtrl )
+{
+    if( !aCtrl )
+        return;
+
+    GtkWidget* widget = aCtrl->GtkGetTreeView();
+
+    if( !widget || !GTK_IS_TREE_VIEW( widget ) )
+        return;
+
+    GtkTreeView* view = GTK_TREE_VIEW( widget );
+
+    // Need a live model and rbtree for the assertions in scroll_to_cell.
+    if( !gtk_tree_view_get_model( view ) )
+        return;
+
+    GtkTreeViewColumn* column = gtk_tree_view_get_column( view, 0 );
+
+    if( !column )
+        return;
+
+    // A column-only scroll_to_cell enters GTK's deferred-scroll path, which frees
+    // priv->scroll_to_path and only installs scroll_to_column.  That breaks the race
+    // where validate_visible_area dereferences a stale row reference after a model
+    // reset.  The deferred branch is taken when the widget is not yet allocated, when
+    // alloc is pending, or when rows are invalid -- queue_resize forces the latter so
+    // a steady-state widget also takes that branch and actually clears the reference.
+    gtk_widget_queue_resize( widget );
+    gtk_tree_view_scroll_to_cell( view, nullptr, column, FALSE, 0.0, 0.0 );
 }
 
 //

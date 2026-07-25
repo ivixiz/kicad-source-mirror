@@ -13,8 +13,8 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 /*
@@ -87,6 +87,7 @@ enum KiCadObjectType
 
   KOT_SCH_GROUP = 51;
   KOT_PCB_BARCODE = 52;
+  KOT_PCB_CONSTRAINT = 53;
 }
 
 // Mapped to GR_TEXT_H_ALIGN_T

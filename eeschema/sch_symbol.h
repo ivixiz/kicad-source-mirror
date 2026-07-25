@@ -18,11 +18,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef SCH_SYMBOL_H
@@ -592,6 +588,7 @@ public:
 
     void RunOnChildren( const std::function<void( SCH_ITEM* )>& aFunction, RECURSE_MODE aMode ) override;
 
+    void ClearCaches() override;
 
     //-----</Fields>----------------------------------------------------------
 
@@ -603,6 +600,16 @@ public:
      * @return Pin object if found, otherwise NULL.
      */
     SCH_PIN* GetPin( const wxString& number ) const;
+
+    /**
+     * Find the pin whose effective footprint pad number (issue #2282) is @a aPadNumber on
+     * @a aSheet, expanding bracketed stacked targets.  This is the reverse of pin-to-pad
+     * resolution, used by cross-probe (PCB pad -> schematic pin).
+     *
+     * @return the owning SCH_PIN, or nullptr if no pin resolves to that pad.
+     */
+    SCH_PIN* GetPinByEffectivePadNumber( const wxString& aPadNumber, const SCH_SHEET_PATH* aSheet,
+                                         const wxString& aVariantName = wxEmptyString ) const;
 
     /**
      * Find all symbol pins with the given number.
@@ -715,6 +722,24 @@ public:
 
     void SetDNPProp( bool aEnable ) { SetDNP( aEnable, &Schematic()->CurrentSheet(),
                                               Schematic()->GetCurrentVariant() ); }
+
+    /**
+     * Set the per-instance pin-to-pad map override (issue #2282).
+     *
+     * Mirrors SetDNP: with no sheet/variant the base override is set; otherwise the override is
+     * stored on the variant record for the sheet path.
+     */
+    void SetPinMapOverride( const PIN_MAP_INSTANCE_OVERRIDE& aOverride, const SCH_SHEET_PATH* aInstance = nullptr,
+                            const wxString& aVariantName = wxEmptyString );
+
+    /**
+     * @return the pin-to-pad map override in effect for the given sheet/variant.
+     *
+     * A DELEGATE_TO_UNIT_1 override is resolved here by returning unit 1's override, so callers
+     * never have to special-case multi-unit delegation.
+     */
+    PIN_MAP_INSTANCE_OVERRIDE GetPinMapOverride( const SCH_SHEET_PATH* aInstance = nullptr,
+                                                 const wxString&       aVariantName = wxEmptyString ) const;
 
     void SetExcludedFromBOM( bool aEnable, const SCH_SHEET_PATH* aInstance = nullptr,
                              const wxString& aVariantName = wxEmptyString ) override;
@@ -987,6 +1012,60 @@ public:
     std::optional<SCH_SYMBOL_VARIANT> GetVariant( const SCH_SHEET_PATH& aInstance, const wxString& aVariantName ) const;
     void AddVariant( const SCH_SHEET_PATH& aInstance, const SCH_SYMBOL_VARIANT& aVariant );
 
+    /**
+     * Set the alternate-symbol override for a given variant and sheet instance.
+     *
+     * Creates the variant if it does not already exist.
+     */
+    void SetVariantSymbolOverride( const SCH_SHEET_PATH& aPath, const wxString& aVariantName,
+                                   const LIB_ID& aLibId );
+
+    /**
+     * Remove the alternate-symbol override for a given variant and sheet instance.
+     *
+     * Returns false if the variant had no override.
+     */
+    bool ClearVariantSymbolOverride( const SCH_SHEET_PATH& aPath, const wxString& aVariantName );
+
+    /**
+     * Resolve the alternate library symbol for a given variant.
+     *
+     * Looks up the variant's symbol override and resolves the LIB_ID through
+     * the project's symbol library adapter. Returns nullptr if the variant has no
+     * override or if the LIB_ID cannot be resolved.
+     *
+     * @param aVariantName the variant to resolve.
+     * @param aPath the sheet path for this instance.
+     * @return the resolved flattened library symbol, or nullptr.
+     */
+    LIB_SYMBOL* GetVariantLibSymbol( const wxString& aVariantName,
+                                     const SCH_SHEET_PATH& aPath ) const;
+
+    /**
+     * Return the library symbol to use for rendering and bounding box calculations.
+     *
+     * If the current variant has a symbol override and it resolves successfully,
+     * returns the alternate symbol. Otherwise returns the base m_part.
+     *
+     * @param aPath optional sheet path for variant context.
+     * @return the effective library symbol, or nullptr.
+     */
+    const LIB_SYMBOL* GetEffectiveLibSymbol( const SCH_SHEET_PATH* aPath = nullptr ) const;
+
+    /**
+     * Map pins of an effective library symbol to this symbol's instance pins.
+     *
+     * Base symbol pins are matched through the pin map. Pins from a variant alternate
+     * symbol are not in the pin map, so each occurrence is matched by number, unit,
+     * body style, and position.
+     *
+     * @param aLibPins pins of the effective library symbol, in drawing order.
+     * @param aByNumber true when aLibPins belong to a variant alternate symbol.
+     * @return instance pins aligned with aLibPins; entries are nullptr when unmatched.
+     */
+    std::vector<SCH_PIN*> MapLibPins( const std::vector<const SCH_PIN*>& aLibPins,
+                                      bool aByNumber ) const;
+
     void DeleteVariant( const SCH_SHEET_PATH& aInstance, const wxString& aVariantName )
     {
         DeleteVariant( aInstance.Path(), aVariantName );
@@ -1022,6 +1101,10 @@ private:
     SCH_SYMBOL_INSTANCE* getInstance( const SCH_SHEET_PATH& aPath ) { return getInstance( aPath.Path() ); }
     const SCH_SYMBOL_INSTANCE* getInstance( const SCH_SHEET_PATH& aPath ) const { return getInstance( aPath.Path() ); }
 
+    /// Return unit 1's pin-map override for a unit that delegates to it (issue #2282).
+    PIN_MAP_INSTANCE_OVERRIDE resolveDelegatedPinMapOverride( const SCH_SHEET_PATH& aSheet,
+                                                              const wxString&       aVariantName ) const;
+
 private:
     VECTOR2I    m_pos;
     LIB_ID      m_lib_id;       ///< Name and library the symbol was loaded from, i.e. 74xx:74LS00.
@@ -1052,12 +1135,26 @@ private:
     std::vector<std::unique_ptr<SCH_PIN>>  m_pins;     ///< A #SCH_PIN for every #LIB_PIN.
     std::unordered_map<SCH_PIN*, SCH_PIN*> m_pinMap;   ///< Library pin pointer : #SCH_PIN indices.
 
+    /// Base (no-variant) pin-to-pad map override applied when no variant override exists for the
+    /// sheet path (issue #2282).
+    PIN_MAP_INSTANCE_OVERRIDE m_pinMapOverride;
+
     /**
      * Define the hierarchical path and reference of the symbol.
      *
      * This allows support for multiple references to a single sub-sheet.
      */
     std::vector<SCH_SYMBOL_INSTANCE>       m_instances;
+
+    /**
+     * Index from an instance's sheet path to its position in m_instances for O(1) lookups.
+     * Maintained by AddHierarchicalReference() and RemoveInstance().
+     */
+    std::unordered_map<KIID_PATH, size_t>  m_instancePathIndex;
+
+    void rebuildInstancePathIndex();
+
+    mutable std::map<wxString, std::unique_ptr<LIB_SYMBOL>> m_variantSymbolCache;
 
     /// @see SCH_SYMBOL::GetOrientation
     static std::unordered_map<TRANSFORM, int> s_transformToOrientationCache;

@@ -14,8 +14,8 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef COMMAND_EXPORT_SCH_BOM_H
@@ -50,6 +50,9 @@ namespace CLI
 
 #define ARG_KEEP_LINE_BREAKS "--keep-line-breaks"
 #define ARG_KEEP_LINE_BREAKS_DESC "Keep line break characters from input fields. Stripped by default."
+
+#define ARG_INCLUDE_BYTE_ORDER_MARK "--include-byte-order-mark"
+#define ARG_INCLUDE_BYTE_ORDER_MARK_DESC "Include a UTF-8 byte order mark at the start of the exported file."
 
 //Options for controlling the fields and the grouping
 #define ARG_FIELDS "--fields"

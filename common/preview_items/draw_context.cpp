@@ -14,11 +14,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include <gal/graphics_abstraction_layer.h>
@@ -54,6 +50,18 @@ DRAW_CONTEXT::DRAW_CONTEXT( KIGFX::VIEW& aView )
 }
 
 
+void DRAW_CONTEXT::DrawRectangle( const VECTOR2I& aC1, const VECTOR2I& aC2, bool aDeEmphasised )
+{
+    const COLOR4D& color = m_render_settings.GetLayerColor( m_currLayer );
+
+    m_gal.SetLineWidth( m_lineWidth );
+    m_gal.SetStrokeColor( deemphasise( color, aDeEmphasised ) );
+    m_gal.SetIsStroke( true );
+    m_gal.SetIsFill( false );
+    m_gal.DrawRectangle( aC1, aC2 );
+}
+
+
 void DRAW_CONTEXT::DrawCircle( const VECTOR2I& aOrigin, double aRad, bool aDeEmphasised )
 {
     const COLOR4D& color = m_render_settings.GetLayerColor( m_currLayer );
@@ -81,6 +89,24 @@ void DRAW_CONTEXT::DrawCircleDashed( const VECTOR2I& aOrigin, double aRad, doubl
         m_gal.DrawArc( aOrigin, aRad, EDA_ANGLE( i, DEGREES_T ),
                        EDA_ANGLE( i + aFillAngle, DEGREES_T ) );
     }
+}
+
+
+void DRAW_CONTEXT::DrawEllipse( const ELLIPSE<int>& aEllipse, bool aDeEmphasised )
+{
+    DrawEllipse( aEllipse.Center, aEllipse.MajorRadius, aEllipse.MinorRadius, aEllipse.Rotation, aDeEmphasised );
+}
+
+
+void DRAW_CONTEXT::DrawEllipse( const VECTOR2I& aOrigin, double aA, double aB, EDA_ANGLE aRot, bool aDeEmphasised )
+{
+    const COLOR4D& color = m_render_settings.GetLayerColor( m_currLayer );
+
+    m_gal.SetLineWidth( m_lineWidth );
+    m_gal.SetStrokeColor( deemphasise( color, aDeEmphasised ) );
+    m_gal.SetIsStroke( true );
+    m_gal.SetIsFill( false );
+    m_gal.DrawEllipse( aOrigin, aA, aB, aRot );
 }
 
 

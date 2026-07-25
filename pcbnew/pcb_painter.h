@@ -18,11 +18,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef PCB_PAINTER_H
@@ -30,10 +26,12 @@
 
 #include <frame_type.h>
 #include <gal/painter.h>
+#include <kiid.h>
 #include <padstack.h>   // PAD_DRILL_SHAPE
 #include <pcb_display_options.h>
 #include <math/vector2d.h>
 #include <memory>
+#include <unordered_set>
 #include <geometry/shape_segment.h>
 
 
@@ -146,6 +144,22 @@ public:
     const wxString& GetHighlightedNetChain() const { return m_highlightedNetChain; }
     void SetHighlightedNetChain( const wxString& aNetChain ) { m_highlightedNetChain = aNetChain; }
 
+    // Items referenced by geometric constraint shadow layer draws only for these
+    // refreshed each board-wide diagnosis
+    const std::unordered_set<KIID>& GetConstrainedItems() const { return m_constrainedItems; }
+    void SetConstrainedItems( std::unordered_set<KIID> aItems ) { m_constrainedItems = std::move( aItems ); }
+
+    // Members of badge-selected constraint shadows drawn brighter and thicker
+    const std::unordered_set<KIID>& GetHighlightedConstraintMembers() const
+    {
+        return m_highlightedConstraintMembers;
+    }
+
+    void SetHighlightedConstraintMembers( std::unordered_set<KIID> aItems )
+    {
+        m_highlightedConstraintMembers = std::move( aItems );
+    }
+
 public:
     bool               m_ForcePadSketchModeOn;
     bool               m_ForceShowFieldsWhenFPSelected;
@@ -180,6 +194,12 @@ protected:
     double m_filledShapeOpacity;     ///< Opacity override for graphic shapes
 
     wxString m_highlightedNetChain;    ///< Active highlighted chain name (if any)
+
+    ///< Gates the constraint-shadow draw
+    std::unordered_set<KIID> m_constrainedItems;
+
+    ///< Selected constraint members shadow highlighted
+    std::unordered_set<KIID> m_highlightedConstraintMembers;
 };
 
 
@@ -282,6 +302,17 @@ protected:
     int                 m_holePlatingThickness;
     int                 m_lockedShadowMargin;
 };
+
+
+/**
+ * Decide which GAL draw pass paints a zone's outline.
+ *
+ * When the outline is the zone's only visual (rule area, or outline-only display) it is drawn on
+ * the zone layer, which sorts above copper, so tracks and pads can't paint over it. A zone shown
+ * filled draws its outline on the copper layer, beneath its own fill on the zone layer.
+ */
+bool ZoneOutlineDrawnOnLayer( bool aOutlineOnly, int aLayer );
+
 } // namespace KIGFX
 
 #endif /* PCB_PAINTER_H */

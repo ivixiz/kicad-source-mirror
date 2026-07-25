@@ -14,11 +14,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 /**
@@ -372,7 +368,7 @@ static void fillArcPOLY( GERBER_DRAW_ITEM* aGbrItem, const VECTOR2I& aStart, con
     // Approximate arc by segments with a approximation error = err_max
     // a max err = 5 microns looks good
     const int approx_err_max =  gerbIUScale.mmToIU( 0.005 );
-    int radius = VECTOR2I( aStart - rel_center ).EuclideanNorm();
+    int       radius = start.EuclideanNorm();
     int count = GetArcToSegmentCount( radius, approx_err_max, arc_angle );
     EDA_ANGLE increment_angle = std::abs( arc_angle ) / count;
 

@@ -14,8 +14,8 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include <layer_ids.h>
@@ -124,6 +124,10 @@ COLOR_SETTINGS::COLOR_SETTINGS( const wxString& aFilename, bool aAbsolutePath ) 
     CLR( "board.anchor",                   LAYER_ANCHOR             );
     CLR( "board.locked_shadow",            LAYER_LOCKED_ITEM_SHADOW );
     CLR( "board.conflicts_shadow",         LAYER_CONFLICTS_SHADOW   );
+    CLR( "board.constraint_shadow",        LAYER_CONSTRAINT_SHADOW  );
+    CLR( "board.constraint_under",         LAYER_CONSTRAINT_UNDER   );
+    CLR( "board.constraint_well",          LAYER_CONSTRAINT_WELL    );
+    CLR( "board.constraint_over",          LAYER_CONSTRAINT_OVER    );
     CLR( "board.aux_items",                LAYER_AUX_ITEMS          );
     CLR( "board.background",               LAYER_PCB_BACKGROUND     );
     CLR( "board.cursor",                   LAYER_CURSOR             );

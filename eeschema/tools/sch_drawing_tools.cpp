@@ -15,18 +15,12 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, you may find one here:
- * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
- * or you may search the http://www.gnu.org website for the version 2 license,
- * or you may write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
 #include "sch_sheet_path.h"
-#include <limits>
 #include <memory>
 #include <set>
-#include <unordered_set>
 
 #include <kiplatform/ui.h>
 #include <optional>
@@ -35,6 +29,7 @@
 #include <tools/sch_line_wire_bus_tool.h>
 #include <tools/sch_selection_tool.h>
 #include <tools/ee_grid_helper.h>
+#include <tool/arc_draw_behavior.h>
 #include <tools/rule_area_create_helper.h>
 #include <gal/graphics_abstraction_layer.h>
 #include <sch_actions.h>
@@ -83,32 +78,6 @@
 
 namespace
 {
-// Returns aBaseName, or aBaseName + smallest free integer if already used on aScreen.
-wxString uniqueGroupName( SCH_SCREEN* aScreen, const wxString& aBaseName )
-{
-    if( !aScreen )
-        return aBaseName;
-
-    std::unordered_set<wxString> existing;
-
-    for( SCH_ITEM* item : aScreen->Items().OfType( SCH_GROUP_T ) )
-        existing.insert( static_cast<SCH_GROUP*>( item )->GetName() );
-
-    if( !existing.count( aBaseName ) )
-        return aBaseName;
-
-    for( int n = 1; n < std::numeric_limits<int>::max(); ++n )
-    {
-        wxString candidate = aBaseName + wxString::Format( wxT( "%d" ), n );
-
-        if( !existing.count( candidate ) )
-            return candidate;
-    }
-
-    return aBaseName;
-}
-
-
 LIB_ID scopeLibId()
 {
     return SCH_SCOPE::LibId();
@@ -159,6 +128,8 @@ SCH_SYMBOL* makeScopeSymbol( SCHEMATIC* aSchematic, const SCH_SHEET_PATH& aSheet
 }
 } // namespace
 
+using SCOPED_DRAW_MODE = SCOPED_SET_RESET<SCH_DRAWING_TOOLS::MODE>;
+
 
 SCH_DRAWING_TOOLS::SCH_DRAWING_TOOLS() :
         SCH_TOOL_BASE<SCH_EDIT_FRAME>( "eeschema.InteractiveDrawing" ),
@@ -169,20 +140,20 @@ SCH_DRAWING_TOOLS::SCH_DRAWING_TOOLS() :
         m_lastTextBold( false ),
         m_lastTextItalic( false ),
         m_lastTextAngle( ANGLE_0 ),
-        m_lastTextboxAngle( ANGLE_0 ),
         m_lastTextHJustify( GR_TEXT_H_ALIGN_CENTER ),
         m_lastTextVJustify( GR_TEXT_V_ALIGN_CENTER ),
+        m_lastFillStyle( FILL_T::NO_FILL ),
+        m_lastFillColor( COLOR4D::UNSPECIFIED ),
+        m_lastStroke( 0, LINE_STYLE::DEFAULT, COLOR4D::UNSPECIFIED ),
+        m_lastTextboxFillStyle( FILL_T::NO_FILL ),
+        m_lastTextboxFillColor( COLOR4D::UNSPECIFIED ),
+        m_lastTextboxStroke( 0, LINE_STYLE::DEFAULT, COLOR4D::UNSPECIFIED ),
+        m_lastTextboxAngle( ANGLE_0 ),
         m_lastTextboxHJustify( GR_TEXT_H_ALIGN_LEFT ),
         m_lastTextboxVJustify( GR_TEXT_V_ALIGN_TOP ),
-        m_lastFillStyle( FILL_T::NO_FILL ),
-        m_lastTextboxFillStyle( FILL_T::NO_FILL ),
-        m_lastFillColor( COLOR4D::UNSPECIFIED ),
-        m_lastTextboxFillColor( COLOR4D::UNSPECIFIED ),
-        m_lastStroke( 0, LINE_STYLE::DEFAULT, COLOR4D::UNSPECIFIED ),
-        m_lastTextboxStroke( 0, LINE_STYLE::DEFAULT, COLOR4D::UNSPECIFIED ),
         m_mruPath( wxEmptyString ),
         m_lastAutoLabelRotateOnPlacement( false ),
-        m_drawingRuleArea( false ),
+        m_mode( MODE::NONE ),
         m_inDrawingTool( false )
 {
 }
@@ -198,16 +169,26 @@ bool SCH_DRAWING_TOOLS::Init()
                 return m_frame->GetCurrentSheet().Last() != &m_frame->Schematic().Root();
             };
 
+    // some interactive drawing tools can undo the last point
+    auto canUndoPoint =
+            [this]( const SELECTION& aSel )
+            {
+                return ( m_mode == MODE::RULE_AREA );
+            };
+
     auto inDrawingRuleArea =
             [this]( const SELECTION& aSel )
             {
-                return m_drawingRuleArea;
+                return m_mode == MODE::RULE_AREA;
             };
 
     CONDITIONAL_MENU& ctxMenu = m_menu->GetMenu();
+
+    // clang-format off
     ctxMenu.AddItem( SCH_ACTIONS::leaveSheet,      belowRootSheetCondition, 150 );
     ctxMenu.AddItem( SCH_ACTIONS::closeOutline,    inDrawingRuleArea,       200 );
-    ctxMenu.AddItem( SCH_ACTIONS::deleteLastPoint, inDrawingRuleArea,       200 );
+    ctxMenu.AddItem( ACTIONS::deleteLastPoint,     canUndoPoint,            200 );
+    // clang-format on
 
     return true;
 }
@@ -219,8 +200,9 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
 
     SCH_SYMBOL* symbol = toolParams.m_Symbol;
 
-    // If we get a parameterised symbol, we probably just want to place that and get out of the placmeent tool,
-    // rather than popping up the chooser afterwards
+    // If we get a parameterised symbol, we probably just want to place that and get out of the placement tool,
+    // rather than popping up the chooser afterwards.  A multi-unit symbol may still request that its remaining
+    // units be placed before the tool exits.
     bool placeOneOnly = symbol != nullptr;
 
     SYMBOL_LIBRARY_FILTER       filter;
@@ -230,7 +212,7 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
     SCHEMATIC_SETTINGS&         schSettings = m_frame->Schematic().Settings();
     SCH_SCREEN*                 screen = m_frame->GetScreen();
     bool                        keepSymbol = false;
-    bool                        placeAllUnits = false;
+    bool                        placeAllUnits = toolParams.m_PlaceAllUnits;
 
     if( m_inDrawingTool )
         return 0;
@@ -348,6 +330,13 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
 
         if( toolParams.m_Reannotate )
             annotate();
+
+        // Seed the placed-reference list so multi-unit stepping sees this symbol's first unit
+        // as taken.  The chooser path seeds it when it builds the symbol; this path bypasses
+        // that branch.
+        SCH_REFERENCE placedSymbolReference( symbol, m_frame->GetCurrentSheet() );
+        existingRefs.AddItem( placedSymbolReference );
+        existingRefs.SortByReferenceOnly();
 
         getViewControls()->WarpMouseCursor( getViewControls()->GetMousePosition( false ) );
     }
@@ -562,7 +551,10 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
 
                 commit.Push( _( "Place Symbol" ) );
 
-                if( placeOneOnly )
+                // A preselected single-unit symbol exits here rather than re-opening the
+                // chooser.  Multi-unit placement must fall through to the unit continuation
+                // below, which exits once the units are exhausted.
+                if( placeOneOnly && !placeAllUnits )
                 {
                     m_frame->PopTool( aEvent );
                     break;
@@ -634,6 +626,13 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
                 }
 
                 symbol = nextSymbol;
+
+                // A preselected multi-unit symbol leaves the tool once its last unit is placed.
+                if( placeOneOnly && !symbol )
+                {
+                    m_frame->PopTool( aEvent );
+                    break;
+                }
             }
         }
         else if( evt->IsClick( BUT_RIGHT ) )
@@ -701,20 +700,16 @@ int SCH_DRAWING_TOOLS::PlaceSymbol( const TOOL_EVENT& aEvent )
         {
             wxBell();
         }
-        else if( symbol && (   evt->IsAction( &SCH_ACTIONS::properties )
-                            || evt->IsAction( &SCH_ACTIONS::editReference )
-                            || evt->IsAction( &SCH_ACTIONS::editValue )
-                            || evt->IsAction( &SCH_ACTIONS::editFootprint )
-                            || evt->IsAction( &SCH_ACTIONS::autoplaceFields )
-                            || evt->IsAction( &SCH_ACTIONS::cycleBodyStyle )
-                            || evt->IsAction( &SCH_ACTIONS::setExcludeFromBOM )
-                            || evt->IsAction( &SCH_ACTIONS::setExcludeFromBoard )
-                            || evt->IsAction( &SCH_ACTIONS::setExcludeFromSim )
-                            || evt->IsAction( &SCH_ACTIONS::setDNP )
-                            || evt->IsAction( &SCH_ACTIONS::rotateCW )
-                            || evt->IsAction( &SCH_ACTIONS::rotateCCW )
-                            || evt->IsAction( &SCH_ACTIONS::mirrorV )
-                            || evt->IsAction( &SCH_ACTIONS::mirrorH ) ) )
+        else if( symbol
+                 && ( evt->IsAction( &SCH_ACTIONS::properties ) || evt->IsAction( &SCH_ACTIONS::editReference )
+                      || evt->IsAction( &SCH_ACTIONS::editValue ) || evt->IsAction( &SCH_ACTIONS::editFootprint )
+                      || evt->IsAction( &SCH_ACTIONS::autoplaceFields ) || evt->IsAction( &SCH_ACTIONS::cycleBodyStyle )
+                      || evt->IsAction( &SCH_ACTIONS::setExcludeFromBOM )
+                      || evt->IsAction( &SCH_ACTIONS::setExcludeFromBoard )
+                      || evt->IsAction( &SCH_ACTIONS::setExcludeFromSim )
+                      || evt->IsAction( &SCH_ACTIONS::setExcludeFromPosFiles ) || evt->IsAction( &SCH_ACTIONS::setDNP )
+                      || evt->IsAction( &SCH_ACTIONS::rotateCW ) || evt->IsAction( &SCH_ACTIONS::rotateCCW )
+                      || evt->IsAction( &SCH_ACTIONS::mirrorV ) || evt->IsAction( &SCH_ACTIONS::mirrorH ) ) )
         {
             m_toolMgr->PostAction( ACTIONS::refreshPreview );
             evt->SetPassEvent();
@@ -933,7 +928,7 @@ int SCH_DRAWING_TOOLS::ImportSheet( const TOOL_EVENT& aEvent )
                         baseName = wxFileName( sheetFileName ).GetName();
                     }
 
-                    group->SetName( uniqueGroupName( screen, baseName ) );
+                    group->SetName( UniqueGroupName( screen, baseName ) );
                 }
 
                 bool autoAnnotate = !keepAnnotations && cfg->m_AnnotatePanel.automatic;
@@ -1460,166 +1455,6 @@ int SCH_DRAWING_TOOLS::PlaceImage( const TOOL_EVENT& aEvent )
     getViewControls()->SetAutoPan( false );
     getViewControls()->CaptureCursor( false );
     m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
-
-    return 0;
-}
-
-
-int SCH_DRAWING_TOOLS::ImportGraphics( const TOOL_EVENT& aEvent )
-{
-    if( m_inDrawingTool )
-        return 0;
-
-    REENTRANCY_GUARD guard( &m_inDrawingTool );
-
-    // Note: PlaceImportedGraphics() will convert PCB_SHAPE_T and PCB_TEXT_T to footprint
-    // items if needed
-    DIALOG_IMPORT_GFX_SCH dlg( m_frame );
-
-    // Set filename on drag-and-drop
-    if( aEvent.HasParameter() )
-        dlg.SetFilenameOverride( *aEvent.Parameter<wxString*>() );
-
-    int dlgResult = dlg.ShowModal();
-
-    std::list<std::unique_ptr<EDA_ITEM>>& list = dlg.GetImportedItems();
-
-    if( dlgResult != wxID_OK )
-        return 0;
-
-    // Ensure the list is not empty:
-    if( list.empty() )
-    {
-        wxMessageBox( _( "No graphic items found in file." ) );
-        return 0;
-    }
-
-    m_toolMgr->RunAction( ACTIONS::cancelInteractive );
-
-    KIGFX::VIEW_CONTROLS*  controls = getViewControls();
-    std::vector<SCH_ITEM*> newItems;      // all new items, including group
-    std::vector<SCH_ITEM*> selectedItems; // the group, or newItems if no group
-    SCH_SELECTION          preview;
-    SCH_COMMIT             commit( m_toolMgr );
-
-    for( std::unique_ptr<EDA_ITEM>& ptr : list )
-    {
-        SCH_ITEM* item = dynamic_cast<SCH_ITEM*>( ptr.get() );
-        wxCHECK2_MSG( item, continue, wxString::Format( "Bad item type: ", ptr->Type() ) );
-
-        newItems.push_back( item );
-        selectedItems.push_back( item );
-        preview.Add( item );
-
-        ptr.release();
-    }
-
-    if( !dlg.IsPlacementInteractive() )
-    {
-        // Place the imported drawings
-        for( SCH_ITEM* item : newItems )
-            commit.Add(item, m_frame->GetScreen());
-
-        commit.Push( _( "Import Graphic" ) );
-        return 0;
-    }
-
-    m_view->Add( &preview );
-
-    // Clear the current selection then select the drawings so that edit tools work on them
-    m_toolMgr->RunAction( ACTIONS::selectionClear );
-
-    EDA_ITEMS selItems( selectedItems.begin(), selectedItems.end() );
-    m_toolMgr->RunAction<EDA_ITEMS*>( ACTIONS::selectItems, &selItems );
-
-    m_frame->PushTool( aEvent );
-
-    auto setCursor =
-            [&]()
-            {
-                m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::MOVING );
-            };
-
-    Activate();
-    // Must be done after Activate() so that it gets set into the correct context
-    controls->ShowCursor( true );
-    controls->ForceCursorPosition( false );
-    // Set initial cursor
-    setCursor();
-
-    //SCOPED_DRAW_MODE scopedDrawMode( m_mode, MODE::DXF );
-    EE_GRID_HELPER grid( m_toolMgr );
-
-    // Now move the new items to the current cursor position:
-    VECTOR2I cursorPos = controls->GetCursorPosition( !aEvent.DisableGridSnapping() );
-    VECTOR2I delta = cursorPos;
-    VECTOR2I currentOffset;
-
-    for( SCH_ITEM* item : selectedItems )
-        item->Move( delta );
-
-    currentOffset += delta;
-
-    m_view->Update( &preview );
-
-    // Main loop: keep receiving events
-    while( TOOL_EVENT* evt = Wait() )
-    {
-        setCursor();
-
-        grid.SetSnap( !evt->Modifier( MD_SHIFT ) );
-        grid.SetUseGrid( getView()->GetGAL()->GetGridSnapping() && !evt->DisableGridSnapping() );
-
-        cursorPos = grid.Align( controls->GetMousePosition(), GRID_GRAPHICS );
-        controls->ForceCursorPosition( true, cursorPos );
-
-        if( evt->IsCancelInteractive() || evt->IsActivate() )
-        {
-            m_toolMgr->RunAction( ACTIONS::selectionClear );
-
-            for( SCH_ITEM* item : newItems )
-                delete item;
-
-            break;
-        }
-        else if( evt->IsMotion() )
-        {
-            delta = cursorPos - currentOffset;
-
-            for( SCH_ITEM* item : selectedItems )
-                item->Move( delta );
-
-            currentOffset += delta;
-
-            m_view->Update( &preview );
-        }
-        else if( evt->IsClick( BUT_RIGHT ) )
-        {
-            m_menu->ShowContextMenu( m_selectionTool->GetSelection() );
-        }
-        else if( evt->IsClick( BUT_LEFT ) || evt->IsDblClick( BUT_LEFT )
-                || evt->IsAction( &ACTIONS::cursorClick ) || evt->IsAction( &ACTIONS::cursorDblClick ) )
-        {
-            // Place the imported drawings
-            for( SCH_ITEM* item : newItems )
-                commit.Add( item, m_frame->GetScreen() );
-
-            commit.Push( _( "Import Graphic" ) );
-            break; // This is a one-shot command, not a tool
-        }
-        else
-        {
-            evt->SetPassEvent();
-        }
-    }
-
-    preview.Clear();
-    m_view->Remove( &preview );
-
-    m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
-    controls->ForceCursorPosition( false );
-
-    m_frame->PopTool( aEvent );
 
     return 0;
 }
@@ -2199,10 +2034,7 @@ int SCH_DRAWING_TOOLS::TwoClickPlace( const TOOL_EVENT& aEvent )
                 item = nullptr;
 
                 while( !itemsToPlace.empty() )
-                {
-                    itemsToPlace.front().release();
-                    itemsToPlace.pop_front();
-                }
+                    itemsToPlace.erase( itemsToPlace.begin() );
             };
 
     auto prepItemForPlacement =
@@ -3049,8 +2881,8 @@ int SCH_DRAWING_TOOLS::DrawRuleArea( const TOOL_EVENT& aEvent )
     if( m_inDrawingTool )
         return 0;
 
-    REENTRANCY_GUARD       guard( &m_inDrawingTool );
-    SCOPED_SET_RESET<bool> scopedDrawMode( m_drawingRuleArea, true );
+    REENTRANCY_GUARD guard( &m_inDrawingTool );
+    SCOPED_DRAW_MODE scopedDrawMode( m_mode, MODE::RULE_AREA );
 
     KIGFX::VIEW_CONTROLS* controls = getViewControls();
     EE_GRID_HELPER        grid( m_toolMgr );
@@ -3184,7 +3016,7 @@ int SCH_DRAWING_TOOLS::DrawRuleArea( const TOOL_EVENT& aEvent )
                 }
             }
         }
-        else if( started && (   evt->IsAction( &SCH_ACTIONS::deleteLastPoint )
+        else if( started && (   evt->IsAction( &ACTIONS::deleteLastPoint )
                              || evt->IsAction( &ACTIONS::doDelete )
                              || evt->IsAction( &ACTIONS::undo ) ) )
         {
@@ -3656,7 +3488,8 @@ int SCH_DRAWING_TOOLS::DrawSheet( const TOOL_EVENT& aEvent )
             {
                 wxFileName fn( filename );
 
-                sheet->GetField( FIELD_T::SHEET_NAME )->SetText( designBlock->GetLibId().GetLibItemName() );
+                sheet->GetField( FIELD_T::SHEET_NAME )
+                        ->SetText( UniqueSheetName( m_frame->GetScreen(), designBlock->GetLibId().GetLibItemName() ) );
                 sheet->GetField( FIELD_T::SHEET_FILENAME )->SetText( fn.GetName() + ext );
 
                 std::vector<SCH_FIELD>& sheetFields = sheet->GetFields();
@@ -3761,7 +3594,7 @@ int SCH_DRAWING_TOOLS::DrawSheet( const TOOL_EVENT& aEvent )
                     SCH_SCREEN* screen = m_frame->GetScreen();
 
                     sheetGroup = new SCH_GROUP( screen );
-                    sheetGroup->SetName( uniqueGroupName( screen, designBlock->GetLibId().GetLibItemName() ) );
+                    sheetGroup->SetName( UniqueGroupName( screen, designBlock->GetLibId().GetLibItemName() ) );
                     sheetGroup->SetDesignBlockLibId( designBlock->GetLibId() );
                     c.Add( sheetGroup, screen );
                     c.Modify( sheet, screen, RECURSE_MODE::NO_RECURSE );
@@ -3985,78 +3818,78 @@ int SCH_DRAWING_TOOLS::AutoPlaceAllSheetPins( const TOOL_EVENT& aEvent )
     m_toolMgr->RunAction( ACTIONS::selectionClear );
 
     SCH_COMMIT commit( m_toolMgr );
-    BOX2I      bbox = sheet->GetBoundingBox();
-    VECTOR2I   cursorPos = bbox.GetPosition();
-    SCH_ITEM*  lastPlacedLabel = nullptr;
+    commit.Modify( sheet, m_frame->GetScreen() );
 
-    auto calculatePositionForLabel =
-            [&]( const SCH_ITEM* lastLabel, const SCH_HIERLABEL* currentLabel ) -> VECTOR2I
-            {
-                if( !lastLabel )
-                    return cursorPos;
+    // Vertical pitch big enough to keep pin text from touching, snapped to grid.
+    const int grid = schIUScale.MilsToIU( 50 );
+    int       textSize = sheet->Schematic()->Settings().m_DefaultTextSize;
+    int       pitch = std::max( KiROUND( textSize * 2.0 ), schIUScale.MilsToIU( 100 ) );
+    pitch = KiROUND( (double) pitch / grid ) * grid;
 
-                int lastX = lastLabel->GetPosition().x;
-                int lastY = lastLabel->GetPosition().y;
-                int lastWidth = lastLabel->GetBoundingBox().GetWidth();
-                int lastHeight = lastLabel->GetBoundingBox().GetHeight();
+    const int margin = pitch;
+    int       leftX = sheet->GetPosition().x;
+    int       rightX = sheet->GetPosition().x + sheet->GetSize().x;
+    int       topY = sheet->GetPosition().y;
 
-                int currentWidth = currentLabel->GetBoundingBox().GetWidth();
-                int currentHeight = currentLabel->GetBoundingBox().GetHeight();
+    // Stack new pins below whatever is already on each edge, without moving it.
+    int leftY = topY + margin - pitch;
+    int rightY = topY + margin - pitch;
 
-                // If there is enough space, place the label to the right of the last placed label
-                if( ( lastX + lastWidth + currentWidth ) <= ( bbox.GetPosition().x + bbox.GetSize().x ) )
-                    return { lastX + lastWidth, lastY };
+    for( SCH_SHEET_PIN* pin : sheet->GetPins() )
+    {
+        if( pin->GetSide() == SHEET_SIDE::RIGHT )
+            rightY = std::max( rightY, pin->GetPosition().y );
+        else if( pin->GetSide() == SHEET_SIDE::LEFT )
+            leftY = std::max( leftY, pin->GetPosition().y );
+    }
 
-                // If not enough space to the right, move to the next row if vertical space allows
-                if( ( lastY + lastHeight + currentHeight ) <= ( bbox.GetPosition().y + bbox.GetSize().y ) )
-                    return { bbox.GetPosition().x, lastY + lastHeight };
-
-                return cursorPos;
-            };
+    // New pins: outputs on the right edge, everything else on the left.
+    std::vector<SCH_HIERLABEL*> leftLabels;
+    std::vector<SCH_HIERLABEL*> rightLabels;
 
     for( SCH_HIERLABEL* label : labels )
     {
-        if( !lastPlacedLabel )
-        {
-            std::vector<SCH_SHEET_PIN*> existingPins = sheet->GetPins();
-
-            if( !existingPins.empty() )
-            {
-                std::sort( existingPins.begin(), existingPins.end(),
-                           []( const SCH_ITEM* a, const SCH_ITEM* b )
-                           {
-                               return ( a->GetPosition().x < b->GetPosition().x )
-                                      || ( a->GetPosition().x == b->GetPosition().x
-                                           && a->GetPosition().y < b->GetPosition().y );
-                           } );
-
-                lastPlacedLabel = existingPins.back();
-            }
-        }
-
-        cursorPos = calculatePositionForLabel( lastPlacedLabel, label );
-        SCH_ITEM* item = createNewSheetPinFromLabel( sheet, cursorPos, label );
-
-        if( item )
-        {
-            item->SetFlags( IS_NEW | IS_MOVING );
-            item->AutoplaceFields( nullptr, AUTOPLACE_AUTO );
-            item->ClearFlags( IS_MOVING );
-
-            if( item->IsConnectable() )
-                m_frame->AutoRotateItem( m_frame->GetScreen(), item );
-
-            commit.Modify( sheet, m_frame->GetScreen() );
-
-            sheet->AddPin( static_cast<SCH_SHEET_PIN*>( item ) );
-            item->AutoplaceFields( m_frame->GetScreen(), AUTOPLACE_AUTO );
-
-            commit.Push( _( "Add Sheet Pin" ) );
-
-            lastPlacedLabel = item;
-        }
+        if( label->GetShape() == LABEL_FLAG_SHAPE::L_OUTPUT )
+            rightLabels.push_back( label );
+        else
+            leftLabels.push_back( label );
     }
 
+    auto byText = []( const SCH_HIERLABEL* a, const SCH_HIERLABEL* b )
+    {
+        return a->GetText() < b->GetText();
+    };
+
+    std::sort( leftLabels.begin(), leftLabels.end(), byText );
+    std::sort( rightLabels.begin(), rightLabels.end(), byText );
+
+    // Grow the sheet if the new pins would run past the bottom edge.
+    int botLeft = leftY + (int) leftLabels.size() * pitch;
+    int botRight = rightY + (int) rightLabels.size() * pitch;
+    int needBot = std::max( botLeft, botRight ) + margin;
+
+    if( needBot > topY + sheet->GetSize().y )
+        sheet->SetSize( VECTOR2I( sheet->GetSize().x, needBot - topY ) );
+
+    auto placeColumn = [&]( std::vector<SCH_HIERLABEL*>& aLabels, int aX, int aStartY )
+    {
+        int y = KiROUND( (double) aStartY / grid ) * grid;
+
+        for( SCH_HIERLABEL* label : aLabels )
+        {
+            y += pitch;
+
+            SCH_SHEET_PIN* pin = createNewSheetPinFromLabel( sheet, VECTOR2I( aX, y ), label );
+            pin->ClearFlags( IS_NEW | IS_MOVING );
+            sheet->AddPin( pin );
+            pin->AutoplaceFields( m_frame->GetScreen(), AUTOPLACE_AUTO );
+        }
+    };
+
+    placeColumn( leftLabels, leftX, leftY );
+    placeColumn( rightLabels, rightX, rightY );
+
+    commit.Push( _( "Auto-place Sheet Pins" ) );
     return 0;
 }
 
@@ -4192,8 +4025,6 @@ void SCH_DRAWING_TOOLS::setTransitions()
     Go( &SCH_DRAWING_TOOLS::DrawRuleArea,          SCH_ACTIONS::drawRuleArea.MakeEvent() );
     Go( &SCH_DRAWING_TOOLS::DrawTable,             SCH_ACTIONS::drawTable.MakeEvent() );
     Go( &SCH_DRAWING_TOOLS::PlaceImage,            SCH_ACTIONS::placeImage.MakeEvent() );
-    Go( &SCH_DRAWING_TOOLS::ImportGraphics,        SCH_ACTIONS::importGraphics.MakeEvent() );
-    Go( &SCH_DRAWING_TOOLS::ImportGraphics,        SCH_ACTIONS::ddImportGraphics.MakeEvent() );
     Go( &SCH_DRAWING_TOOLS::SyncSheetsPins,        SCH_ACTIONS::syncSheetPins.MakeEvent() );
     Go( &SCH_DRAWING_TOOLS::SyncAllSheetsPins,     SCH_ACTIONS::syncAllSheetsPins.MakeEvent() );
     Go( &SCH_DRAWING_TOOLS::AutoPlaceAllSheetPins, SCH_ACTIONS::autoplaceAllSheetPins.MakeEvent() );
