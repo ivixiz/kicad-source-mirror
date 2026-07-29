@@ -64,6 +64,7 @@
 #include <sch_sheet_pin.h>
 #include <sch_commit.h>
 #include <sch_rule_area.h>
+#include <sch_scope.h>
 #include <settings/settings_manager.h>
 #include <advanced_config.h>
 #include <sim/simulator_frame.h>
@@ -2380,6 +2381,15 @@ void SCH_EDIT_FRAME::DisplayCurrentSheet()
     m_toolManager->RunAction( ACTIONS::selectionClear );
 
     SCH_BASE_FRAME::SetScreen( screen );
+
+    // Migrate the old pin/channel-based scope prototype to the pinless waveform canvas.
+    for( SCH_ITEM* item : screen->Items().OfType( SCH_SYMBOL_T ) )
+    {
+        SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( item );
+
+        if( SCH_SCOPE::NormalizeCanvasSymbol( symbol ) )
+            screen->Update( symbol, false );
+    }
 
     SetSheetNumberAndCount();   // will also update CurrentScreen()'s sheet number info
 

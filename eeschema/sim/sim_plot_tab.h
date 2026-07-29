@@ -383,6 +383,23 @@ public:
         return trace == m_traces.end() ? nullptr : trace->second;
     }
 
+    bool GetStoredTraceColour( const wxString& aVecName, int aType, wxColour& aColour ) const
+    {
+        if( TRACE* trace = GetTrace( aVecName, aType ) )
+        {
+            aColour = trace->GetTraceColour();
+            return true;
+        }
+
+        auto stored = m_sessionTraceColors.find( aVecName );
+
+        if( stored == m_sessionTraceColors.end() )
+            return false;
+
+        aColour = stored->second;
+        return true;
+    }
+
     void ShowGrid( bool aEnable )
     {
         if( m_axis_x )

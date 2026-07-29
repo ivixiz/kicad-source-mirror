@@ -186,6 +186,7 @@ set( EESCHEMA_DLGS
     dialogs/dialog_sheet_pin_properties_base.cpp
     dialogs/dialog_sheet_properties.cpp
     dialogs/dialog_sheet_properties_base.cpp
+    dialogs/dialog_scope_waveforms.cpp
     dialogs/dialog_symbol_chooser.cpp
     dialogs/dialog_symbol_fields_table.cpp
     dialogs/dialog_symbol_fields_table_base.cpp

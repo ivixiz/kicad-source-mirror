@@ -88,14 +88,11 @@ std::unique_ptr<LIB_SYMBOL> makeScopeLibSymbol()
 {
     std::unique_ptr<LIB_SYMBOL> symbol = std::make_unique<LIB_SYMBOL>( wxS( "Scope" ) );
     const LIB_ID                libId = scopeLibId();
-    const VECTOR2I              bodySize = SCH_SCOPE::DefaultSize();
-    const int                   pinNameOffset = SCH_SCOPE::PinNameOffset();
 
     symbol->SetLibId( libId );
-    symbol->SetDescription( _( "Interactive simulation scope block" ) );
-    symbol->SetShowPinNames( true );
+    symbol->SetDescription( _( "Interactive simulation waveform canvas" ) );
+    symbol->SetShowPinNames( false );
     symbol->SetShowPinNumbers( false );
-    symbol->SetPinNameOffset( pinNameOffset );
     symbol->SetExcludedFromBOM( true );
     symbol->SetExcludedFromBoard( true );
     symbol->SetExcludedFromPosFiles( true );
@@ -106,7 +103,6 @@ std::unique_ptr<LIB_SYMBOL> makeScopeLibSymbol()
     symbol->GetValueField().SetVisible( false );
 
     symbol->AddDrawItem( new SCH_SCOPE( VECTOR2I( 0, 0 ) ) );
-    SCH_SCOPE::UpdateChannelGeometry( symbol.get(), bodySize );
 
     return symbol;
 }
@@ -123,6 +119,7 @@ SCH_SYMBOL* makeScopeSymbol( SCHEMATIC* aSchematic, const SCH_SHEET_PATH& aSheet
     symbol->SetExcludedFromBOM( true, &aSheetPath );
     symbol->SetExcludedFromBoard( true, &aSheetPath );
     symbol->SetExcludedFromPosFiles( true, &aSheetPath );
+    symbol->SetExcludedFromSim( true, &aSheetPath );
 
     return symbol;
 }
@@ -2773,7 +2770,7 @@ int SCH_DRAWING_TOOLS::PlaceScope( const TOOL_EVENT& aEvent )
     auto updatePreview =
             [&]()
             {
-                previewItem->SetPosition( cursorPos - SCH_SCOPE::FirstPinOffset() );
+                previewItem->SetPosition( cursorPos );
                 m_view->ClearPreview();
                 m_view->AddToPreview( previewItem->Clone() );
                 m_frame->SetMsgPanel( previewItem );
@@ -2827,8 +2824,7 @@ int SCH_DRAWING_TOOLS::PlaceScope( const TOOL_EVENT& aEvent )
                 || isSyntheticClick
                 || evt->IsAction( &ACTIONS::cursorClick ) || evt->IsAction( &ACTIONS::cursorDblClick ) )
         {
-            SCH_SYMBOL* scope = makeScopeSymbol( schematic, m_frame->GetCurrentSheet(),
-                                                 cursorPos - SCH_SCOPE::FirstPinOffset() );
+            SCH_SYMBOL* scope = makeScopeSymbol( schematic, m_frame->GetCurrentSheet(), cursorPos );
             scope->SetFlags( IS_NEW );
 
             m_frame->AddToScreen( scope, screen );
@@ -2838,6 +2834,18 @@ int SCH_DRAWING_TOOLS::PlaceScope( const TOOL_EVENT& aEvent )
             commit.Added( scope, screen );
 
             m_toolMgr->RunAction( ACTIONS::selectionClear );
+            m_selectionTool->AddItemToSel( scope );
+
+            SCHEMATIC_SETTINGS& schSettings = schematic->Settings();
+            NULL_REPORTER       reporter;
+
+            m_frame->AnnotateSymbols( &commit, ANNOTATE_SELECTION,
+                                      static_cast<ANNOTATE_ORDER_T>(
+                                              schSettings.m_AnnotateSortOrder ),
+                                      static_cast<ANNOTATE_ALGO_T>(
+                                              schSettings.m_AnnotateMethod ),
+                                      false, schSettings.m_AnnotateStartNum, false, false, false,
+                                      reporter, SYMBOL_FILTER_NON_POWER );
             m_selectionTool->AddItemToSel( scope );
 
             SCH_LINE_WIRE_BUS_TOOL* lwbTool = m_toolMgr->GetTool<SCH_LINE_WIRE_BUS_TOOL>();

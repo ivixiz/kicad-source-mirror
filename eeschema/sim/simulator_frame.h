@@ -32,10 +32,12 @@
 #include <dialogs/dialog_sim_command.h>
 
 #include <wx/event.h>
+#include <wx/colour.h>
 
 #include <list>
 #include <memory>
 #include <map>
+#include <vector>
 
 class SCH_EDIT_FRAME;
 class SCH_SYMBOL;
@@ -118,9 +120,18 @@ public:
      */
     const std::vector<wxString> Signals();
 
+    bool GetWaveform( const wxString& aSignal, std::vector<double>& aDataX,
+                      std::vector<double>& aDataY );
+    bool GetWaveformColor( const wxString& aSignal, wxColour& aColor );
+
+    /** Refresh one scope, or every scope in the schematic when aScope is null. */
+    void RefreshSchematicScopes( SCH_SYMBOL* aScope = nullptr );
+
     const std::map<int, wxString>& UserDefinedSignals();
 
     void SetUserDefinedSignals( const std::map<int, wxString>& aSignals );
+
+    int EnsureUserDefinedSignal( const wxString& aExpression );
 
     /**
      * Add a user-defined expression trace to the current plot.
@@ -128,6 +139,9 @@ public:
      * @param aExpression is an ngspice expression such as V(out)-V(in).
      */
     void AddUserDefinedTrace( const wxString& aExpression, bool aClearOthers = false );
+
+    /** Ignore the synthetic canvas-enter event produced while this window is being raised. */
+    void SuppressNextAutoProbe() { m_suppressNextAutoProbe = true; }
 
     /**
      * Add a voltage trace for a given net to the current plot.
@@ -269,6 +283,7 @@ private:
     bool                                 m_autoProbeActive;
     bool                                 m_autoProbeTuneActive;
     bool                                 m_autoProbeHandlersBound;
+    bool                                 m_suppressNextAutoProbe = false;
 };
 
 // Commands

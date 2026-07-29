@@ -848,6 +848,7 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
         bool displayWireCursor = false;
         bool displayBusCursor = false;
         bool displayLineCursor = false;
+        bool displayScopeCursor = false;
         KIID rolloverItemId = lastRolloverItemId;
 
         // on left click, a selection is made, depending on modifiers ALT, SHIFT, CTRL:
@@ -903,11 +904,15 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
             rejected.SetAll( false );
             narrowSelection( collector, evt->Position(), false, false, &rejected );
 
+#if 0
+            // Deprecated: scope channel +/- and V/I/P controls were handled directly on canvas.
             if( handleScopeControlAt( collector, evt->Position() ) )
             {
                 selCancelled = true;
             }
-            else if( m_selection.GetSize() != 0 && dynamic_cast<SCH_TABLECELL*>( m_selection.GetItem( 0 ) ) && m_additive
+            else
+#endif
+            if( m_selection.GetSize() != 0 && dynamic_cast<SCH_TABLECELL*>( m_selection.GetItem( 0 ) ) && m_additive
                 && collector.GetCount() == 1 && dynamic_cast<SCH_TABLECELL*>( collector[0] ) )
             {
                 SCH_TABLECELL* firstCell = static_cast<SCH_TABLECELL*>( m_selection.GetItem( 0 ) );
@@ -1496,6 +1501,20 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
             rolloverItemId = niluuid;
             SCH_COLLECTOR collector;
 
+            for( SCH_ITEM* item : m_frame->GetScreen()->Items().Overlapping(
+                         SCH_SYMBOL_T, KiROUND( evt->Position() ) ) )
+            {
+                SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( item );
+
+                if( SCH_SCOPE::IsScopeSymbol( symbol )
+                    && SCH_SCOPE::GetLayout( symbol ).plotBox.Contains(
+                            KiROUND( evt->Position() ) ) )
+                {
+                    displayScopeCursor = true;
+                    break;
+                }
+            }
+
             getViewControls()->ForceCursorPosition( false );
 
             if( CollectHits( collector, evt->Position() ) )
@@ -1557,7 +1576,11 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
 
         if( m_frame->ToolStackIsEmpty() )
         {
-            if( displayWireCursor )
+            if( displayScopeCursor )
+            {
+                m_nonModifiedCursor = KICURSOR::SCOPE;
+            }
+            else if( displayWireCursor )
             {
                 m_nonModifiedCursor = KICURSOR::LINE_WIRE;
             }
@@ -1880,6 +1903,8 @@ void SCH_SELECTION_TOOL::narrowSelection( SCH_COLLECTOR& collector, const VECTOR
 }
 
 
+#if 0
+// Deprecated scope channel-control handler.  Waveform sources are now edited in scope properties.
 bool SCH_SELECTION_TOOL::handleScopeControlAt( const SCH_COLLECTOR& aCollector,
                                                const VECTOR2I& aWhere )
 {
@@ -1946,6 +1971,7 @@ bool SCH_SELECTION_TOOL::handleScopeControlAt( const SCH_COLLECTOR& aCollector,
     commit.Push( commitMessage );
     return true;
 }
+#endif
 
 
 bool SCH_SELECTION_TOOL::selectPoint( SCH_COLLECTOR& aCollector, const VECTOR2I& aWhere,

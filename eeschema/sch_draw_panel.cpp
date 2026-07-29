@@ -27,6 +27,8 @@
 #include <wx/gdicmn.h>
 #include <wx/window.h>
 #include <wx/windowid.h>
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include <stdexcept>
 
@@ -44,6 +46,9 @@
 
 #include <sch_base_frame.h>
 #include <sch_painter.h>
+#include <sch_scope.h>
+#include <sch_screen.h>
+#include <sch_symbol.h>
 #include <zoom_defines.h>
 
 
@@ -87,6 +92,14 @@ SCH_DRAW_PANEL::SCH_DRAW_PANEL( wxWindow* aParentWindow, wxWindowID aWindowId,
     // on updated viewport data.
     m_viewControls = new KIGFX::WX_VIEW_CONTROLS( m_view, this );
 
+    Bind( wxEVT_MOUSEWHEEL, &SCH_DRAW_PANEL::onScopeMouseWheel, this );
+    Bind( wxEVT_LEFT_DOWN, &SCH_DRAW_PANEL::onScopeLeftDown, this );
+    Bind( wxEVT_LEFT_UP, &SCH_DRAW_PANEL::onScopeLeftUp, this );
+    Bind( wxEVT_MIDDLE_DOWN, &SCH_DRAW_PANEL::onScopeMiddleDown, this );
+    Bind( wxEVT_MIDDLE_UP, &SCH_DRAW_PANEL::onScopeMiddleUp, this );
+    Bind( wxEVT_MOTION, &SCH_DRAW_PANEL::onScopeMotion, this );
+    Bind( wxEVT_MOUSE_CAPTURE_LOST, &SCH_DRAW_PANEL::onScopeCaptureLost, this );
+
     SetEvtHandlerEnabled( true );
     SetFocus();
     Show( true );
@@ -97,6 +110,251 @@ SCH_DRAW_PANEL::SCH_DRAW_PANEL( wxWindow* aParentWindow, wxWindowID aWindowId,
 
 SCH_DRAW_PANEL::~SCH_DRAW_PANEL()
 {
+}
+
+
+SCH_SYMBOL* SCH_DRAW_PANEL::scopeAt( const wxPoint& aPosition ) const
+{
+    SCH_BASE_FRAME* frame = dynamic_cast<SCH_BASE_FRAME*>( GetParentEDAFrame() );
+    SCH_SCREEN*     screen = frame ? frame->GetScreen() : nullptr;
+
+    if( !screen )
+        return nullptr;
+
+    const VECTOR2I worldPosition = KiROUND( GetView()->ToWorld(
+            VECTOR2D( aPosition.x, aPosition.y ) ) );
+
+    for( SCH_ITEM* item : screen->Items().OfType( SCH_SYMBOL_T ) )
+    {
+        SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( item );
+        BOX2I       bbox = symbol->GetBodyBoundingBox();
+        bbox.Normalize();
+
+        if( SCH_SCOPE::IsScopeSymbol( symbol ) && bbox.Contains( worldPosition ) )
+            return symbol;
+    }
+
+    return nullptr;
+}
+
+
+void SCH_DRAW_PANEL::refreshScope( SCH_SYMBOL* aScope )
+{
+    if( !aScope )
+        return;
+
+    GetView()->Update( aScope, KIGFX::REPAINT );
+    Refresh();
+}
+
+
+void SCH_DRAW_PANEL::onScopeMouseWheel( wxMouseEvent& aEvent )
+{
+    SCH_SYMBOL* scope = scopeAt( aEvent.GetPosition() );
+
+    if( !scope || aEvent.AltDown()
+        || ( aEvent.ControlDown() && aEvent.ShiftDown() ) )
+    {
+        aEvent.Skip();
+        return;
+    }
+
+    const double steps = static_cast<double>( aEvent.GetWheelRotation() )
+                         / std::max( 1, aEvent.GetWheelDelta() );
+    bool changed = false;
+
+    if( aEvent.GetWheelAxis() == wxMOUSE_WHEEL_HORIZONTAL || aEvent.ControlDown() )
+    {
+        changed = SCH_SCOPE::PanViewport( scope, VECTOR2D( steps * 0.12, 0.0 ) );
+    }
+    else if( aEvent.ShiftDown() )
+    {
+        changed = SCH_SCOPE::PanViewport( scope, VECTOR2D( 0.0, steps * 0.12 ) );
+    }
+    else
+    {
+        BOX2I plotBox = SCH_SCOPE::GetLayout( scope ).plotBox;
+
+        if( plotBox.GetWidth() > 0 && plotBox.GetHeight() > 0 )
+        {
+            const VECTOR2D world = GetView()->ToWorld(
+                    VECTOR2D( aEvent.GetX(), aEvent.GetY() ) );
+            const VECTOR2D anchor( ( world.x - plotBox.GetX() ) / plotBox.GetWidth(),
+                                   1.0 - ( world.y - plotBox.GetY() ) / plotBox.GetHeight() );
+            changed = SCH_SCOPE::ZoomViewport( scope, anchor, std::pow( 1.25, steps ) );
+        }
+    }
+
+    if( changed )
+        refreshScope( scope );
+}
+
+
+void SCH_DRAW_PANEL::onScopeLeftDown( wxMouseEvent& aEvent )
+{
+    SCH_SYMBOL* scope = scopeAt( aEvent.GetPosition() );
+
+    if( !scope || aEvent.ControlDown() || aEvent.ShiftDown() || aEvent.AltDown() )
+    {
+        aEvent.Skip();
+        return;
+    }
+
+    const BOX2I plotBox = SCH_SCOPE::GetLayout( scope ).plotBox;
+    const VECTOR2D world = GetView()->ToWorld(
+            VECTOR2D( aEvent.GetX(), aEvent.GetY() ) );
+
+    if( plotBox.GetWidth() <= 0 || plotBox.GetHeight() <= 0
+        || !plotBox.Contains( KiROUND( world ) ) )
+    {
+        aEvent.Skip();
+        return;
+    }
+
+    m_scopeZoomTarget = scope;
+    SCH_SCOPE::BeginZoomSelection(
+            scope, VECTOR2D( ( world.x - plotBox.GetX() ) / plotBox.GetWidth(),
+                             1.0 - ( world.y - plotBox.GetY() ) / plotBox.GetHeight() ) );
+
+    if( !HasCapture() )
+        CaptureMouse();
+
+    refreshScope( scope );
+}
+
+
+void SCH_DRAW_PANEL::onScopeLeftUp( wxMouseEvent& aEvent )
+{
+    if( !m_scopeZoomTarget )
+    {
+        aEvent.Skip();
+        return;
+    }
+
+    SCH_SYMBOL* scope = m_scopeZoomTarget;
+    const BOX2I plotBox = SCH_SCOPE::GetLayout( scope ).plotBox;
+    const VECTOR2D world = GetView()->ToWorld(
+            VECTOR2D( aEvent.GetX(), aEvent.GetY() ) );
+    SCH_SCOPE::UpdateZoomSelection(
+            scope, VECTOR2D( ( world.x - plotBox.GetX() ) / plotBox.GetWidth(),
+                             1.0 - ( world.y - plotBox.GetY() ) / plotBox.GetHeight() ) );
+    SCH_SCOPE::FinishZoomSelection( scope );
+    m_scopeZoomTarget = nullptr;
+
+    if( HasCapture() )
+        ReleaseMouse();
+
+    refreshScope( scope );
+}
+
+
+void SCH_DRAW_PANEL::onScopeMiddleDown( wxMouseEvent& aEvent )
+{
+    m_scopePanTarget = scopeAt( aEvent.GetPosition() );
+
+    if( !m_scopePanTarget )
+    {
+        aEvent.Skip();
+        return;
+    }
+
+    m_scopePanLast = aEvent.GetPosition();
+
+    if( !HasCapture() )
+        CaptureMouse();
+}
+
+
+void SCH_DRAW_PANEL::onScopeMiddleUp( wxMouseEvent& aEvent )
+{
+    if( !m_scopePanTarget )
+    {
+        aEvent.Skip();
+        return;
+    }
+
+    m_scopePanTarget = nullptr;
+
+    if( HasCapture() )
+        ReleaseMouse();
+}
+
+
+void SCH_DRAW_PANEL::onScopeMotion( wxMouseEvent& aEvent )
+{
+    if( m_scopeZoomTarget )
+    {
+        if( !aEvent.LeftIsDown() )
+        {
+            SCH_SCOPE::CancelZoomSelection( m_scopeZoomTarget );
+            m_scopeZoomTarget = nullptr;
+
+            if( HasCapture() )
+                ReleaseMouse();
+
+            return;
+        }
+
+        const BOX2I plotBox = SCH_SCOPE::GetLayout( m_scopeZoomTarget ).plotBox;
+        const VECTOR2D world = GetView()->ToWorld(
+                VECTOR2D( aEvent.GetX(), aEvent.GetY() ) );
+
+        if( SCH_SCOPE::UpdateZoomSelection(
+                    m_scopeZoomTarget,
+                    VECTOR2D( ( world.x - plotBox.GetX() ) / plotBox.GetWidth(),
+                              1.0 - ( world.y - plotBox.GetY() ) / plotBox.GetHeight() ) ) )
+        {
+            refreshScope( m_scopeZoomTarget );
+        }
+
+        return;
+    }
+
+    if( !m_scopePanTarget )
+    {
+        aEvent.Skip();
+        return;
+    }
+
+    if( !aEvent.MiddleIsDown() )
+    {
+        m_scopePanTarget = nullptr;
+
+        if( HasCapture() )
+            ReleaseMouse();
+
+        return;
+    }
+
+    const wxPoint current = aEvent.GetPosition();
+    const wxPoint delta = current - m_scopePanLast;
+    BOX2I         plotBox = SCH_SCOPE::GetLayout( m_scopePanTarget ).plotBox;
+    const double pixelWidth = std::max( 1.0, plotBox.GetWidth() * m_gal->GetWorldScale() );
+    const double pixelHeight = std::max( 1.0, plotBox.GetHeight() * m_gal->GetWorldScale() );
+
+    m_scopePanLast = current;
+
+    if( SCH_SCOPE::PanViewport( m_scopePanTarget,
+                                VECTOR2D( -delta.x / pixelWidth, delta.y / pixelHeight ) ) )
+    {
+        refreshScope( m_scopePanTarget );
+    }
+}
+
+
+void SCH_DRAW_PANEL::onScopeCaptureLost( wxMouseCaptureLostEvent& aEvent )
+{
+    if( !m_scopePanTarget && !m_scopeZoomTarget )
+    {
+        aEvent.Skip();
+        return;
+    }
+
+    if( m_scopeZoomTarget )
+        SCH_SCOPE::CancelZoomSelection( m_scopeZoomTarget );
+
+    m_scopePanTarget = nullptr;
+    m_scopeZoomTarget = nullptr;
 }
 
 

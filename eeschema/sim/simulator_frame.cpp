@@ -29,6 +29,7 @@
 
 #include <project/project_file.h>
 #include <sch_edit_frame.h>
+#include <sch_scope.h>
 #include <widgets/wx_infobar.h>
 #include <kiway.h>
 #include <confirm.h>
@@ -59,6 +60,7 @@
 #include <kiplatform/ui.h>
 
 #include <memory>
+#include <unordered_set>
 
 
 // Reporter is stored by pointer in KIBIS, so keep this here to avoid crashes
@@ -552,6 +554,124 @@ const std::vector<wxString> SIMULATOR_FRAME::Signals()
 }
 
 
+bool SIMULATOR_FRAME::GetWaveform( const wxString& aSignal, std::vector<double>& aDataX,
+                                   std::vector<double>& aDataY )
+{
+    return m_ui->GetWaveform( aSignal, aDataX, aDataY );
+}
+
+
+bool SIMULATOR_FRAME::GetWaveformColor( const wxString& aSignal, wxColour& aColor )
+{
+    return m_ui->GetWaveformColor( aSignal, aColor );
+}
+
+
+void SIMULATOR_FRAME::RefreshSchematicScopes( SCH_SYMBOL* aScope )
+{
+    auto refreshScope =
+            [&]( SCH_SYMBOL* aSymbol )
+            {
+                if( !SCH_SCOPE::IsScopeSymbol( aSymbol ) )
+                    return;
+
+                SCH_SCOPE::NormalizeCanvasSymbol( aSymbol );
+                std::vector<SCH_SCOPE::WAVEFORM> waveforms;
+                SCH_SCOPE::AXIS_INFO axisInfo;
+
+                switch( GetCurrentSimType() )
+                {
+                case ST_TRAN:  axisInfo.xName = _( "Time" );      break;
+                case ST_AC:
+                case ST_SP:
+                case ST_NOISE:
+                case ST_FFT:   axisInfo.xName = _( "Frequency" ); break;
+                case ST_DC:    axisInfo.xName = _( "Sweep" );     break;
+                default:       axisInfo.xName = _( "X" );         break;
+                }
+
+                bool haveVoltage = false;
+                bool haveCurrent = false;
+                bool havePower = false;
+
+                for( const wxString& source : SCH_SCOPE::GetWaveformSources( aSymbol ) )
+                {
+                    haveCurrent = haveCurrent || source.StartsWith( wxS( "I(" ) );
+                    havePower = havePower || source.StartsWith( wxS( "P(" ) )
+                                || source.StartsWith( wxS( "W(" ) );
+                    haveVoltage = haveVoltage || ( !source.StartsWith( wxS( "I(" ) )
+                                                    && !source.StartsWith( wxS( "P(" ) )
+                                                    && !source.StartsWith( wxS( "W(" ) ) );
+                }
+
+                const int quantityCount = static_cast<int>( haveVoltage )
+                                          + static_cast<int>( haveCurrent )
+                                          + static_cast<int>( havePower );
+
+                if( quantityCount != 1 )
+                    axisInfo.yName = _( "Amplitude" );
+                else if( haveCurrent )
+                    axisInfo.yName = _( "Current" );
+                else if( havePower )
+                    axisInfo.yName = _( "Power" );
+                else
+                    axisInfo.yName = _( "Voltage" );
+
+                SCH_SCOPE::SetAxisInfo( aSymbol, axisInfo );
+
+                if( m_simFinished )
+                {
+                    for( const wxString& source : SCH_SCOPE::GetWaveformSources( aSymbol ) )
+                    {
+                        SCH_SCOPE::WAVEFORM waveform;
+                        waveform.name = source;
+
+                        if( source.Contains( wxS( ")-V(" ) ) )
+                            EnsureUserDefinedSignal( source );
+
+                        if( GetWaveform( source, waveform.x, waveform.y ) )
+                            waveforms.push_back( std::move( waveform ) );
+                    }
+                }
+
+                SCH_SCOPE::SetWaveforms( aSymbol, std::move( waveforms ) );
+            };
+
+    if( aScope )
+    {
+        refreshScope( aScope );
+    }
+    else
+    {
+        std::unordered_set<SCH_SCREEN*> visitedScreens;
+
+        for( const SCH_SHEET_PATH& path : m_schematicFrame->Schematic().Hierarchy() )
+        {
+            SCH_SCREEN* screen = path.LastScreen();
+
+            if( !screen || !visitedScreens.insert( screen ).second )
+                continue;
+
+            for( SCH_ITEM* item : screen->Items().OfType( SCH_SYMBOL_T ) )
+                refreshScope( static_cast<SCH_SYMBOL*>( item ) );
+        }
+    }
+
+    if( SCH_SCREEN* screen = m_schematicFrame->GetScreen() )
+    {
+        for( SCH_ITEM* item : screen->Items().OfType( SCH_SYMBOL_T ) )
+        {
+            SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( item );
+
+            if( SCH_SCOPE::IsScopeSymbol( symbol ) )
+                m_schematicFrame->GetCanvas()->GetView()->Update( symbol, KIGFX::REPAINT );
+        }
+    }
+
+    m_schematicFrame->GetCanvas()->Refresh();
+}
+
+
 const std::map<int, wxString>& SIMULATOR_FRAME::UserDefinedSignals()
 {
     return m_ui->UserDefinedSignals();
@@ -561,6 +681,12 @@ const std::map<int, wxString>& SIMULATOR_FRAME::UserDefinedSignals()
 void SIMULATOR_FRAME::SetUserDefinedSignals( const std::map<int, wxString>& aSignals )
 {
     m_ui->SetUserDefinedSignals( aSignals );
+}
+
+
+int SIMULATOR_FRAME::EnsureUserDefinedSignal( const wxString& aExpression )
+{
+    return m_ui->EnsureUserDefinedSignal( aExpression );
 }
 
 
@@ -792,6 +918,13 @@ void SIMULATOR_FRAME::NotifySchematicProbeFinished()
 
 void SIMULATOR_FRAME::onSchematicCanvasEnter( wxMouseEvent& aEvent )
 {
+    if( m_suppressNextAutoProbe )
+    {
+        m_suppressNextAutoProbe = false;
+        aEvent.Skip();
+        return;
+    }
+
     startAutoProbe();
     aEvent.Skip();
 }
@@ -981,6 +1114,8 @@ void SIMULATOR_FRAME::onSimFinished( wxCommandEvent& aEvent )
     m_simFinished = true;
 
     m_ui->OnSimRefresh( true );
+
+    RefreshSchematicScopes();
 
     m_schematicFrame->RefreshOperatingPointDisplay();
     m_schematicFrame->GetCanvas()->Refresh();

@@ -48,11 +48,15 @@
 #ifdef __WINDOWS__
 #include <cursors/cursor_tune.xpm>
 #include <cursors/voltage_probe_win.xpm>
+#include <cursors/differential_probe_win.xpm>
 #include <cursors/current_probe_win.xpm>
+#include <cursors/scope_cursor_win.xpm>
 #else
 #include <cursors/cursor_tune_black.xpm>
 #include <cursors/voltage_probe_black.xpm>
+#include <cursors/differential_probe_black.xpm>
 #include <cursors/current_probe_black.xpm>
+#include <cursors/scope_cursor_black.xpm>
 #endif
 
 // HiDPI cursor files
@@ -77,11 +81,15 @@
 #ifdef __WINDOWS__
 #include <cursors/cursor_tune64.xpm>
 #include <cursors/voltage_probe_win64.xpm>
+#include <cursors/differential_probe_win64.xpm>
 #include <cursors/current_probe_win64.xpm>
+#include <cursors/scope_cursor_win64.xpm>
 #else
 #include <cursors/cursor_tune_black64.xpm>
 #include <cursors/voltage_probe_black64.xpm>
+#include <cursors/differential_probe_black64.xpm>
 #include <cursors/current_probe_black64.xpm>
+#include <cursors/scope_cursor_black64.xpm>
 #endif
 
 
@@ -120,6 +128,30 @@ static const std::map<KICURSOR, std::vector<CURSOR_STORE::CURSOR_DEF>> cursors_d
         {
             { current_probe_xpm, { 4, 27 } },
             { current_probe64_xpm, { 8, 54 } }
+        }
+    },
+    {
+        KICURSOR::DIFFERENTIAL_PROBE,
+        {
+#ifdef __WINDOWS__
+            { differential_probe_win32_xpm, { 1, 31 } },
+            { differential_probe_win64_xpm, { 2, 62 } }
+#else
+            { differential_probe_black32_xpm, { 1, 31 } },
+            { differential_probe_black64_xpm, { 2, 62 } }
+#endif
+        }
+    },
+    {
+        KICURSOR::SCOPE,
+        {
+#ifdef __WINDOWS__
+            { scope_cursor_white32_xpm, { 0, 0 } },
+            { scope_cursor_white64_xpm, { 0, 0 } }
+#else
+            { scope_cursor_black32_xpm, { 0, 0 } },
+            { scope_cursor_black64_xpm, { 0, 0 } }
+#endif
         }
     },
     {

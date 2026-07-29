@@ -1268,6 +1268,7 @@ int SCH_INSPECTION_TOOL::RunSimulation( const TOOL_EVENT& aEvent )
     if( wxWindow* blocking_win = simFrame->Kiway().GetBlockingDialog() )
         blocking_win->Close( true );
 
+    simFrame->SuppressNextAutoProbe();
     simFrame->Show( true );
 
     // On Windows, Raise() does not bring the window on screen, when iconized
@@ -1275,6 +1276,7 @@ int SCH_INSPECTION_TOOL::RunSimulation( const TOOL_EVENT& aEvent )
         simFrame->Iconize( false );
 
     simFrame->Raise();
+    simFrame->SetFocus();
 
     return 0;
 }
@@ -1403,4 +1405,3 @@ void SCH_INSPECTION_TOOL::setTransitions()
     Go( &SCH_INSPECTION_TOOL::UpdateMessagePanel,    EVENTS::ClearedEvent );
     Go( &SCH_INSPECTION_TOOL::UpdateMessagePanel,    EVENTS::SelectedItemsModified );
 }
-

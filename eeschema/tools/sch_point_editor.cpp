@@ -714,9 +714,11 @@ class SCOPE_SYMBOL_POINT_EDIT_BEHAVIOR : public POINT_EDIT_BEHAVIOR
 {
 public:
     SCOPE_SYMBOL_POINT_EDIT_BEHAVIOR( SCH_SYMBOL& aSymbol, SCH_SCREEN& aScreen ) :
-            m_symbol( aSymbol ),
-            m_screen( aScreen )
+            m_symbol( aSymbol )
     {
+#if 0
+        // Deprecated: the first scope prototype moved attached wires and no-connect markers with
+        // its generated channel pins.  The waveform canvas is intentionally pinless.
         for( SCH_PIN* pin : m_symbol.GetPins() )
         {
             const VECTOR2I pinPos = pin->GetPosition();
@@ -739,9 +741,12 @@ public:
                 SCH_NO_CONNECT* noConnect = static_cast<SCH_NO_CONNECT*>( item );
 
                 if( noConnect->GetPosition() == pinPos )
-                    m_noConnects.emplace_back( pin, noConnect );
+                m_noConnects.emplace_back( pin, noConnect );
             }
         }
+#endif
+        (void) aScreen;
+        SCH_SCOPE::NormalizeCanvasSymbol( &m_symbol );
     }
 
     static void SetMovingFlags( SCH_SYMBOL& aSymbol )
@@ -792,9 +797,40 @@ public:
         const BOX2I    oldBox = getBodyBox();
         const VECTOR2I minSize = getWorldMinimumSize();
 
-        RECTANGLE_POINT_EDIT_BEHAVIOR::PinEditedCorner( aEditedPoint, aPoints, minSize.x,
-                                                        minSize.y, topLeft, topRight, botLeft,
-                                                        botRight );
+        if( isModified( aEditedPoint, aPoints.Line( RECT_TOP ) ) )
+        {
+            topLeft = VECTOR2I( oldBox.GetLeft(),
+                                std::min( aPoints.Line( RECT_TOP ).GetY(),
+                                          oldBox.GetBottom() - minSize.y ) );
+            botRight = oldBox.GetEnd();
+        }
+        else if( isModified( aEditedPoint, aPoints.Line( RECT_BOT ) ) )
+        {
+            topLeft = oldBox.GetPosition();
+            botRight = VECTOR2I( oldBox.GetRight(),
+                                 std::max( aPoints.Line( RECT_BOT ).GetY(),
+                                           oldBox.GetTop() + minSize.y ) );
+        }
+        else if( isModified( aEditedPoint, aPoints.Line( RECT_LEFT ) ) )
+        {
+            topLeft = VECTOR2I( std::min( aPoints.Line( RECT_LEFT ).GetX(),
+                                          oldBox.GetRight() - minSize.x ),
+                                oldBox.GetTop() );
+            botRight = oldBox.GetEnd();
+        }
+        else if( isModified( aEditedPoint, aPoints.Line( RECT_RIGHT ) ) )
+        {
+            topLeft = oldBox.GetPosition();
+            botRight = VECTOR2I( std::max( aPoints.Line( RECT_RIGHT ).GetX(),
+                                           oldBox.GetLeft() + minSize.x ),
+                                 oldBox.GetBottom() );
+        }
+        else
+        {
+            RECTANGLE_POINT_EDIT_BEHAVIOR::PinEditedCorner(
+                    aEditedPoint, aPoints, minSize.x, minSize.y, topLeft, topRight, botLeft,
+                    botRight );
+        }
 
         if( isModified( aEditedPoint, aPoints.Point( RECT_TOPLEFT ) )
             || isModified( aEditedPoint, aPoints.Point( RECT_TOPRIGHT ) )
@@ -812,10 +848,10 @@ public:
             const VECTOR2I moveVec = aPoints.Point( RECT_CENTER ).GetPosition() - oldBox.GetCenter();
 
             m_symbol.Move( moveVec );
-            snapFirstPinToGrid();
+            snapScopeToGrid();
         }
 
-        updateConnections( aCommit, aUpdatedItems );
+        (void) aCommit;
         aUpdatedItems.push_back( &m_symbol );
 
         for( unsigned i = 0; i < aPoints.LinesSize(); ++i )
@@ -862,14 +898,6 @@ private:
         return bestShape;
     }
 
-    int getChannelCount() const
-    {
-        if( LIB_SYMBOL* libSymbol = m_symbol.GetLibSymbolRef().get() )
-            return SCH_SCOPE::ChannelCount( libSymbol );
-
-        return 1;
-    }
-
     static bool transformSwapsAxes( const TRANSFORM& aTransform )
     {
         return aTransform.y1 != 0 || aTransform.x2 != 0;
@@ -886,7 +914,7 @@ private:
     VECTOR2I getWorldMinimumSize() const
     {
         return transformLocalSizeToWorldSize( m_symbol.GetTransform(),
-                                              SCH_SCOPE::MinimumSize( getChannelCount() ) );
+                                              SCH_SCOPE::MinimumSize() );
     }
 
     VECTOR2I getLocalSizeFromWorldSize( const VECTOR2I& aWorldSize ) const
@@ -920,24 +948,15 @@ private:
         return quotient * gridSize;
     }
 
-    void snapFirstPinToGrid()
+    void snapScopeToGrid()
     {
-        m_symbol.UpdatePins();
-
-        SCH_PIN* firstPin = m_symbol.GetPin( wxS( "1" ) );
-
-        if( !firstPin )
-            return;
-
-        const VECTOR2I pinPos = firstPin->GetPosition();
-        const VECTOR2I snappedPinPos( snapToScopeGrid( pinPos.x ), snapToScopeGrid( pinPos.y ) );
-        const VECTOR2I moveVec = snappedPinPos - pinPos;
+        const VECTOR2I position = m_symbol.GetPosition();
+        const VECTOR2I snappedPosition( snapToScopeGrid( position.x ),
+                                        snapToScopeGrid( position.y ) );
+        const VECTOR2I moveVec = snappedPosition - position;
 
         if( moveVec != VECTOR2I( 0, 0 ) )
-        {
             m_symbol.Move( moveVec );
-            m_symbol.UpdatePins();
-        }
     }
 
     BOX2I getBodyBox() const
@@ -999,7 +1018,7 @@ private:
         worldBox.Normalize();
 
         VECTOR2I size = getLocalSizeFromWorldSize( worldBox.GetSize() );
-        const VECTOR2I minSize = SCH_SCOPE::MinimumSize( getChannelCount() );
+        const VECTOR2I minSize = SCH_SCOPE::MinimumSize();
 
         size.x = std::max( size.x, minSize.x );
         size.y = std::max( size.y, minSize.y );
@@ -1008,14 +1027,16 @@ private:
 
         body->SetStart( VECTOR2I( 0, 0 ) );
         body->SetEnd( size );
-        body->SetFillMode( FILL_T::FILLED_WITH_BG_BODYCOLOR );
+        const SCH_SCOPE::SETTINGS settings = SCH_SCOPE::GetSettings( &m_symbol );
+        body->SetFillMode( FILL_T::FILLED_WITH_COLOR );
+        body->SetFillColor( settings.backgroundColor );
+        body->SetStroke( STROKE_PARAMS( settings.borderWidth, LINE_STYLE::SOLID,
+                                        settings.borderColor ) );
         body->SetLayer( LAYER_DEVICE );
-
-        SCH_SCOPE::UpdateChannelGeometry( libSymbol, size );
-
-        snapFirstPinToGrid();
     }
 
+#if 0
+    // Deprecated wire/no-connect migration for the old pin-based scope.
     void updateConnections( COMMIT& aCommit, std::vector<EDA_ITEM*>& aUpdatedItems )
     {
         for( auto& [pin, noConnect] : m_noConnects )
@@ -1053,12 +1074,15 @@ private:
             }
         }
     }
+#endif
 
 private:
-    SCH_SYMBOL&                                      m_symbol;
+    SCH_SYMBOL& m_symbol;
+#if 0
     SCH_SCREEN&                                      m_screen;
     std::vector<std::pair<SCH_PIN*, SCH_NO_CONNECT*>> m_noConnects;
     std::vector<std::tuple<SCH_PIN*, SCH_LINE*, int>> m_connectedWires;
+#endif
 };
 
 

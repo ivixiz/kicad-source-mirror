@@ -781,6 +781,7 @@ int SCH_EDITOR_CONTROL::SimProbe( const TOOL_EVENT& aEvent )
     picker->SetCursor( KICURSOR::VOLTAGE_PROBE );
     picker->SetSnapping( false );
     picker->ClearHandlers();
+    picker->SetDragCursor( KICURSOR::DIFFERENTIAL_PROBE );
 
     auto lastDiffSignal = std::make_shared<wxString>();
 

@@ -22,12 +22,18 @@
 
 
 #include <trigo.h>
+#include <array>
 #include <chrono>
+#include <cmath>
+#include <limits>
 #include <bitmap_base.h>
 #include <connection_graph.h>
+#include <font/font.h>
+#include <font/text_attributes.h>
 #include <gal/graphics_abstraction_layer.h>
 #include <sch_netchain.h>
 #include <callback_gal.h>
+#include <geometry/geometry_utils.h>
 #include <geometry/shape_segment.h>
 #include <geometry/shape_rect.h>
 #include <geometry/roundrect.h>
@@ -49,6 +55,7 @@
 #include <sch_line.h>
 #include <sch_shape.h>
 #include <sch_rule_area.h>
+#include <sch_scope.h>
 #include <sch_marker.h>
 #include <sch_no_connect.h>
 #include <sch_sheet.h>
@@ -2810,8 +2817,9 @@ void SCH_PAINTER::draw( const SCH_SYMBOL* aSymbol, int aLayer )
 
     SCH_SHEET_PATH* sheetPath = optSheetPath ? &optSheetPath.value() : nullptr;
     bool DNP = aSymbol->GetDNP( sheetPath, variantName );
-    bool markExclusion = eeconfig()->m_Appearance.mark_sim_exclusions && aSymbol->GetExcludedFromSim( sheetPath,
-                                                                                                      variantName );
+    bool markExclusion = !SCH_SCOPE::IsScopeSymbol( aSymbol )
+                         && eeconfig()->m_Appearance.mark_sim_exclusions
+                         && aSymbol->GetExcludedFromSim( sheetPath, variantName );
 
     if( m_schSettings.IsPrinting() && drawingShadows )
         return;
@@ -2945,6 +2953,9 @@ void SCH_PAINTER::draw( const SCH_SYMBOL* aSymbol, int aLayer )
 
     draw( &tempSymbol, aLayer, false, aSymbol->GetUnit(), aSymbol->GetBodyStyle(), DNP );
 
+    if( !drawingShadows && aLayer == LAYER_DEVICE && SCH_SCOPE::IsScopeSymbol( aSymbol ) )
+        drawScopeWaveforms( aSymbol );
+
     for( unsigned i = 0; i < tempPins.size(); ++i )
     {
         SCH_PIN* symbolPin = symbolPins[ i ];
@@ -3032,6 +3043,374 @@ void SCH_PAINTER::draw( const SCH_SYMBOL* aSymbol, int aLayer )
         wxLogTrace( traceSchPainter, "SCH_PAINTER::draw symbol %s: %lld us", aSymbol->m_Uuid.AsString(),
                     std::chrono::duration_cast<std::chrono::microseconds>( t2 - t1 ).count() );
     }
+}
+
+
+void SCH_PAINTER::drawScopeWaveforms( const SCH_SYMBOL* aSymbol )
+{
+    const SCH_SCOPE::LAYOUT layout = SCH_SCOPE::GetLayout( aSymbol );
+    const BOX2I& bbox = layout.bodyBox;
+    const BOX2I& plotBox = layout.plotBox;
+
+    if( plotBox.GetWidth() <= 0 || plotBox.GetHeight() <= 0 )
+        return;
+
+    const SCH_SCOPE::SETTINGS settings = SCH_SCOPE::GetSettings( aSymbol );
+    const SCH_SCOPE::VIEWPORT viewport = SCH_SCOPE::GetViewport( aSymbol );
+    const SCH_SCOPE::DATA_BOUNDS bounds = SCH_SCOPE::GetDataBounds( aSymbol );
+    const std::vector<SCH_SCOPE::WAVEFORM>* waveforms = SCH_SCOPE::GetWaveforms( aSymbol );
+    const int textSize = layout.textSize;
+    const int lineHeight = layout.lineHeight;
+    const int legendRows = layout.legendRows;
+    const int legendColumns = layout.legendColumns;
+    const int margin = layout.margin;
+
+    GAL_SCOPED_ATTRS scopedAttrs( *m_gal, GAL_SCOPED_ATTRS::ALL_ATTRS );
+    m_gal->AdvanceDepth();
+    m_gal->SetIsFill( false );
+    m_gal->SetIsStroke( true );
+
+    auto drawGridLine = [&]( const VECTOR2I& aStart, const VECTOR2I& aEnd,
+                             LINE_STYLE aStyle, int aWidth )
+    {
+        if( aStyle == LINE_STYLE::SOLID )
+        {
+            m_gal->DrawLine( aStart, aEnd );
+            return;
+        }
+
+        SHAPE_SEGMENT segment( aStart, aEnd );
+        STROKE_PARAMS::Stroke( &segment, aStyle, aWidth,
+                               &m_schSettings,
+                               [&]( const VECTOR2I& a, const VECTOR2I& b )
+                               {
+                                   m_gal->DrawLine( a == b ? a + 1 : a, b );
+                               } );
+    };
+
+    if( settings.minorGridVisible )
+    {
+        m_gal->SetLineWidth( std::max( 1, settings.minorGridWidth ) );
+        m_gal->SetStrokeColor( settings.minorGridColor );
+
+        for( int division = 1; division < layout.xDivisions * 5; ++division )
+        {
+            if( division % 5 == 0 )
+                continue;
+
+            const int x = plotBox.GetX()
+                          + plotBox.GetWidth() * division / ( layout.xDivisions * 5 );
+            drawGridLine( VECTOR2I( x, plotBox.GetY() ), VECTOR2I( x, plotBox.GetEnd().y ),
+                          settings.minorGridStyle, settings.minorGridWidth );
+        }
+
+        for( int division = 1; division < layout.yDivisions * 5; ++division )
+        {
+            if( division % 5 == 0 )
+                continue;
+
+            const int y = plotBox.GetY()
+                          + plotBox.GetHeight() * division / ( layout.yDivisions * 5 );
+            drawGridLine( VECTOR2I( plotBox.GetX(), y ), VECTOR2I( plotBox.GetEnd().x, y ),
+                          settings.minorGridStyle, settings.minorGridWidth );
+        }
+    }
+
+    if( settings.gridVisible )
+    {
+        m_gal->SetLineWidth( std::max( 1, settings.gridWidth ) );
+        m_gal->SetStrokeColor( settings.gridColor );
+
+        for( int division = 1; division < layout.xDivisions; ++division )
+        {
+            const int x = plotBox.GetX()
+                          + plotBox.GetWidth() * division / layout.xDivisions;
+            drawGridLine( VECTOR2I( x, plotBox.GetY() ),
+                          VECTOR2I( x, plotBox.GetEnd().y ), settings.gridStyle,
+                          settings.gridWidth );
+        }
+
+        for( int division = 1; division < layout.yDivisions; ++division )
+        {
+            const int y = plotBox.GetY()
+                          + plotBox.GetHeight() * division / layout.yDivisions;
+            drawGridLine( VECTOR2I( plotBox.GetX(), y ),
+                          VECTOR2I( plotBox.GetEnd().x, y ), settings.gridStyle,
+                          settings.gridWidth );
+        }
+    }
+
+    const int legendColumnWidth =
+            std::max( 1, static_cast<int>( plotBox.GetWidth() ) / legendColumns );
+
+    const double xViewportRange = viewport.xMax - viewport.xMin;
+    const double yViewportRange = viewport.yMax - viewport.yMin;
+    const int pixelWidth = KiROUND( plotBox.GetWidth() * m_gal->GetWorldScale() );
+    const size_t bucketCount = static_cast<size_t>( std::clamp( pixelWidth / 2, 64, 400 ) );
+
+    // Keep grid geometry below traces even on depth-buffered GAL backends.
+    m_gal->AdvanceDepth();
+
+    // The first row in the properties list is the topmost waveform layer.
+    for( size_t reverseIndex = settings.sources.size(); reverseIndex > 0; --reverseIndex )
+    {
+        const size_t waveformIndex = reverseIndex - 1;
+        const SCH_SCOPE::WAVEFORM_SOURCE& source = settings.sources[waveformIndex];
+        const COLOR4D color = source.color;
+
+        if( legendRows > 0 )
+        {
+            const int column = static_cast<int>( waveformIndex ) / legendRows;
+            const int row = static_cast<int>( waveformIndex ) % legendRows;
+            const int x = plotBox.GetX() + column * legendColumnWidth;
+            const int y = bbox.GetY() + margin + row * lineHeight + lineHeight / 2;
+            const int swatchWidth = textSize * 2;
+            const int maxChars = std::max( 3, ( legendColumnWidth - swatchWidth ) / std::max( 1, textSize / 2 ) );
+            wxString label = SCH_SCOPE::FormatWaveformLabel( source.name );
+
+            if( static_cast<int>( label.length() ) > maxChars )
+                label = label.Left( std::max( 1, maxChars - 1 ) ) + wxS( "..." );
+
+            m_gal->SetStrokeColor( color );
+            m_gal->SetLineWidth( std::max( 1, source.lineWidth ) );
+            m_gal->DrawLine( VECTOR2I( x, y ), VECTOR2I( x + swatchWidth, y ) );
+            m_gal->SetGlyphSize( VECTOR2I( textSize, textSize ) );
+            m_gal->SetHorizontalJustify( GR_TEXT_H_ALIGN_LEFT );
+            m_gal->SetVerticalJustify( GR_TEXT_V_ALIGN_CENTER );
+            m_gal->BitmapText( label, VECTOR2I( x + swatchWidth + textSize / 2, y ), ANGLE_0 );
+        }
+
+        if( !waveforms )
+            continue;
+
+        auto waveformIt = std::find_if( waveforms->begin(), waveforms->end(),
+                                        [&]( const SCH_SCOPE::WAVEFORM& aWaveform )
+                                        {
+                                            return aWaveform.name == source.name;
+                                        } );
+
+        if( waveformIt == waveforms->end() )
+            continue;
+
+        const SCH_SCOPE::WAVEFORM& waveform = *waveformIt;
+        const size_t size = std::min( waveform.x.size(), waveform.y.size() );
+
+        if( size < 2 )
+            continue;
+
+        const double xRange = bounds.maxX - bounds.minX;
+        const double yRange = bounds.maxY - bounds.minY;
+        const double visibleMinX = bounds.minX + viewport.xMin * xRange;
+        const double visibleMaxX = bounds.minX + viewport.xMax * xRange;
+        size_t first = 0;
+        size_t last = size;
+
+        if( waveform.monotonicX )
+        {
+            auto begin = waveform.x.begin();
+            auto end = begin + static_cast<ptrdiff_t>( size );
+            first = static_cast<size_t>( std::lower_bound( begin, end, visibleMinX ) - begin );
+            last = static_cast<size_t>( std::upper_bound( begin, end, visibleMaxX ) - begin );
+
+            if( first > 0 )
+                --first;
+
+            if( last < size )
+                ++last;
+        }
+
+        std::vector<size_t> selectedIndices;
+        selectedIndices.reserve( std::min<size_t>( last - first, bucketCount * 4 + 2 ) );
+
+        if( !waveform.monotonicX || last - first <= bucketCount * 4 )
+        {
+            const size_t stride = waveform.monotonicX
+                                          ? 1
+                                          : std::max<size_t>( 1, ( last - first )
+                                                                       / ( bucketCount * 2 ) );
+
+            for( size_t ii = first; ii < last; ii += stride )
+                selectedIndices.push_back( ii );
+
+            if( last > first && selectedIndices.back() != last - 1 )
+                selectedIndices.push_back( last - 1 );
+        }
+        else
+        {
+            size_t bucketFirst = first;
+            size_t bucketMin = first;
+            size_t bucketMax = first;
+            size_t bucketLast = first;
+            int    currentBucket = -1;
+
+            auto flushBucket = [&]()
+            {
+                std::array<size_t, 4> candidates = { bucketFirst, bucketMin, bucketMax,
+                                                     bucketLast };
+                std::sort( candidates.begin(), candidates.end() );
+
+                for( size_t index : candidates )
+                {
+                    if( selectedIndices.empty() || selectedIndices.back() != index )
+                        selectedIndices.push_back( index );
+                }
+            };
+
+            for( size_t ii = first; ii < last; ++ii )
+            {
+                if( !std::isfinite( waveform.x[ii] ) || !std::isfinite( waveform.y[ii] ) )
+                    continue;
+
+                const double normalizedX = ( waveform.x[ii] - bounds.minX ) / xRange;
+                const int bucket = std::clamp(
+                        static_cast<int>( ( normalizedX - viewport.xMin ) / xViewportRange
+                                          * bucketCount ),
+                        0, static_cast<int>( bucketCount ) - 1 );
+
+                if( currentBucket != bucket )
+                {
+                    if( currentBucket >= 0 )
+                        flushBucket();
+
+                    currentBucket = bucket;
+                    bucketFirst = bucketMin = bucketMax = bucketLast = ii;
+                }
+                else
+                {
+                    if( waveform.y[ii] < waveform.y[bucketMin] )
+                        bucketMin = ii;
+
+                    if( waveform.y[ii] > waveform.y[bucketMax] )
+                        bucketMax = ii;
+
+                    bucketLast = ii;
+                }
+            }
+
+            if( currentBucket >= 0 )
+                flushBucket();
+        }
+
+        m_gal->SetStrokeColor( color );
+        m_gal->SetLineWidth( std::max( 1, source.lineWidth ) );
+        bool     havePrevious = false;
+        VECTOR2I previousPoint;
+
+        for( size_t index : selectedIndices )
+        {
+            if( !std::isfinite( waveform.x[index] ) || !std::isfinite( waveform.y[index] ) )
+            {
+                havePrevious = false;
+                continue;
+            }
+
+            const double normalizedX = ( waveform.x[index] - bounds.minX ) / xRange;
+            const double normalizedY = ( waveform.y[index] - bounds.minY ) / yRange;
+            VECTOR2I point( KiROUND( plotBox.GetX()
+                                     + ( normalizedX - viewport.xMin ) / xViewportRange
+                                               * plotBox.GetWidth() ),
+                            KiROUND( plotBox.GetEnd().y
+                                     - ( normalizedY - viewport.yMin ) / yViewportRange
+                                               * plotBox.GetHeight() ) );
+
+            if( havePrevious )
+            {
+                int x1 = previousPoint.x;
+                int y1 = previousPoint.y;
+                int x2 = point.x;
+                int y2 = point.y;
+
+                if( !ClipLine( &plotBox, x1, y1, x2, y2 ) )
+                    m_gal->DrawLine( VECTOR2I( x1, y1 ), VECTOR2I( x2, y2 ) );
+            }
+
+            previousPoint = point;
+            havePrevious = true;
+        }
+    }
+
+    m_gal->AdvanceDepth();
+    const SCH_SCOPE::AXIS_INFO axisInfo = SCH_SCOPE::GetAxisInfo( aSymbol );
+    KIFONT::FONT* font = KIFONT::FONT::GetFont( settings.axisFontName );
+    TEXT_ATTRIBUTES textAttrs( font );
+    textAttrs.m_Size = VECTOR2I( textSize, textSize );
+    textAttrs.m_StrokeWidth = std::max( 1, textSize / 10 );
+    textAttrs.m_Color = settings.borderColor;
+
+    auto drawAxisText = [&]( const wxString& aText, const VECTOR2I& aPosition,
+                             GR_TEXT_H_ALIGN_T aHAlign, GR_TEXT_V_ALIGN_T aVAlign,
+                             const EDA_ANGLE& aAngle = ANGLE_0 )
+    {
+        textAttrs.m_Halign = aHAlign;
+        textAttrs.m_Valign = aVAlign;
+        textAttrs.m_Angle = aAngle;
+        m_gal->SetIsFill( font->IsOutline() );
+        m_gal->SetIsStroke( font->IsStroke() );
+        m_gal->SetFillColor( settings.borderColor );
+        m_gal->SetStrokeColor( settings.borderColor );
+        m_gal->SetLineWidth( textAttrs.m_StrokeWidth );
+        font->Draw( m_gal, aText, aPosition, textAttrs, KIFONT::METRICS::Default() );
+    };
+
+    const double minX = bounds.minX + viewport.xMin * ( bounds.maxX - bounds.minX );
+    const double maxX = bounds.minX + viewport.xMax * ( bounds.maxX - bounds.minX );
+    const double minY = bounds.minY + viewport.yMin * ( bounds.maxY - bounds.minY );
+    const double maxY = bounds.minY + viewport.yMax * ( bounds.maxY - bounds.minY );
+    const std::vector<wxString> xTickLabels =
+            SCH_SCOPE::FormatEngineeringTicks( minX, maxX, layout.xDivisions );
+    const std::vector<wxString> yTickLabels =
+            SCH_SCOPE::FormatEngineeringTicks( minY, maxY, layout.yDivisions );
+
+    for( int division = 0; division <= layout.xDivisions; ++division )
+    {
+        const int x = plotBox.GetX()
+                      + plotBox.GetWidth() * division / layout.xDivisions;
+        const GR_TEXT_H_ALIGN_T xAlignment =
+                division == 0 ? GR_TEXT_H_ALIGN_LEFT
+                              : division == layout.xDivisions ? GR_TEXT_H_ALIGN_RIGHT
+                                                              : GR_TEXT_H_ALIGN_CENTER;
+        drawAxisText( xTickLabels[division],
+                      VECTOR2I( x, plotBox.GetEnd().y + textSize * 2 / 3 ),
+                      xAlignment, GR_TEXT_V_ALIGN_TOP );
+    }
+
+    for( int division = 0; division <= layout.yDivisions; ++division )
+    {
+        const int y = plotBox.GetEnd().y
+                      - plotBox.GetHeight() * division / layout.yDivisions;
+        drawAxisText( yTickLabels[division],
+                      VECTOR2I( plotBox.GetX() - textSize / 3, y ),
+                      GR_TEXT_H_ALIGN_RIGHT, GR_TEXT_V_ALIGN_CENTER );
+    }
+
+    drawAxisText( axisInfo.xName,
+                  VECTOR2I( plotBox.GetCenter().x, plotBox.GetEnd().y + textSize * 2 ),
+                  GR_TEXT_H_ALIGN_CENTER, GR_TEXT_V_ALIGN_TOP );
+    drawAxisText( axisInfo.yName,
+                  VECTOR2I( bbox.GetX() + margin + textSize / 2, plotBox.GetCenter().y ),
+                  GR_TEXT_H_ALIGN_CENTER, GR_TEXT_V_ALIGN_CENTER, ANGLE_90 );
+
+    m_gal->SetIsFill( false );
+    m_gal->SetIsStroke( true );
+    m_gal->SetLineWidth( std::max( 1, settings.gridWidth ) );
+    m_gal->SetStrokeColor( settings.borderColor );
+    m_gal->DrawRectangle( plotBox.GetOrigin(), plotBox.GetEnd() );
+
+    const SCH_SCOPE::ZOOM_SELECTION selection = SCH_SCOPE::GetZoomSelection( aSymbol );
+
+    if( selection.active )
+    {
+        const int x1 = KiROUND( plotBox.GetX() + selection.start.x * plotBox.GetWidth() );
+        const int x2 = KiROUND( plotBox.GetX() + selection.end.x * plotBox.GetWidth() );
+        const int y1 = KiROUND( plotBox.GetEnd().y - selection.start.y * plotBox.GetHeight() );
+        const int y2 = KiROUND( plotBox.GetEnd().y - selection.end.y * plotBox.GetHeight() );
+        const COLOR4D selectionColor( 0.15, 0.42, 0.95, 1.0 );
+        m_gal->SetStrokeColor( selectionColor );
+        m_gal->SetLineWidth( m_schSettings.GetOutlineWidth() );
+        m_gal->DrawRectangle( VECTOR2I( x1, y1 ), VECTOR2I( x2, y2 ) );
+    }
+
+    m_gal->ResetTextAttributes();
 }
 
 

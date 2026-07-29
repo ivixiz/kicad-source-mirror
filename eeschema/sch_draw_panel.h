@@ -26,6 +26,7 @@
 
 class LIB_SYMBOL;
 class SCH_SCREEN;
+class SCH_SYMBOL;
 
 
 class SCH_DRAW_PANEL : public EDA_DRAW_PANEL_GAL
@@ -51,6 +52,22 @@ protected:
 
     void setDefaultLayerOrder();    ///< Reassign layer order to the initial settings.
     void setDefaultLayerDeps();     ///< Set rendering targets & dependencies for layers.
+
+private:
+    SCH_SYMBOL* scopeAt( const wxPoint& aPosition ) const;
+    void refreshScope( SCH_SYMBOL* aScope );
+    void onScopeMouseWheel( wxMouseEvent& aEvent );
+    void onScopeLeftDown( wxMouseEvent& aEvent );
+    void onScopeLeftUp( wxMouseEvent& aEvent );
+    void onScopeMiddleDown( wxMouseEvent& aEvent );
+    void onScopeMiddleUp( wxMouseEvent& aEvent );
+    void onScopeMotion( wxMouseEvent& aEvent );
+    void onScopeCaptureLost( wxMouseCaptureLostEvent& aEvent );
+
+private:
+    SCH_SYMBOL* m_scopePanTarget = nullptr;
+    SCH_SYMBOL* m_scopeZoomTarget = nullptr;
+    wxPoint     m_scopePanLast;
 };
 
 #endif // __SCH_DRAW_PANEL_H

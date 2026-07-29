@@ -80,8 +80,13 @@ public:
 
     std::vector<wxString> Signals() const;
 
+    bool GetWaveform( const wxString& aSignal, std::vector<double>& aDataX,
+                      std::vector<double>& aDataY );
+    bool GetWaveformColor( const wxString& aSignal, wxColour& aColor );
+
     const std::map<int, wxString>& UserDefinedSignals() { return m_userDefinedSignals; }
     void SetUserDefinedSignals( const std::map<int, wxString>& aSignals );
+    int EnsureUserDefinedSignal( const wxString& aExpression );
     void AddUserDefinedTrace( const wxString& aExpression, bool aClearOthers = false );
 
     /**

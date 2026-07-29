@@ -61,6 +61,8 @@ public:
 
     inline void SetCursor( KICURSOR aCursor ) { m_cursor = aCursor; }
 
+    inline void SetDragCursor( KICURSOR aCursor ) { m_dragCursor = aCursor; }
+
     inline void SetSnapping( bool aSnap ) { m_snap = aSnap; }
 
     void ClearHandlers()
@@ -68,6 +70,7 @@ public:
         m_clickHandler.reset();
         m_dblClickHandler.reset();
         m_dragReleaseHandler.reset();
+        m_dragCursor.reset();
         m_motionHandler.reset();
         m_cancelHandler.reset();
         m_finalizeHandler.reset();
@@ -148,6 +151,7 @@ protected:
 
     EDA_DRAW_FRAME* m_frame;
     KICURSOR        m_cursor;
+    std::optional<KICURSOR> m_dragCursor;
     bool            m_snap;
     int             m_modifiers;
     bool            m_dblClickDragArmed;

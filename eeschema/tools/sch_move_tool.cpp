@@ -36,13 +36,16 @@
 
 #include <sch_actions.h>
 #include <sch_commit.h>
+#include <connection_graph.h>
 #include <eda_item.h>
+#include <embedded_files.h>
 #include <sch_group.h>
 #include <sch_item.h>
 #include <sch_symbol.h>
 #include <sch_sheet.h>
 #include <sch_sheet_pin.h>
 #include <sch_line.h>
+#include <sch_pin.h>
 #include <sch_connection.h>
 #include <sch_junction.h>
 #include <junction_helpers.h>
@@ -50,17 +53,187 @@
 #include <widgets/wx_infobar.h>
 #include <eeschema_id.h>
 #include <pgm_base.h>
+#include <kiway.h>
 #include <view/view_controls.h>
 #include <settings/settings_manager.h>
 #include <math/box2.h>
 #include <base_units.h>
 #include <sch_screen.h>
 #include <sch_item_alignment.h>
+#include <sch_scope.h>
+#include <schematic.h>
+#include <reporter.h>
 #include <trace_helpers.h>
+#include <netlist_exporters/netlist_exporter_spice.h>
+#include <sim/sim_lib_mgr.h>
+#include <sim/simulator_frame.h>
 
 
 // For adding to or removing from selections
 #define QUIET_MODE true
+
+
+static SCH_SYMBOL* scopeAtPosition( SCH_SCREEN* aScreen, const VECTOR2I& aPosition )
+{
+    if( !aScreen )
+        return nullptr;
+
+    for( SCH_ITEM* item : aScreen->Items().Overlapping( SCH_SYMBOL_T, aPosition ) )
+    {
+        SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( item );
+
+        if( SCH_SCOPE::IsScopeSymbol( symbol )
+            && SCH_SCOPE::GetLayout( symbol ).plotBox.Contains( aPosition ) )
+        {
+            return symbol;
+        }
+    }
+
+    return nullptr;
+}
+
+
+static bool makeScopeMeasurementSignal( SCH_EDIT_FRAME* aFrame, SCH_SYMBOL* aSymbol,
+                                        int aModifiers, wxString& aSignal )
+{
+    if( !aFrame || !aSymbol || SCH_SCOPE::IsScopeSymbol( aSymbol ) )
+        return false;
+
+    SCH_SHEET_PATH& sheet = aFrame->GetCurrentSheet();
+    const bool wantsPower = aModifiers & MD_ALT;
+    const bool wantsCurrent = !wantsPower && ( aModifiers & MD_SHIFT );
+
+    if( !wantsPower && !wantsCurrent )
+    {
+        if( aSymbol->IsConnectivityDirty() )
+            aFrame->RecalculateConnections( nullptr, NO_CLEANUP );
+
+        std::vector<wxString> nets;
+
+        for( SCH_PIN* pin : aSymbol->GetPins( &sheet ) )
+        {
+            SCH_CONNECTION* connection = pin->Connection( &sheet );
+
+            if( !connection || connection->IsBus() || connection->Name().IsEmpty() )
+                continue;
+
+            wxString net = UnescapeString( connection->Name() );
+            NETLIST_EXPORTER_SPICE::ConvertToSpiceMarkup( &net );
+
+            // ngspice treats both names as its reference node.  A voltage relative to either
+            // must be emitted as V(signal), not as the unavailable expression V(signal)-V(GND).
+            if( net.IsSameAs( wxS( "GND" ), false ) || net == wxS( "0" ) )
+                continue;
+
+            if( !net.IsEmpty() && std::find( nets.begin(), nets.end(), net ) == nets.end() )
+                nets.push_back( net );
+
+            if( nets.size() == 2 )
+                break;
+        }
+
+        if( nets.empty() )
+            return false;
+
+        if( nets.size() == 1 )
+        {
+            aSignal = wxString::Format( wxS( "V(%s)" ), nets.front() );
+        }
+        else
+        {
+            aSignal = wxString::Format( wxS( "V(%s)-V(%s)" ), nets[0], nets[1] );
+        }
+
+        return true;
+    }
+
+    try
+    {
+        NULL_REPORTER reporter;
+        SIM_LIB_MGR manager( &aFrame->Prj() );
+        std::vector<EMBEDDED_FILES*> embeddedFiles;
+        embeddedFiles.push_back( aFrame->Schematic().GetEmbeddedFiles() );
+
+        if( EMBEDDED_FILES* symbolFiles = aSymbol->GetEmbeddedFiles() )
+            embeddedFiles.push_back( symbolFiles );
+
+        manager.SetFilesStack( std::move( embeddedFiles ) );
+
+        SIM_MODEL& model = manager.CreateModel( &sheet, *aSymbol, true, 0,
+                                                aFrame->Schematic().GetCurrentVariant(),
+                                                reporter ).model;
+        SPICE_ITEM spiceItem;
+        spiceItem.refName = aSymbol->GetRef( &sheet ).ToStdString();
+
+        if( wantsPower )
+        {
+            if( model.GetPinCount() < 2 )
+                return false;
+
+            const wxString itemName = wxString::FromUTF8(
+                    model.SpiceGenerator().ItemName( spiceItem ) );
+
+            if( itemName.IsEmpty() )
+                return false;
+
+            aSignal = wxString::Format( wxS( "P(%s)" ), itemName );
+            return true;
+        }
+
+        const std::vector<std::string> currents = model.SpiceGenerator().CurrentNames( spiceItem );
+
+        if( currents.empty() )
+            return false;
+
+        aSignal = wxString::FromUTF8( currents.front() );
+        return !aSignal.IsEmpty();
+    }
+    catch( ... )
+    {
+        return false;
+    }
+}
+
+
+static bool addScopeMeasurement( SCH_SYMBOL* aScope, const wxString& aSignal,
+                                 SIMULATOR_FRAME* aSimulator, SCH_COMMIT* aCommit,
+                                 SCH_SCREEN* aScreen )
+{
+    if( !aScope || aSignal.IsEmpty() || !aCommit )
+        return false;
+
+    SCH_SCOPE::SETTINGS settings = SCH_SCOPE::GetSettings( aScope );
+    const auto existing = std::find_if( settings.sources.begin(), settings.sources.end(),
+                                        [&]( const SCH_SCOPE::WAVEFORM_SOURCE& aSource )
+                                        {
+                                            return aSource.name == aSignal;
+                                        } );
+
+    if( existing != settings.sources.end() )
+        return true;
+
+    KIGFX::COLOR4D color = SCH_SCOPE::DefaultWaveformColor( settings.sources.size() );
+
+    if( aSimulator )
+    {
+        if( aSignal.Contains( wxS( ")-V(" ) ) )
+            aSimulator->EnsureUserDefinedSignal( aSignal );
+
+        wxColour simulatorColor;
+
+        if( aSimulator->GetWaveformColor( aSignal, simulatorColor ) )
+            color = KIGFX::COLOR4D( simulatorColor );
+    }
+
+    aCommit->Modify( aScope, aScreen );
+    settings.sources.push_back( { aSignal, color, schIUScale.mmToIU( 0.2 ) } );
+    SCH_SCOPE::SetSettings( aScope, settings );
+
+    if( aSimulator )
+        aSimulator->RefreshSchematicScopes( aScope );
+
+    return true;
+}
 
 
 static bool isGraphicItemForDrop( const SCH_ITEM* aItem )
@@ -541,6 +714,9 @@ void SCH_MOVE_TOOL::orthoLineDrag( SCH_COMMIT* aCommit, SCH_LINE* line, const VE
 
 int SCH_MOVE_TOOL::Main( const TOOL_EVENT& aEvent )
 {
+    m_scopeMeasurementTarget = nullptr;
+    m_scopeMeasurementSignal.Clear();
+
     if( aEvent.IsAction( &SCH_ACTIONS::drag ) )
         m_mode = DRAG;
     else if( aEvent.IsAction( &SCH_ACTIONS::breakWire ) )
@@ -556,9 +732,22 @@ int SCH_MOVE_TOOL::Main( const TOOL_EVENT& aEvent )
         aEvent.SynchronousState()->store( STS_RUNNING );
 
         if( doMoveSelection( aEvent, commit ) )
+        {
+            if( m_scopeMeasurementTarget )
+            {
+                commit->Revert();
+                SIMULATOR_FRAME* simulator = static_cast<SIMULATOR_FRAME*>(
+                        m_frame->Kiway().Player( FRAME_SIMULATOR, false ) );
+                addScopeMeasurement( m_scopeMeasurementTarget, m_scopeMeasurementSignal,
+                                     simulator, commit, m_frame->GetScreen() );
+            }
+
             aEvent.SynchronousState()->store( STS_FINISHED );
+        }
         else
+        {
             aEvent.SynchronousState()->store( STS_CANCELLED );
+        }
     }
     else
     {
@@ -566,6 +755,20 @@ int SCH_MOVE_TOOL::Main( const TOOL_EVENT& aEvent )
 
         if( doMoveSelection( aEvent, &localCommit ) )
         {
+            if( m_scopeMeasurementTarget )
+            {
+                localCommit.Revert();
+                SIMULATOR_FRAME* simulator = static_cast<SIMULATOR_FRAME*>(
+                        m_frame->Kiway().Player( FRAME_SIMULATOR, false ) );
+                addScopeMeasurement( m_scopeMeasurementTarget, m_scopeMeasurementSignal,
+                                     simulator, &localCommit, m_frame->GetScreen() );
+
+                if( !localCommit.Empty() )
+                    localCommit.Push( _( "Add Scope Measurement" ) );
+
+                return 0;
+            }
+
             switch( m_mode )
             {
             case MOVE:  localCommit.Push( _( "Move" ) );       break;
@@ -710,6 +913,28 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
             };
 
     refreshTraits();
+
+    SCH_SYMBOL* measurementSymbol = nullptr;
+    VECTOR2I    measurementOriginalPosition;
+    wxString    measurementVoltageSignal;
+    SCH_SYMBOL* scopeDropTarget = nullptr;
+    wxString    scopeDropSignal;
+
+    if( ( m_mode == MOVE || m_mode == DRAG ) && selection.GetSize() == 1 )
+    {
+        measurementSymbol = dynamic_cast<SCH_SYMBOL*>( selection.Front() );
+
+        if( measurementSymbol && !SCH_SCOPE::IsScopeSymbol( measurementSymbol ) )
+        {
+            measurementOriginalPosition = measurementSymbol->GetPosition();
+            makeScopeMeasurementSignal( m_frame, measurementSymbol, 0,
+                                        measurementVoltageSignal );
+        }
+        else
+        {
+            measurementSymbol = nullptr;
+        }
+    }
 
     if( !selection.Empty() )
 
@@ -893,6 +1118,13 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
 
             currentCursor = hoverSheet ? KICURSOR::PLACE : KICURSOR::MOVING;
 
+            if( measurementSymbol
+                && scopeAtPosition( m_frame->GetScreen(),
+                                    controls->GetCursorPosition( false ) ) )
+            {
+                currentCursor = KICURSOR::SCOPE;
+            }
+
             if( netCollisionMonitor )
                 currentCursor = netCollisionMonitor->AdjustCursor( currentCursor );
 
@@ -1006,7 +1238,39 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
         else if( evt->IsMouseUp( BUT_LEFT ) || evt->IsClick( BUT_LEFT ) )
         {
             if( m_mode != BREAK )
+            {
+                if( measurementSymbol )
+                {
+                    SCH_SYMBOL* target = scopeAtPosition( m_frame->GetScreen(),
+                            controls->GetCursorPosition( false ) );
+
+                    if( target )
+                    {
+                        const VECTOR2I movedPosition = measurementSymbol->GetPosition();
+                        measurementSymbol->Move( measurementOriginalPosition - movedPosition );
+                        scopeDropSignal.Clear();
+
+                        if( evt->Modifier( MD_ALT ) )
+                        {
+                            makeScopeMeasurementSignal( m_frame, measurementSymbol, MD_ALT,
+                                                        scopeDropSignal );
+                        }
+                        else if( evt->Modifier( MD_SHIFT ) )
+                        {
+                            makeScopeMeasurementSignal( m_frame, measurementSymbol, MD_SHIFT,
+                                                        scopeDropSignal );
+                        }
+                        else
+                        {
+                            scopeDropSignal = measurementVoltageSignal;
+                        }
+
+                        scopeDropTarget = target;
+                    }
+                }
+
                 break; // Finish
+            }
             else
             {
                 didAtLeastOneBreak = true;
@@ -1059,7 +1323,10 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
 
     } while( ( evt = Wait() ) ); //Should be assignment not equality test
 
-    SCH_SHEET* targetSheet = hoverSheet;
+    if( scopeDropTarget && measurementSymbol )
+        measurementSymbol->Move( measurementOriginalPosition - measurementSymbol->GetPosition() );
+
+    SCH_SHEET* targetSheet = scopeDropTarget ? nullptr : hoverSheet;
 
     if( selectionHasSheetPins || ( selectionIsGraphicsOnly && !lastCtrlDown ) )
         targetSheet = nullptr;
@@ -1092,7 +1359,18 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
             m_changedDragLines.clear();
         }
 
-        finalizeMoveOperation( selection, aCommit, unselect, internalPoints );
+        if( scopeDropTarget )
+        {
+            m_selectionTool->RemoveItemsFromSel( &m_dragAdditions, QUIET_MODE );
+            m_scopeMeasurementTarget = scopeDropTarget;
+            m_scopeMeasurementSignal = scopeDropSignal;
+            clearNewDragLines();
+            m_changedDragLines.clear();
+        }
+        else
+        {
+            finalizeMoveOperation( selection, aCommit, unselect, internalPoints );
+        }
     }
 
     m_dragAdditions.clear();

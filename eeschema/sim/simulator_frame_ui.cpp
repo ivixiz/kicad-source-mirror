@@ -1028,6 +1028,7 @@ void SIMULATOR_FRAME_UI::rebuildSignalsGrid( wxString aFilter )
 void SIMULATOR_FRAME_UI::rebuildSignalsList()
 {
     m_signals.clear();
+    m_netnames.clear();
 
     int      options = m_simulatorFrame->GetCurrentOptions();
     SIM_TYPE simType = m_simulatorFrame->GetCurrentSimType();
@@ -1983,28 +1984,10 @@ void SIMULATOR_FRAME_UI::SetUserDefinedSignals( const std::map<int, wxString>& a
 
 void SIMULATOR_FRAME_UI::AddUserDefinedTrace( const wxString& aExpression, bool aClearOthers )
 {
-    int                 signalId = -1;
-    std::map<int, wxString> signals = m_userDefinedSignals;
-
-    for( const auto& [ id, signal ] : signals )
-    {
-        if( signal == aExpression )
-        {
-            signalId = id;
-            break;
-        }
-    }
+    const int signalId = EnsureUserDefinedSignal( aExpression );
 
     if( signalId < 0 )
-    {
-        signalId = 0;
-
-        while( signals.count( signalId ) )
-            ++signalId;
-
-        signals[signalId] = aExpression;
-        SetUserDefinedSignals( signals );
-    }
+        return;
 
     wxString vectorName = vectorNameFromSignalId( signalId );
 
@@ -2038,6 +2021,38 @@ void SIMULATOR_FRAME_UI::AddUserDefinedTrace( const wxString& aExpression, bool 
     updateSignalsGrid();
     updatePlotCursors();
     OnModify();
+}
+
+
+int SIMULATOR_FRAME_UI::EnsureUserDefinedSignal( const wxString& aExpression )
+{
+    if( aExpression.IsEmpty() )
+        return -1;
+
+    int                     signalId = -1;
+    std::map<int, wxString> signals = m_userDefinedSignals;
+
+    for( const auto& [ id, signal ] : signals )
+    {
+        if( signal == aExpression )
+        {
+            signalId = id;
+            break;
+        }
+    }
+
+    if( signalId < 0 )
+    {
+        signalId = 0;
+
+        while( signals.count( signalId ) )
+            ++signalId;
+
+        signals[signalId] = aExpression;
+        SetUserDefinedSignals( signals );
+    }
+
+    return signalId;
 }
 
 
@@ -2644,6 +2659,154 @@ void SIMULATOR_FRAME_UI::applyUserDefinedSignals()
 
                 return quotedNetnames;
             };
+
+    std::vector<wxString> availableSignals = m_signals;
+    std::vector<std::string> simulatorVectors = simulator()->AllVectors();
+
+    for( const std::string& vector : simulatorVectors )
+    {
+        wxString       signal;
+        SIM_TRACE_TYPE type = circuitModel()->VectorToSignal( vector, signal );
+
+        if( type != SPT_UNKNOWN && !signal.IsEmpty() )
+            availableSignals.push_back( signal );
+
+        availableSignals.emplace_back( vector );
+    }
+
+    const std::vector<wxString> displaySuffixes = {
+        _( " (amplitude)" ), _( " (gain)" ), _( " (phase)" )
+    };
+
+    for( wxString& signal : availableSignals )
+    {
+        for( const wxString& suffix : displaySuffixes )
+        {
+            if( signal.EndsWith( suffix ) )
+            {
+                signal = signal.Left( signal.length() - suffix.length() );
+                break;
+            }
+        }
+    }
+
+    auto signalExists =
+            [&]( wxString aSignal )
+            {
+                aSignal.Trim( true ).Trim( false );
+
+                return std::any_of( availableSignals.begin(), availableSignals.end(),
+                                    [&]( const wxString& aAvailable )
+                                    {
+                                        return aSignal.CmpNoCase( aAvailable ) == 0;
+                                    } );
+            };
+
+    auto expressionIsValid =
+            [&]( const wxString& aExpression )
+            {
+                for( size_t pos = 0; pos + 1 < aExpression.length(); ++pos )
+                {
+                    const wxUniChar type = wxToupper( aExpression[pos] );
+
+                    if( ( type != 'V' && type != 'I' && type != 'P' )
+                        || aExpression[pos + 1] != '(' )
+                    {
+                        continue;
+                    }
+
+                    int    depth = 0;
+                    size_t end = pos + 1;
+
+                    for( ; end < aExpression.length(); ++end )
+                    {
+                        if( aExpression[end] == '(' )
+                            ++depth;
+                        else if( aExpression[end] == ')' && --depth == 0 )
+                            break;
+                    }
+
+                    if( end >= aExpression.length() )
+                        return false;
+
+                    wxString dependency = aExpression.Mid( pos, end - pos + 1 );
+
+                    if( !signalExists( dependency ) )
+                        return false;
+
+                    pos = end;
+                }
+
+                return true;
+            };
+
+    std::map<int, wxString> validSignals;
+    std::map<int, wxString> removedSignals;
+
+    for( const auto& [ id, signal ] : m_userDefinedSignals )
+    {
+        if( expressionIsValid( signal ) )
+        {
+            validSignals[id] = signal;
+        }
+        else
+        {
+            removedSignals[id] = signal;
+            m_simConsole->AppendText( wxString::Format(
+                    _( "Removed unavailable user-defined signal: %s\n" ), signal ) );
+        }
+    }
+
+    if( !removedSignals.empty() )
+    {
+        for( size_t ii = 0; ii < m_plotNotebook->GetPageCount(); ++ii )
+        {
+            SIM_PLOT_TAB* plotTab = dynamic_cast<SIM_PLOT_TAB*>( m_plotNotebook->GetPage( ii ) );
+
+            if( !plotTab )
+                continue;
+
+            for( const auto& removedSignal : removedSignals )
+            {
+                int      traceType = SPT_UNKNOWN;
+                wxString vectorName = vectorNameFromSignalName( plotTab, removedSignal.second,
+                                                                &traceType );
+
+                if( plotTab->GetSimType() == ST_AC )
+                {
+                    for( int subType : { SPT_AC_GAIN, SPT_AC_PHASE } )
+                        plotTab->DeleteTrace( vectorName, traceType | subType );
+                }
+                else if( plotTab->GetSimType() == ST_SP )
+                {
+                    for( int subType : { SPT_SP_AMP, SPT_AC_PHASE, SPT_SP_SMITH } )
+                        plotTab->DeleteTrace( vectorName, traceType | subType );
+                }
+                else
+                {
+                    plotTab->DeleteTrace( vectorName, traceType );
+                }
+            }
+        }
+
+        for( const auto& removedSignal : removedSignals )
+        {
+            const wxString vectorName = vectorNameFromSignalId( removedSignal.first );
+            const bool vectorExists =
+                    std::any_of( simulatorVectors.begin(), simulatorVectors.end(),
+                                 [&]( const std::string& aVector )
+                                 {
+                                     return vectorName.CmpNoCase( wxString( aVector ) ) == 0;
+                                 } );
+
+            if( vectorExists )
+                simulator()->Command( "unlet " + vectorName.ToStdString() );
+        }
+
+        m_userDefinedSignals = std::move( validSignals );
+        rebuildSignalsGrid( m_filter->GetValue() );
+        OnModify();
+    }
 
     for( const auto& [ id, signal ] : m_userDefinedSignals )
     {
@@ -4001,6 +4164,57 @@ std::vector<wxString> SIMULATOR_FRAME_UI::Signals() const
     sortSignals( signals );
 
     return signals;
+}
+
+
+bool SIMULATOR_FRAME_UI::GetWaveform( const wxString& aSignal, std::vector<double>& aDataX,
+                                      std::vector<double>& aDataY )
+{
+    aDataX.clear();
+    aDataY.clear();
+
+    if( !m_simulatorFrame->SimFinished() )
+        return false;
+
+    SIM_PLOT_TAB* plotTab = dynamic_cast<SIM_PLOT_TAB*>( GetCurrentSimTab() );
+
+    if( !plotTab )
+        return false;
+
+    int      traceType = SPT_UNKNOWN;
+    wxString vectorName = vectorNameFromSignalName( plotTab, aSignal, &traceType );
+    TRACE*   trace = plotTab->GetTrace( vectorName, traceType );
+    bool     temporaryTrace = trace == nullptr;
+
+    if( temporaryTrace )
+    {
+        updateTrace( vectorName, traceType, plotTab );
+        trace = plotTab->GetTrace( vectorName, traceType );
+    }
+
+    if( trace )
+    {
+        aDataX = trace->GetDataX();
+        aDataY = trace->GetDataY();
+    }
+
+    if( temporaryTrace && trace )
+        plotTab->DeleteTrace( trace );
+
+    return aDataX.size() >= 2 && aDataY.size() >= aDataX.size();
+}
+
+
+bool SIMULATOR_FRAME_UI::GetWaveformColor( const wxString& aSignal, wxColour& aColor )
+{
+    SIM_PLOT_TAB* plotTab = dynamic_cast<SIM_PLOT_TAB*>( GetCurrentSimTab() );
+
+    if( !plotTab )
+        return false;
+
+    int      traceType = SPT_UNKNOWN;
+    wxString vectorName = vectorNameFromSignalName( plotTab, aSignal, &traceType );
+    return plotTab->GetStoredTraceColour( vectorName, traceType, aColor );
 }
 
 

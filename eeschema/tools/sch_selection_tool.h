@@ -291,7 +291,10 @@ private:
                       bool* aSelectionCancelledFlag = nullptr, bool aAdd = false, bool aSubtract = false,
                       bool aExclusiveOr = false );
 
+#if 0
+    // Deprecated with the pin/channel-based scope prototype.
     bool handleScopeControlAt( const SCH_COLLECTOR& aCollector, const VECTOR2I& aWhere );
+#endif
 
     bool dragOnlySelectedSymbolAt( const VECTOR2I& aWhere );
     bool eventMatchesMoveClickHotkey( const TOOL_EVENT& aEvent ) const;

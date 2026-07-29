@@ -37,6 +37,7 @@ class SCH_SELECTION;
 class SCH_SHEET;
 class SCH_COMMIT;
 class SCH_ITEM;
+class SCH_SYMBOL;
 class EE_GRID_HELPER;
 
 enum GRID_HELPER_GRIDS : int;
@@ -168,6 +169,8 @@ private:
     ///< Flag determining if anything is being dragged right now
     bool                  m_moveInProgress;
     MOVE_MODE             m_mode;
+    SCH_SYMBOL*           m_scopeMeasurementTarget = nullptr;
+    wxString              m_scopeMeasurementSignal;
 
     ///< Items (such as wires) which were added to the selection for a drag
     std::vector<KIID>                   m_dragAdditions;

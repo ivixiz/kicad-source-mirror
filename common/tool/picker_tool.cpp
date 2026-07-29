@@ -218,6 +218,9 @@ int PICKER_TOOL::Main( const TOOL_EVENT& aEvent )
         {
             if( m_dragReleaseHandler )
             {
+                if( m_dragCursor )
+                    m_frame->GetCanvas()->SetCurrentCursor( *m_dragCursor );
+
                 if( !m_dragOrigin )
                 {
                     m_dragOrigin = evt->DragOrigin();

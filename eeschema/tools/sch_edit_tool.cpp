@@ -43,6 +43,7 @@
 #include <sch_junction.h>
 #include <sch_marker.h>
 #include <sch_rule_area.h>
+#include <sch_scope.h>
 #include <sch_pin.h>
 #include <sch_sheet_path.h>
 #include <sch_sheet_pin.h>
@@ -60,6 +61,7 @@
 #include <dialogs/dialog_field_properties.h>
 #include <dialogs/dialog_junction_props.h>
 #include <dialogs/dialog_shape_properties.h>
+#include <dialogs/dialog_scope_waveforms.h>
 #include <dialogs/dialog_label_properties.h>
 #include <dialogs/dialog_text_properties.h>
 #include <dialogs/dialog_tablecell_properties.h>
@@ -77,6 +79,7 @@
 #include <symbol_library_common.h>
 #include <variant_symbol_utils.h>
 #include <tools/sch_tool_utils.h>
+#include <sim/simulator_frame.h>
 
 
 class SYMBOL_UNIT_MENU : public ACTION_MENU
@@ -3081,6 +3084,59 @@ void SCH_EDIT_TOOL::EditProperties( EDA_ITEM* aItem )
     {
         int         retval;
         SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( aItem );
+
+        if( SCH_SCOPE::IsScopeSymbol( symbol ) )
+        {
+            SCH_SCOPE::NormalizeCanvasSymbol( symbol );
+
+            SIMULATOR_FRAME* simFrame = static_cast<SIMULATOR_FRAME*>(
+                    m_frame->Kiway().Player( FRAME_SIMULATOR, true ) );
+            SCH_SCOPE::SETTINGS settings = SCH_SCOPE::GetSettings( symbol );
+            std::vector<wxString> available = simFrame ? simFrame->Signals()
+                                                        : std::vector<wxString>();
+            std::map<wxString, KIGFX::COLOR4D> signalColors;
+
+            if( simFrame )
+            {
+                for( const wxString& signal : available )
+                {
+                    wxColour color;
+
+                    if( simFrame->GetWaveformColor( signal, color ) )
+                        signalColors.emplace( signal, KIGFX::COLOR4D( color ) );
+                }
+            }
+
+            DIALOG_SCOPE_WAVEFORMS dialog( m_frame, settings, available, signalColors );
+
+            if( dialog.ShowModal() == wxID_OK && dialog.GetSettings() != settings )
+            {
+                auto sourceNames = []( const SCH_SCOPE::SETTINGS& aSettings )
+                {
+                    std::vector<wxString> names;
+
+                    for( const SCH_SCOPE::WAVEFORM_SOURCE& source : aSettings.sources )
+                        names.push_back( source.name );
+
+                    return names;
+                };
+
+                const bool sourcesChanged = sourceNames( settings )
+                                            != sourceNames( dialog.GetSettings() );
+                SCH_COMMIT commit( m_toolMgr );
+                commit.Modify( symbol, m_frame->GetScreen() );
+                SCH_SCOPE::SetSettings( symbol, dialog.GetSettings() );
+
+                if( simFrame && sourcesChanged )
+                    simFrame->RefreshSchematicScopes( symbol );
+
+                m_frame->UpdateItem( symbol, false, false );
+                getView()->Update( symbol, KIGFX::REPAINT );
+                commit.Push( _( "Edit Scope Waveforms" ) );
+            }
+
+            break;
+        }
 
         // This needs to be scoped so the dialog destructor removes blocking status
         // before we launch the next dialog.

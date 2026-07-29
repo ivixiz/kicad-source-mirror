@@ -43,6 +43,7 @@
 #include <junction_helpers.h>
 #include <sch_commit.h>
 #include <sch_pin.h>
+#include <sch_scope.h>
 #include <sch_symbol.h>
 #include <sch_group.h>
 #include <sch_junction.h>
@@ -998,6 +999,14 @@ void SCH_SCREEN::Plot( PLOTTER* aPlotter, const SCH_PLOT_OPTS& aPlotOpts, const 
         if( item->Type() != SCH_LINE_T )
         {
             item->Plot( aPlotter, !background, aPlotOpts, 0, 0, { 0, 0 }, false );
+
+            if( item->Type() == SCH_SYMBOL_T )
+            {
+                const SCH_SYMBOL* symbol = static_cast<const SCH_SYMBOL*>( item );
+
+                if( SCH_SCOPE::IsScopeSymbol( symbol ) )
+                    SCH_SCOPE::PlotWaveforms( aPlotter, symbol );
+            }
         }
         else
         {
