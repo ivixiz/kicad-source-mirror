@@ -296,6 +296,7 @@ private:
     bool handleScopeControlAt( const SCH_COLLECTOR& aCollector, const VECTOR2I& aWhere );
 #endif
 
+    bool removeScopeWaveformAt( const VECTOR2I& aWhere );
     bool dragOnlySelectedSymbolAt( const VECTOR2I& aWhere );
     bool eventMatchesMoveClickHotkey( const TOOL_EVENT& aEvent ) const;
 

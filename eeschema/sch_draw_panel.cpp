@@ -29,6 +29,7 @@
 #include <wx/windowid.h>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 
@@ -148,6 +149,25 @@ void SCH_DRAW_PANEL::refreshScope( SCH_SYMBOL* aScope )
 }
 
 
+bool SCH_DRAW_PANEL::updateScopeCursor( const wxPoint& aPosition )
+{
+    if( !m_scopeCursorTarget || m_scopeCursorIndex < 0 )
+        return false;
+
+    const BOX2I plotBox = SCH_SCOPE::GetLayout( m_scopeCursorTarget ).plotBox;
+
+    if( plotBox.GetWidth() <= 0 )
+        return false;
+
+    const VECTOR2D world = GetView()->ToWorld( VECTOR2D( aPosition.x, aPosition.y ) );
+    const double plotX = std::clamp( ( world.x - plotBox.GetX() ) / plotBox.GetWidth(),
+                                     0.0, 1.0 );
+    const SCH_SCOPE::VIEWPORT viewport = SCH_SCOPE::GetViewport( m_scopeCursorTarget );
+    const double normalizedX = viewport.xMin + plotX * ( viewport.xMax - viewport.xMin );
+    return SCH_SCOPE::MoveCursor( m_scopeCursorTarget, m_scopeCursorIndex, normalizedX );
+}
+
+
 void SCH_DRAW_PANEL::onScopeMouseWheel( wxMouseEvent& aEvent )
 {
     SCH_SYMBOL* scope = scopeAt( aEvent.GetPosition() );
@@ -194,7 +214,7 @@ void SCH_DRAW_PANEL::onScopeLeftDown( wxMouseEvent& aEvent )
 {
     SCH_SYMBOL* scope = scopeAt( aEvent.GetPosition() );
 
-    if( !scope || aEvent.ControlDown() || aEvent.ShiftDown() || aEvent.AltDown() )
+    if( !scope )
     {
         aEvent.Skip();
         return;
@@ -203,6 +223,108 @@ void SCH_DRAW_PANEL::onScopeLeftDown( wxMouseEvent& aEvent )
     const BOX2I plotBox = SCH_SCOPE::GetLayout( scope ).plotBox;
     const VECTOR2D world = GetView()->ToWorld(
             VECTOR2D( aEvent.GetX(), aEvent.GetY() ) );
+
+    if( aEvent.ControlDown() && !aEvent.ShiftDown() && !aEvent.AltDown() )
+    {
+        const SCH_SCOPE::SETTINGS settings = SCH_SCOPE::GetSettings( scope );
+        const int edgeTolerance = std::max( settings.gridWidth * 2,
+                                            KiROUND( GetView()->ToWorld( 6.0 ) ) );
+        const bool withinHeight = world.y >= plotBox.GetY() - edgeTolerance
+                                  && world.y <= plotBox.GetEnd().y + edgeTolerance;
+        const bool onVerticalEdge = withinHeight
+                                    && ( std::abs( world.x - plotBox.GetX() ) <= edgeTolerance
+                                         || std::abs( world.x - plotBox.GetEnd().x )
+                                                    <= edgeTolerance );
+
+        if( onVerticalEdge && plotBox.GetWidth() > 0 )
+        {
+            const double plotX = std::clamp( ( world.x - plotBox.GetX() )
+                                                     / plotBox.GetWidth(),
+                                             0.0, 1.0 );
+            const SCH_SCOPE::VIEWPORT viewport = SCH_SCOPE::GetViewport( scope );
+            const double normalizedX = viewport.xMin
+                                       + plotX * ( viewport.xMax - viewport.xMin );
+            const std::vector<SCH_SCOPE::CURSOR> cursors = SCH_SCOPE::GetCursors( scope );
+            int cursorIndex = -1;
+
+            for( size_t ii = 0; ii < cursors.size(); ++ii )
+            {
+                if( cursors[ii].x < viewport.xMin || cursors[ii].x > viewport.xMax )
+                {
+                    cursorIndex = static_cast<int>( ii );
+                    SCH_SCOPE::MoveCursor( scope, cursorIndex, normalizedX );
+                    break;
+                }
+            }
+
+            if( cursorIndex < 0 )
+                cursorIndex = SCH_SCOPE::AddCursor( scope, normalizedX );
+
+            if( cursorIndex >= 0 )
+            {
+                m_scopeCursorTarget = scope;
+                m_scopeCursorIndex = cursorIndex;
+                SCH_SCOPE::BeginCursorMove( scope );
+
+                if( !HasCapture() )
+                    CaptureMouse();
+
+                refreshScope( scope );
+            }
+
+            return;
+        }
+
+        aEvent.Skip();
+        return;
+    }
+
+    if( aEvent.ShiftDown() || aEvent.AltDown() )
+    {
+        aEvent.Skip();
+        return;
+    }
+
+    const SCH_SCOPE::SETTINGS settings = SCH_SCOPE::GetSettings( scope );
+    const int cursorTolerance = std::max( settings.minorGridWidth * 2,
+                                         KiROUND( GetView()->ToWorld( 6.0 ) ) );
+    int       cursorIndex = -1;
+    int       cursorDistance = std::numeric_limits<int>::max();
+    const std::vector<SCH_SCOPE::CURSOR> cursors = SCH_SCOPE::GetCursors( scope );
+    const SCH_SCOPE::VIEWPORT viewport = SCH_SCOPE::GetViewport( scope );
+
+    if( world.y >= plotBox.GetY() - cursorTolerance
+        && world.y <= plotBox.GetEnd().y + cursorTolerance )
+    {
+        for( size_t ii = 0; ii < cursors.size(); ++ii )
+        {
+            int cursorX = 0;
+
+            if( !SCH_SCOPE::CursorXToPlot( cursors[ii], viewport, plotBox, cursorX ) )
+                continue;
+
+            const int distance = std::abs( KiROUND( world.x ) - cursorX );
+
+            if( distance <= cursorTolerance && distance < cursorDistance )
+            {
+                cursorIndex = static_cast<int>( ii );
+                cursorDistance = distance;
+            }
+        }
+    }
+
+    if( cursorIndex >= 0 )
+    {
+        m_scopeCursorTarget = scope;
+        m_scopeCursorIndex = cursorIndex;
+        SCH_SCOPE::BeginCursorMove( scope );
+
+        if( !HasCapture() )
+            CaptureMouse();
+
+        refreshScope( scope );
+        return;
+    }
 
     if( plotBox.GetWidth() <= 0 || plotBox.GetHeight() <= 0
         || !plotBox.Contains( KiROUND( world ) ) )
@@ -225,6 +347,31 @@ void SCH_DRAW_PANEL::onScopeLeftDown( wxMouseEvent& aEvent )
 
 void SCH_DRAW_PANEL::onScopeLeftUp( wxMouseEvent& aEvent )
 {
+    if( m_scopeCursorTarget )
+    {
+        SCH_SYMBOL* scope = m_scopeCursorTarget;
+        const BOX2I plotBox = SCH_SCOPE::GetLayout( scope ).plotBox;
+        const VECTOR2D world = GetView()->ToWorld(
+                VECTOR2D( aEvent.GetX(), aEvent.GetY() ) );
+
+        if( world.x < plotBox.GetX() || world.x > plotBox.GetEnd().x )
+            SCH_SCOPE::RemoveCursor( scope, m_scopeCursorIndex );
+        else
+        {
+            updateScopeCursor( aEvent.GetPosition() );
+            SCH_SCOPE::FinishCursorMove( scope );
+        }
+
+        m_scopeCursorTarget = nullptr;
+        m_scopeCursorIndex = -1;
+
+        if( HasCapture() )
+            ReleaseMouse();
+
+        refreshScope( scope );
+        return;
+    }
+
     if( !m_scopeZoomTarget )
     {
         aEvent.Skip();
@@ -282,6 +429,28 @@ void SCH_DRAW_PANEL::onScopeMiddleUp( wxMouseEvent& aEvent )
 
 void SCH_DRAW_PANEL::onScopeMotion( wxMouseEvent& aEvent )
 {
+    if( m_scopeCursorTarget )
+    {
+        if( !aEvent.LeftIsDown() )
+        {
+            SCH_SYMBOL* scope = m_scopeCursorTarget;
+            SCH_SCOPE::FinishCursorMove( scope );
+            m_scopeCursorTarget = nullptr;
+            m_scopeCursorIndex = -1;
+
+            if( HasCapture() )
+                ReleaseMouse();
+
+            refreshScope( scope );
+            return;
+        }
+
+        if( updateScopeCursor( aEvent.GetPosition() ) )
+            refreshScope( m_scopeCursorTarget );
+
+        return;
+    }
+
     if( m_scopeZoomTarget )
     {
         if( !aEvent.LeftIsDown() )
@@ -344,7 +513,7 @@ void SCH_DRAW_PANEL::onScopeMotion( wxMouseEvent& aEvent )
 
 void SCH_DRAW_PANEL::onScopeCaptureLost( wxMouseCaptureLostEvent& aEvent )
 {
-    if( !m_scopePanTarget && !m_scopeZoomTarget )
+    if( !m_scopePanTarget && !m_scopeZoomTarget && !m_scopeCursorTarget )
     {
         aEvent.Skip();
         return;
@@ -353,8 +522,13 @@ void SCH_DRAW_PANEL::onScopeCaptureLost( wxMouseCaptureLostEvent& aEvent )
     if( m_scopeZoomTarget )
         SCH_SCOPE::CancelZoomSelection( m_scopeZoomTarget );
 
+    if( m_scopeCursorTarget )
+        SCH_SCOPE::FinishCursorMove( m_scopeCursorTarget );
+
     m_scopePanTarget = nullptr;
     m_scopeZoomTarget = nullptr;
+    m_scopeCursorTarget = nullptr;
+    m_scopeCursorIndex = -1;
 }
 
 

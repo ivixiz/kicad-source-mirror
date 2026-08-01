@@ -72,6 +72,7 @@ public:
     int CompareSchematicWithHistory( const TOOL_EVENT& aEvent );
 
     int RunSimulation( const TOOL_EVENT& aEvent );
+    int ControlSimulation( const TOOL_EVENT& aEvent );
 
     int ShowDatasheet( const TOOL_EVENT& aEvent );
 

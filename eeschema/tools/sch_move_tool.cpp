@@ -94,7 +94,8 @@ static SCH_SYMBOL* scopeAtPosition( SCH_SCREEN* aScreen, const VECTOR2I& aPositi
 
 
 static bool makeScopeMeasurementSignal( SCH_EDIT_FRAME* aFrame, SCH_SYMBOL* aSymbol,
-                                        int aModifiers, wxString& aSignal )
+                                        int aModifiers, wxString& aSignal,
+                                        const VECTOR2I* aProbePosition = nullptr )
 {
     if( !aFrame || !aSymbol || SCH_SCOPE::IsScopeSymbol( aSymbol ) )
         return false;
@@ -102,13 +103,15 @@ static bool makeScopeMeasurementSignal( SCH_EDIT_FRAME* aFrame, SCH_SYMBOL* aSym
     SCH_SHEET_PATH& sheet = aFrame->GetCurrentSheet();
     const bool wantsPower = aModifiers & MD_ALT;
     const bool wantsCurrent = !wantsPower && ( aModifiers & MD_SHIFT );
+    const bool wantsGroundReferenced = !wantsPower && !wantsCurrent
+                                       && ( aModifiers & MD_CTRL );
 
     if( !wantsPower && !wantsCurrent )
     {
         if( aSymbol->IsConnectivityDirty() )
             aFrame->RecalculateConnections( nullptr, NO_CLEANUP );
 
-        std::vector<wxString> nets;
+        std::vector<std::pair<wxString, long long>> nets;
 
         for( SCH_PIN* pin : aSymbol->GetPins( &sheet ) )
         {
@@ -125,23 +128,51 @@ static bool makeScopeMeasurementSignal( SCH_EDIT_FRAME* aFrame, SCH_SYMBOL* aSym
             if( net.IsSameAs( wxS( "GND" ), false ) || net == wxS( "0" ) )
                 continue;
 
-            if( !net.IsEmpty() && std::find( nets.begin(), nets.end(), net ) == nets.end() )
-                nets.push_back( net );
+            const auto existing = std::find_if( nets.begin(), nets.end(),
+                                                [&]( const auto& aCandidate )
+                                                {
+                                                    return aCandidate.first == net;
+                                                } );
 
-            if( nets.size() == 2 )
+            if( net.IsEmpty() || existing != nets.end() )
+                continue;
+
+            long long distanceSquared = 0;
+
+            if( aProbePosition )
+            {
+                const VECTOR2I delta = pin->GetPosition() - *aProbePosition;
+                distanceSquared = static_cast<long long>( delta.x ) * delta.x
+                                  + static_cast<long long>( delta.y ) * delta.y;
+            }
+
+            nets.emplace_back( net, distanceSquared );
+
+            if( !wantsGroundReferenced && nets.size() == 2 )
                 break;
         }
 
         if( nets.empty() )
             return false;
 
-        if( nets.size() == 1 )
+        if( wantsGroundReferenced )
         {
-            aSignal = wxString::Format( wxS( "V(%s)" ), nets.front() );
+            const auto nearest = std::min_element(
+                    nets.begin(), nets.end(),
+                    []( const auto& aLeft, const auto& aRight )
+                    {
+                        return aLeft.second < aRight.second;
+                    } );
+            aSignal = wxString::Format( wxS( "V(%s)" ), nearest->first );
+        }
+        else if( nets.size() == 1 )
+        {
+            aSignal = wxString::Format( wxS( "V(%s)" ), nets.front().first );
         }
         else
         {
-            aSignal = wxString::Format( wxS( "V(%s)-V(%s)" ), nets[0], nets[1] );
+            aSignal = wxString::Format( wxS( "V(%s)-V(%s)" ), nets[0].first,
+                                       nets[1].first );
         }
 
         return true;
@@ -873,11 +904,13 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
 {
     KIGFX::VIEW_CONTROLS* controls = getViewControls();
     EE_GRID_HELPER        grid( m_toolMgr );
+    OPT_VECTOR2I          scopeMeasurementOrigin = m_scopeMeasurementOrigin;
     bool                  currentModeIsDragLike = ( m_mode != MOVE );
     bool                  wasDragging = m_moveInProgress && currentModeIsDragLike;
     bool                  didAtLeastOneBreak = false;
 
     m_anchorPos.reset();
+    m_scopeMeasurementOrigin.reset();
 
     // Check if already in progress and handle state transitions
     if( checkMoveInProgress( aEvent, aCommit, currentModeIsDragLike, wasDragging ) )
@@ -917,6 +950,7 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
     SCH_SYMBOL* measurementSymbol = nullptr;
     VECTOR2I    measurementOriginalPosition;
     wxString    measurementVoltageSignal;
+    wxString    measurementGroundSignal;
     SCH_SYMBOL* scopeDropTarget = nullptr;
     wxString    scopeDropSignal;
 
@@ -929,6 +963,10 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
             measurementOriginalPosition = measurementSymbol->GetPosition();
             makeScopeMeasurementSignal( m_frame, measurementSymbol, 0,
                                         measurementVoltageSignal );
+            const VECTOR2I probePosition = scopeMeasurementOrigin.value_or(
+                    controls->GetCursorPosition( false ) );
+            makeScopeMeasurementSignal( m_frame, measurementSymbol, MD_CTRL,
+                                        measurementGroundSignal, &probePosition );
         }
         else
         {
@@ -1260,6 +1298,10 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
                             makeScopeMeasurementSignal( m_frame, measurementSymbol, MD_SHIFT,
                                                         scopeDropSignal );
                         }
+                        else if( evt->Modifier( MD_CTRL ) )
+                        {
+                            scopeDropSignal = measurementGroundSignal;
+                        }
                         else
                         {
                             scopeDropSignal = measurementVoltageSignal;
@@ -1364,6 +1406,7 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
             m_selectionTool->RemoveItemsFromSel( &m_dragAdditions, QUIET_MODE );
             m_scopeMeasurementTarget = scopeDropTarget;
             m_scopeMeasurementSignal = scopeDropSignal;
+            clearScopeDropMoveState( selection );
             clearNewDragLines();
             m_changedDragLines.clear();
         }
@@ -3197,6 +3240,34 @@ void SCH_MOVE_TOOL::clearNewDragLines()
     }
 
     m_newDragLines.clear();
+}
+
+
+void SCH_MOVE_TOOL::clearScopeDropMoveState( const SCH_SELECTION& aSelection )
+{
+    auto clearFlags = []( EDA_ITEM* aItem )
+    {
+        aItem->ClearTempFlags();
+        aItem->ClearEditFlags();
+
+        if( SCH_ITEM* schItem = dynamic_cast<SCH_ITEM*>( aItem ) )
+        {
+            schItem->RunOnChildren(
+                    []( SCH_ITEM* aChild )
+                    {
+                        aChild->ClearTempFlags();
+                        aChild->ClearEditFlags();
+                    },
+                    RECURSE_MODE::RECURSE );
+        }
+    };
+
+    for( EDA_ITEM* item : m_frame->GetScreen()->Items() )
+        clearFlags( item );
+
+    // Fields and other child selections are not necessarily present in the screen item list.
+    for( EDA_ITEM* item : aSelection )
+        clearFlags( item );
 }
 
 

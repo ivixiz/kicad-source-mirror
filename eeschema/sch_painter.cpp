@@ -3160,24 +3160,30 @@ void SCH_PAINTER::drawScopeWaveforms( const SCH_SYMBOL* aSymbol )
 
         if( legendRows > 0 )
         {
-            const int column = static_cast<int>( waveformIndex ) / legendRows;
-            const int row = static_cast<int>( waveformIndex ) % legendRows;
+            const int column = static_cast<int>( waveformIndex ) % legendColumns;
+            const int row = static_cast<int>( waveformIndex ) / legendColumns;
             const int x = plotBox.GetX() + column * legendColumnWidth;
-            const int y = bbox.GetY() + margin + row * lineHeight + lineHeight / 2;
-            const int swatchWidth = textSize * 2;
-            const int maxChars = std::max( 3, ( legendColumnWidth - swatchWidth ) / std::max( 1, textSize / 2 ) );
-            wxString label = SCH_SCOPE::FormatWaveformLabel( source.name );
-
-            if( static_cast<int>( label.length() ) > maxChars )
-                label = label.Left( std::max( 1, maxChars - 1 ) ) + wxS( "..." );
+            const int y = layout.legendTop + row * lineHeight + lineHeight / 2;
+            const int swatchWidth = std::min( textSize * 2,
+                                              std::max( 0, legendColumnWidth - textSize ) );
+            const int availableLabelWidth = std::max(
+                    0, legendColumnWidth - swatchWidth - textSize );
+            const wxString label = SCH_SCOPE::FitLegendLabel(
+                    SCH_SCOPE::FormatWaveformLabel( source.name ), availableLabelWidth,
+                    textSize );
 
             m_gal->SetStrokeColor( color );
             m_gal->SetLineWidth( std::max( 1, source.lineWidth ) );
             m_gal->DrawLine( VECTOR2I( x, y ), VECTOR2I( x + swatchWidth, y ) );
-            m_gal->SetGlyphSize( VECTOR2I( textSize, textSize ) );
-            m_gal->SetHorizontalJustify( GR_TEXT_H_ALIGN_LEFT );
-            m_gal->SetVerticalJustify( GR_TEXT_V_ALIGN_CENTER );
-            m_gal->BitmapText( label, VECTOR2I( x + swatchWidth + textSize / 2, y ), ANGLE_0 );
+
+            if( !label.IsEmpty() )
+            {
+                m_gal->SetGlyphSize( VECTOR2I( textSize, textSize ) );
+                m_gal->SetHorizontalJustify( GR_TEXT_H_ALIGN_LEFT );
+                m_gal->SetVerticalJustify( GR_TEXT_V_ALIGN_CENTER );
+                m_gal->BitmapText( label,
+                                   VECTOR2I( x + swatchWidth + textSize / 2, y ), ANGLE_0 );
+            }
         }
 
         if( !waveforms )
@@ -3330,6 +3336,38 @@ void SCH_PAINTER::drawScopeWaveforms( const SCH_SYMBOL* aSymbol )
     }
 
     m_gal->AdvanceDepth();
+    const std::vector<SCH_SCOPE::CURSOR> cursors = SCH_SCOPE::GetCursors( aSymbol );
+    const COLOR4D cursorColor( BLACK );
+    const int cursorWidth = std::max( 1, settings.minorGridWidth );
+    const int cursorRadius = cursorWidth;
+    m_gal->SetIsStroke( true );
+    m_gal->SetStrokeColor( cursorColor );
+    m_gal->SetLineWidth( cursorWidth );
+
+    for( const SCH_SCOPE::CURSOR& cursor : cursors )
+    {
+        int cursorX = 0;
+
+        if( !SCH_SCOPE::CursorXToPlot( cursor, viewport, plotBox, cursorX ) )
+            continue;
+
+        m_gal->SetIsFill( false );
+        m_gal->DrawLine( VECTOR2I( cursorX, plotBox.GetY() ),
+                         VECTOR2I( cursorX, plotBox.GetEnd().y ) );
+
+        VECTOR2I point;
+
+        if( !SCH_SCOPE::CursorToPlot( cursor, viewport, plotBox, point ) )
+            continue;
+
+        m_gal->DrawLine( VECTOR2I( plotBox.GetX(), point.y ),
+                         VECTOR2I( plotBox.GetEnd().x, point.y ) );
+        m_gal->SetIsFill( true );
+        m_gal->SetFillColor( cursorColor );
+        m_gal->DrawCircle( point, cursorRadius );
+    }
+
+    m_gal->AdvanceDepth();
     const SCH_SCOPE::AXIS_INFO axisInfo = SCH_SCOPE::GetAxisInfo( aSymbol );
     KIFONT::FONT* font = KIFONT::FONT::GetFont( settings.axisFontName );
     TEXT_ATTRIBUTES textAttrs( font );
@@ -3337,20 +3375,132 @@ void SCH_PAINTER::drawScopeWaveforms( const SCH_SYMBOL* aSymbol )
     textAttrs.m_StrokeWidth = std::max( 1, textSize / 10 );
     textAttrs.m_Color = settings.borderColor;
 
-    auto drawAxisText = [&]( const wxString& aText, const VECTOR2I& aPosition,
-                             GR_TEXT_H_ALIGN_T aHAlign, GR_TEXT_V_ALIGN_T aVAlign,
-                             const EDA_ANGLE& aAngle = ANGLE_0 )
+    auto drawScopeText = [&]( const wxString& aText, const VECTOR2I& aPosition,
+                              GR_TEXT_H_ALIGN_T aHAlign, GR_TEXT_V_ALIGN_T aVAlign,
+                              const COLOR4D& aColor, const EDA_ANGLE& aAngle = ANGLE_0 )
     {
         textAttrs.m_Halign = aHAlign;
         textAttrs.m_Valign = aVAlign;
         textAttrs.m_Angle = aAngle;
+        textAttrs.m_Color = aColor;
         m_gal->SetIsFill( font->IsOutline() );
         m_gal->SetIsStroke( font->IsStroke() );
-        m_gal->SetFillColor( settings.borderColor );
-        m_gal->SetStrokeColor( settings.borderColor );
+        m_gal->SetFillColor( aColor );
+        m_gal->SetStrokeColor( aColor );
         m_gal->SetLineWidth( textAttrs.m_StrokeWidth );
         font->Draw( m_gal, aText, aPosition, textAttrs, KIFONT::METRICS::Default() );
     };
+
+    auto drawAxisText = [&]( const wxString& aText, const VECTOR2I& aPosition,
+                             GR_TEXT_H_ALIGN_T aHAlign, GR_TEXT_V_ALIGN_T aVAlign,
+                             const EDA_ANGLE& aAngle = ANGLE_0 )
+    {
+        drawScopeText( aText, aPosition, aHAlign, aVAlign, settings.borderColor, aAngle );
+    };
+
+    const SCH_SCOPE::CURSOR_MEASUREMENT measurement =
+            SCH_SCOPE::GetCursorMeasurement( aSymbol );
+
+    if( measurement.valid && cursors.size() == 2 )
+    {
+        int x1 = 0;
+        int x2 = 0;
+
+        if( SCH_SCOPE::CursorXToPlot( cursors[0], viewport, plotBox, x1 )
+            && SCH_SCOPE::CursorXToPlot( cursors[1], viewport, plotBox, x2 ) )
+        {
+            if( x1 > x2 )
+                std::swap( x1, x2 );
+
+            const int arrowY = KiROUND( plotBox.GetY()
+                                        + measurement.arrowY * plotBox.GetHeight() );
+            const int span = x2 - x1;
+            const int arrowLength = std::max( 1, std::min( textSize, span / 3 ) );
+            const int arrowHalfHeight = std::max( 1, KiROUND( arrowLength * 0.260284 ) );
+            const int arrowWidth = cursorWidth * 2;
+
+            if( measurement.arrowVisible )
+            {
+                m_gal->SetIsFill( false );
+                m_gal->SetIsStroke( true );
+                m_gal->SetStrokeColor( cursorColor );
+                m_gal->SetLineWidth( arrowWidth );
+
+                if( span > arrowLength * 2 )
+                {
+                    m_gal->DrawLine( VECTOR2I( x1 + arrowLength, arrowY ),
+                                     VECTOR2I( x2 - arrowLength, arrowY ) );
+                }
+
+                const VECTOR2D leftArrow[] = {
+                    VECTOR2D( x1, arrowY ),
+                    VECTOR2D( x1 + arrowLength, arrowY - arrowHalfHeight ),
+                    VECTOR2D( x1 + arrowLength, arrowY + arrowHalfHeight )
+                };
+                const VECTOR2D rightArrow[] = {
+                    VECTOR2D( x2, arrowY ),
+                    VECTOR2D( x2 - arrowLength, arrowY - arrowHalfHeight ),
+                    VECTOR2D( x2 - arrowLength, arrowY + arrowHalfHeight )
+                };
+                m_gal->SetIsStroke( false );
+                m_gal->SetIsFill( true );
+                m_gal->SetFillColor( cursorColor );
+                m_gal->DrawPolygon( leftArrow, 3 );
+                m_gal->DrawPolygon( rightArrow, 3 );
+            }
+
+            const int cursorTextSize = std::max( 1, textSize * 4 / 5 );
+            textAttrs.m_Size = VECTOR2I( cursorTextSize, cursorTextSize );
+            textAttrs.m_StrokeWidth = std::max( 1, cursorTextSize / 10 );
+
+            const VECTOR2I frequencyExtent = font->StringBoundaryLimits(
+                    measurement.frequencyLabel, textAttrs.m_Size, textAttrs.m_StrokeWidth,
+                    false, false, KIFONT::METRICS::Default() );
+            const VECTOR2I periodExtent = font->StringBoundaryLimits(
+                    measurement.periodLabel, textAttrs.m_Size, textAttrs.m_StrokeWidth,
+                    false, false, KIFONT::METRICS::Default() );
+            const int textWidth = std::max( frequencyExtent.x, periodExtent.x );
+            const int textGap = std::max( cursorTextSize * 2 / 3, arrowWidth * 2 );
+            const int leftSpace = x1 - plotBox.GetX();
+            const int rightSpace = plotBox.GetEnd().x - x2;
+            int textX = ( x1 + x2 ) / 2;
+            GR_TEXT_H_ALIGN_T textAlign = GR_TEXT_H_ALIGN_CENTER;
+
+            if( span < textWidth + textGap * 2 )
+            {
+                if( rightSpace >= textWidth + textGap )
+                {
+                    textX = x2 + textGap + textWidth;
+                    textAlign = GR_TEXT_H_ALIGN_RIGHT;
+                }
+                else if( leftSpace >= textWidth + textGap )
+                {
+                    textX = x1 - textGap - textWidth;
+                    textAlign = GR_TEXT_H_ALIGN_LEFT;
+                }
+                else if( rightSpace >= leftSpace )
+                {
+                    textX = plotBox.GetEnd().x;
+                    textAlign = GR_TEXT_H_ALIGN_RIGHT;
+                }
+                else
+                {
+                    textX = plotBox.GetX();
+                    textAlign = GR_TEXT_H_ALIGN_LEFT;
+                }
+            }
+
+            drawScopeText( measurement.frequencyLabel,
+                           VECTOR2I( textX, arrowY - cursorTextSize - textGap / 2 ),
+                           textAlign, GR_TEXT_V_ALIGN_TOP, cursorColor );
+            drawScopeText( measurement.periodLabel,
+                           VECTOR2I( textX, arrowY + cursorTextSize + textGap / 2 ),
+                           textAlign, GR_TEXT_V_ALIGN_BOTTOM, cursorColor );
+
+            textAttrs.m_Size = VECTOR2I( textSize, textSize );
+            textAttrs.m_StrokeWidth = std::max( 1, textSize / 10 );
+        }
+    }
 
     const double minX = bounds.minX + viewport.xMin * ( bounds.maxX - bounds.minX );
     const double maxX = bounds.minX + viewport.xMax * ( bounds.maxX - bounds.minX );

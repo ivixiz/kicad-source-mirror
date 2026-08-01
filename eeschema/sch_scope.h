@@ -130,6 +130,7 @@ public:
         int   margin = 0;
         int   textSize = 0;
         int   lineHeight = 0;
+        int   legendTop = 0;
         int   legendRows = 0;
         int   legendColumns = 1;
         int   xDivisions = 5;
@@ -141,6 +142,22 @@ public:
         bool     active = false;
         VECTOR2D start;
         VECTOR2D end;
+    };
+
+    struct CURSOR
+    {
+        double x = 0.0;
+        double y = 0.0;
+        bool   valid = false;
+    };
+
+    struct CURSOR_MEASUREMENT
+    {
+        bool     valid = false;
+        bool     arrowVisible = false;
+        double   arrowY = 0.0;
+        wxString frequencyLabel;
+        wxString periodLabel;
     };
 
     SCH_SCOPE( const VECTOR2I& aPosition = VECTOR2I( 0, 0 ), SCH_LAYER_ID aLayer = LAYER_DEVICE,
@@ -166,12 +183,26 @@ public:
     static DATA_BOUNDS GetDataBounds( const SCH_SYMBOL* aSymbol );
     static AXIS_INFO GetAxisInfo( const SCH_SYMBOL* aSymbol );
     static void SetAxisInfo( const SCH_SYMBOL* aSymbol, const AXIS_INFO& aInfo );
+    static std::vector<CURSOR> GetCursors( const SCH_SYMBOL* aSymbol );
+    static int AddCursor( const SCH_SYMBOL* aSymbol, double aNormalizedX );
+    static bool MoveCursor( const SCH_SYMBOL* aSymbol, int aIndex, double aNormalizedX );
+    static bool RemoveCursor( const SCH_SYMBOL* aSymbol, int aIndex );
+    static void BeginCursorMove( const SCH_SYMBOL* aSymbol );
+    static void FinishCursorMove( const SCH_SYMBOL* aSymbol );
+    static CURSOR_MEASUREMENT GetCursorMeasurement( const SCH_SYMBOL* aSymbol );
+    static bool CursorXToPlot( const CURSOR& aCursor, const VIEWPORT& aViewport,
+                               const BOX2I& aPlotBox, int& aPosition );
+    static bool CursorToPlot( const CURSOR& aCursor, const VIEWPORT& aViewport,
+                              const BOX2I& aPlotBox, VECTOR2I& aPosition );
     static wxString FormatEngineeringValue( double aValue );
     static wxString FormatWaveformLabel( const wxString& aSource );
+    static wxString FitLegendLabel( const wxString& aLabel, int aAvailableWidth,
+                                    int aTextSize );
     static std::vector<wxString> FormatEngineeringTicks( double aMin, double aMax,
                                                          int aDivisions );
 
     static LAYOUT GetLayout( const SCH_SYMBOL* aSymbol );
+    static int HitTestLegend( const SCH_SYMBOL* aSymbol, const VECTOR2I& aPosition );
     static std::vector<std::pair<VECTOR2I, VECTOR2I>> BuildWaveformSegments(
             const WAVEFORM& aWaveform, const DATA_BOUNDS& aBounds, const VIEWPORT& aViewport,
             const BOX2I& aPlotBox, size_t aBucketCount );

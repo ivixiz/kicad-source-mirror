@@ -537,10 +537,13 @@ wxString compactScopeNetName( wxString aNetName )
 struct SCOPE_RUNTIME_STATE
 {
     std::vector<SCH_SCOPE::WAVEFORM> waveforms;
+    std::vector<SCH_SCOPE::CURSOR>   cursors;
+    SCH_SCOPE::CURSOR_MEASUREMENT    cursorMeasurement;
     SCH_SCOPE::VIEWPORT              viewport;
     SCH_SCOPE::DATA_BOUNDS           bounds;
     SCH_SCOPE::AXIS_INFO             axisInfo;
     SCH_SCOPE::ZOOM_SELECTION        zoomSelection;
+    wxString                         cursorSourceName;
 };
 
 
@@ -769,6 +772,260 @@ bool sameSources( const SCH_SCOPE::SETTINGS& aLeft, const SCH_SCOPE::SETTINGS& a
     }
 
     return true;
+}
+
+
+bool sampleWaveformAtX( const SCH_SCOPE::WAVEFORM& aWaveform, double aX, double& aY )
+{
+    const size_t size = std::min( aWaveform.x.size(), aWaveform.y.size() );
+
+    if( size < 2 || aX < aWaveform.minX || aX > aWaveform.maxX )
+        return false;
+
+    auto interpolate = [&]( size_t aFirst, size_t aSecond )
+    {
+        const double x1 = aWaveform.x[aFirst];
+        const double x2 = aWaveform.x[aSecond];
+        const double y1 = aWaveform.y[aFirst];
+        const double y2 = aWaveform.y[aSecond];
+
+        if( !std::isfinite( x1 ) || !std::isfinite( x2 )
+            || !std::isfinite( y1 ) || !std::isfinite( y2 ) )
+        {
+            return false;
+        }
+
+        if( x1 == x2 )
+        {
+            aY = y2;
+            return true;
+        }
+
+        const double ratio = std::clamp( ( aX - x1 ) / ( x2 - x1 ), 0.0, 1.0 );
+        aY = y1 + ratio * ( y2 - y1 );
+        return std::isfinite( aY );
+    };
+
+    if( aWaveform.monotonicX )
+    {
+        auto begin = aWaveform.x.begin();
+        auto end = begin + static_cast<ptrdiff_t>( size );
+        auto upper = std::lower_bound( begin, end, aX );
+
+        if( upper == begin )
+            return interpolate( 0, 1 );
+
+        if( upper == end )
+            return interpolate( size - 2, size - 1 );
+
+        const size_t second = static_cast<size_t>( upper - begin );
+        return interpolate( second - 1, second );
+    }
+
+    for( size_t ii = 1; ii < size; ++ii )
+    {
+        const double x1 = aWaveform.x[ii - 1];
+        const double x2 = aWaveform.x[ii];
+
+        if( std::isfinite( x1 ) && std::isfinite( x2 )
+            && aX >= std::min( x1, x2 ) && aX <= std::max( x1, x2 )
+            && interpolate( ii - 1, ii ) )
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
+void updateCursorIntersections( const SCH_SCOPE::SETTINGS& aSettings,
+                                SCOPE_RUNTIME_STATE& aRuntime )
+{
+    aRuntime.cursorSourceName = aSettings.sources.empty() ? wxString()
+                                                           : aSettings.sources.front().name;
+
+    for( SCH_SCOPE::CURSOR& cursor : aRuntime.cursors )
+        cursor.valid = false;
+
+    if( aRuntime.cursorSourceName.IsEmpty() )
+        return;
+
+    const auto waveform = std::find_if(
+            aRuntime.waveforms.begin(), aRuntime.waveforms.end(),
+            [&]( const SCH_SCOPE::WAVEFORM& aWaveform )
+            {
+                return aWaveform.name == aRuntime.cursorSourceName;
+            } );
+
+    const double xRange = aRuntime.bounds.maxX - aRuntime.bounds.minX;
+    const double yRange = aRuntime.bounds.maxY - aRuntime.bounds.minY;
+
+    if( waveform == aRuntime.waveforms.end() || xRange <= 0.0 || yRange <= 0.0 )
+        return;
+
+    for( SCH_SCOPE::CURSOR& cursor : aRuntime.cursors )
+    {
+        const double x = aRuntime.bounds.minX + cursor.x * xRange;
+        double       y = 0.0;
+
+        if( sampleWaveformAtX( *waveform, x, y ) )
+        {
+            cursor.y = ( y - aRuntime.bounds.minY ) / yRange;
+            cursor.valid = std::isfinite( cursor.y );
+        }
+    }
+}
+
+
+void updateCursorReadout( const SCH_SYMBOL* aSymbol, const SCH_SCOPE::SETTINGS& aSettings,
+                          SCOPE_RUNTIME_STATE& aRuntime )
+{
+    SCH_SCOPE::CURSOR_MEASUREMENT& measurement = aRuntime.cursorMeasurement;
+    const bool hadPosition = measurement.valid;
+    const double previousArrowY = measurement.arrowY;
+    measurement = SCH_SCOPE::CURSOR_MEASUREMENT();
+
+    if( !aSymbol || aRuntime.cursors.size() != 2
+        || !aRuntime.cursors[0].valid || !aRuntime.cursors[1].valid
+        || aSettings.sources.empty() )
+    {
+        return;
+    }
+
+    const double xRange = aRuntime.bounds.maxX - aRuntime.bounds.minX;
+    const double cursorMinX = std::min( aRuntime.cursors[0].x, aRuntime.cursors[1].x );
+    const double cursorMaxX = std::max( aRuntime.cursors[0].x, aRuntime.cursors[1].x );
+    const double period = ( cursorMaxX - cursorMinX ) * xRange;
+    const SCH_SCOPE::LAYOUT layout = SCH_SCOPE::GetLayout( aSymbol );
+
+    if( !std::isfinite( period ) || period <= std::numeric_limits<double>::epsilon()
+        || xRange <= 0.0 || layout.plotBox.GetHeight() <= 0 )
+    {
+        return;
+    }
+
+    measurement.frequencyLabel = wxS( "f=" )
+                                 + SCH_SCOPE::FormatEngineeringValue( 1.0 / period )
+                                 + wxS( "Hz" );
+    measurement.periodLabel = wxS( "T=" ) + SCH_SCOPE::FormatEngineeringValue( period )
+                              + wxS( "s" );
+
+    const int textSize = std::max( 1, layout.textSize * 4 / 5 );
+    const int lineWidth = std::max( 1, aSettings.minorGridWidth );
+    const int textGap = std::max( textSize * 2 / 3, lineWidth * 4 );
+    const int inset = std::min( static_cast<int>( layout.plotBox.GetHeight() ) / 2,
+                                textSize + textGap / 2 );
+    constexpr double edgeClearance = 0.05;
+    measurement.arrowY = hadPosition
+                                 ? previousArrowY
+                                 : std::min( 0.5, edgeClearance
+                                                         + static_cast<double>( inset )
+                                                                   / layout.plotBox.GetHeight() );
+    measurement.valid = true;
+}
+
+
+void updateCursorMeasurement( const SCH_SYMBOL* aSymbol, const SCH_SCOPE::SETTINGS& aSettings,
+                              SCOPE_RUNTIME_STATE& aRuntime )
+{
+    updateCursorReadout( aSymbol, aSettings, aRuntime );
+
+    SCH_SCOPE::CURSOR_MEASUREMENT& measurement = aRuntime.cursorMeasurement;
+
+    if( !measurement.valid )
+        return;
+
+    const double xRange = aRuntime.bounds.maxX - aRuntime.bounds.minX;
+    const double yRange = aRuntime.bounds.maxY - aRuntime.bounds.minY;
+    const double viewportYRange = aRuntime.viewport.yMax - aRuntime.viewport.yMin;
+    const double cursorMinX = std::min( aRuntime.cursors[0].x, aRuntime.cursors[1].x );
+    const double cursorMaxX = std::max( aRuntime.cursors[0].x, aRuntime.cursors[1].x );
+    const SCH_SCOPE::LAYOUT layout = SCH_SCOPE::GetLayout( aSymbol );
+    const int textSize = std::max( 1, layout.textSize * 4 / 5 );
+    const int lineWidth = std::max( 1, aSettings.minorGridWidth );
+    const int textGap = std::max( textSize * 2 / 3, lineWidth * 4 );
+    const int inset = std::min( static_cast<int>( layout.plotBox.GetHeight() ) / 2,
+                                textSize + textGap / 2 );
+    constexpr double edgeClearance = 0.05;
+    const double topCandidate = std::min(
+            0.5, edgeClearance + static_cast<double>( inset ) / layout.plotBox.GetHeight() );
+    const double bottomCandidate = 1.0 - topCandidate;
+    const double occupiedHeight = std::min(
+            0.5, edgeClearance + static_cast<double>( textSize * 2 + textGap )
+                                         / layout.plotBox.GetHeight() );
+    double topClearance = 1.0;
+    double bottomClearance = 1.0;
+
+    const auto waveform = std::find_if(
+            aRuntime.waveforms.begin(), aRuntime.waveforms.end(),
+            [&]( const SCH_SCOPE::WAVEFORM& aWaveform )
+            {
+                return aWaveform.name == aSettings.sources.front().name;
+            } );
+
+    auto considerSample = [&]( double aX, double aY )
+    {
+        if( !std::isfinite( aX ) || !std::isfinite( aY ) )
+            return;
+
+        const double normalizedX = ( aX - aRuntime.bounds.minX ) / xRange;
+        const double normalizedY = ( aY - aRuntime.bounds.minY ) / yRange;
+
+        if( normalizedX < cursorMinX || normalizedX > cursorMaxX
+            || normalizedX < aRuntime.viewport.xMin || normalizedX > aRuntime.viewport.xMax
+            || normalizedY < aRuntime.viewport.yMin || normalizedY > aRuntime.viewport.yMax )
+        {
+            return;
+        }
+
+        const double screenY = 1.0 - ( normalizedY - aRuntime.viewport.yMin )
+                                             / viewportYRange;
+        const double topDistance = std::max( 0.0, screenY - occupiedHeight );
+        const double bottomDistance = std::max( 0.0, 1.0 - occupiedHeight - screenY );
+        topClearance = std::min( topClearance, topDistance );
+        bottomClearance = std::min( bottomClearance, bottomDistance );
+    };
+
+    if( waveform != aRuntime.waveforms.end() )
+    {
+        const size_t size = std::min( waveform->x.size(), waveform->y.size() );
+
+        if( waveform->monotonicX && size >= 2 )
+        {
+            const double visibleMin = std::max( cursorMinX, aRuntime.viewport.xMin );
+            const double visibleMax = std::min( cursorMaxX, aRuntime.viewport.xMax );
+
+            if( visibleMin <= visibleMax )
+            {
+                constexpr int sampleCount = 64;
+
+                for( int ii = 0; ii <= sampleCount; ++ii )
+                {
+                    const double normalizedX = visibleMin
+                                               + ( visibleMax - visibleMin ) * ii / sampleCount;
+                    const double x = aRuntime.bounds.minX + normalizedX * xRange;
+                    double       y = 0.0;
+
+                    if( sampleWaveformAtX( *waveform, x, y ) )
+                        considerSample( x, y );
+                }
+            }
+        }
+        else if( size > 0 )
+        {
+            const size_t stride = std::max<size_t>( 1, size / 256 );
+
+            for( size_t ii = 0; ii < size; ii += stride )
+                considerSample( waveform->x[ii], waveform->y[ii] );
+
+            considerSample( waveform->x[size - 1], waveform->y[size - 1] );
+        }
+    }
+
+    measurement.arrowY = topClearance >= bottomClearance ? topCandidate : bottomCandidate;
+    measurement.arrowVisible = true;
+    measurement.valid = true;
 }
 
 
@@ -1301,7 +1558,15 @@ void SCH_SCOPE::SetSettings( SCH_SYMBOL* aSymbol, const SETTINGS& aSettings )
     }
 
     if( !sameSources( previous, settings ) )
-        s_scopeRuntime.erase( aSymbol->m_Uuid );
+    {
+        auto runtime = s_scopeRuntime.find( aSymbol->m_Uuid );
+
+        if( runtime != s_scopeRuntime.end() )
+        {
+            updateCursorIntersections( settings, runtime->second );
+            updateCursorMeasurement( aSymbol, settings, runtime->second );
+        }
+    }
 }
 
 
@@ -1443,15 +1708,25 @@ void SCH_SCOPE::SetWaveforms( const SCH_SYMBOL* aSymbol, std::vector<WAVEFORM> a
     SCOPE_RUNTIME_STATE& runtime = s_scopeRuntime[aSymbol->m_Uuid];
     runtime.waveforms = std::move( aWaveforms );
     runtime.bounds = bounds;
-    runtime.viewport = VIEWPORT();
     runtime.zoomSelection = ZOOM_SELECTION();
+    const SETTINGS settings = GetSettings( aSymbol );
+    updateCursorIntersections( settings, runtime );
+    updateCursorMeasurement( aSymbol, settings, runtime );
 }
 
 
 void SCH_SCOPE::ClearWaveforms( const SCH_SYMBOL* aSymbol )
 {
-    if( aSymbol )
-        s_scopeRuntime.erase( aSymbol->m_Uuid );
+    if( !aSymbol )
+        return;
+
+    SCOPE_RUNTIME_STATE& runtime = s_scopeRuntime[aSymbol->m_Uuid];
+    runtime.waveforms.clear();
+    runtime.bounds = DATA_BOUNDS();
+    runtime.zoomSelection = ZOOM_SELECTION();
+    const SETTINGS settings = GetSettings( aSymbol );
+    updateCursorIntersections( settings, runtime );
+    updateCursorMeasurement( aSymbol, settings, runtime );
 }
 
 
@@ -1479,6 +1754,180 @@ void SCH_SCOPE::SetAxisInfo( const SCH_SYMBOL* aSymbol, const AXIS_INFO& aInfo )
 {
     if( aSymbol )
         s_scopeRuntime[aSymbol->m_Uuid].axisInfo = aInfo;
+}
+
+
+std::vector<SCH_SCOPE::CURSOR> SCH_SCOPE::GetCursors( const SCH_SYMBOL* aSymbol )
+{
+    if( !aSymbol )
+        return {};
+
+    auto runtime = s_scopeRuntime.find( aSymbol->m_Uuid );
+
+    if( runtime == s_scopeRuntime.end() )
+        return {};
+
+    const SETTINGS settings = GetSettings( aSymbol );
+    const wxString topSource = settings.sources.empty() ? wxString()
+                                                         : settings.sources.front().name;
+
+    if( runtime->second.cursorSourceName != topSource )
+    {
+        updateCursorIntersections( settings, runtime->second );
+        updateCursorMeasurement( aSymbol, settings, runtime->second );
+    }
+
+    return runtime->second.cursors;
+}
+
+
+int SCH_SCOPE::AddCursor( const SCH_SYMBOL* aSymbol, double aNormalizedX )
+{
+    if( !aSymbol || !std::isfinite( aNormalizedX ) )
+        return -1;
+
+    SCOPE_RUNTIME_STATE& runtime = s_scopeRuntime[aSymbol->m_Uuid];
+    const SETTINGS      settings = GetSettings( aSymbol );
+
+    if( settings.sources.empty() || runtime.cursors.size() >= 2 )
+        return -1;
+
+    const auto waveform = std::find_if(
+            runtime.waveforms.begin(), runtime.waveforms.end(),
+            [&]( const WAVEFORM& aWaveform )
+            {
+                return aWaveform.name == settings.sources.front().name
+                       && std::min( aWaveform.x.size(), aWaveform.y.size() ) >= 2;
+            } );
+
+    if( waveform == runtime.waveforms.end() )
+        return -1;
+
+    runtime.cursors.push_back( { std::clamp( aNormalizedX, 0.0, 1.0 ), 0.0, false } );
+    updateCursorIntersections( settings, runtime );
+    updateCursorReadout( aSymbol, settings, runtime );
+    return static_cast<int>( runtime.cursors.size() ) - 1;
+}
+
+
+bool SCH_SCOPE::MoveCursor( const SCH_SYMBOL* aSymbol, int aIndex, double aNormalizedX )
+{
+    if( !aSymbol || !std::isfinite( aNormalizedX ) )
+        return false;
+
+    SCOPE_RUNTIME_STATE& runtime = s_scopeRuntime[aSymbol->m_Uuid];
+
+    if( aIndex < 0 || aIndex >= static_cast<int>( runtime.cursors.size() ) )
+        return false;
+
+    CURSOR& cursor = runtime.cursors[aIndex];
+    const double nextX = std::clamp( aNormalizedX, 0.0, 1.0 );
+
+    if( std::abs( cursor.x - nextX ) < 1e-9 )
+        return false;
+
+    cursor.x = nextX;
+    const SETTINGS settings = GetSettings( aSymbol );
+    updateCursorIntersections( settings, runtime );
+    updateCursorReadout( aSymbol, settings, runtime );
+    return true;
+}
+
+
+bool SCH_SCOPE::RemoveCursor( const SCH_SYMBOL* aSymbol, int aIndex )
+{
+    if( !aSymbol )
+        return false;
+
+    SCOPE_RUNTIME_STATE& runtime = s_scopeRuntime[aSymbol->m_Uuid];
+
+    if( aIndex < 0 || aIndex >= static_cast<int>( runtime.cursors.size() ) )
+        return false;
+
+    runtime.cursors.erase( runtime.cursors.begin() + aIndex );
+    updateCursorMeasurement( aSymbol, GetSettings( aSymbol ), runtime );
+    return true;
+}
+
+
+void SCH_SCOPE::BeginCursorMove( const SCH_SYMBOL* aSymbol )
+{
+    if( !aSymbol )
+        return;
+
+    SCOPE_RUNTIME_STATE& runtime = s_scopeRuntime[aSymbol->m_Uuid];
+    updateCursorReadout( aSymbol, GetSettings( aSymbol ), runtime );
+}
+
+
+void SCH_SCOPE::FinishCursorMove( const SCH_SYMBOL* aSymbol )
+{
+    if( !aSymbol )
+        return;
+
+    SCOPE_RUNTIME_STATE& runtime = s_scopeRuntime[aSymbol->m_Uuid];
+    updateCursorMeasurement( aSymbol, GetSettings( aSymbol ), runtime );
+}
+
+
+SCH_SCOPE::CURSOR_MEASUREMENT SCH_SCOPE::GetCursorMeasurement( const SCH_SYMBOL* aSymbol )
+{
+    if( !aSymbol )
+        return {};
+
+    auto runtime = s_scopeRuntime.find( aSymbol->m_Uuid );
+
+    if( runtime == s_scopeRuntime.end() )
+        return {};
+
+    const SETTINGS settings = GetSettings( aSymbol );
+    const wxString topSource = settings.sources.empty() ? wxString()
+                                                         : settings.sources.front().name;
+
+    if( runtime->second.cursorSourceName != topSource )
+    {
+        updateCursorIntersections( settings, runtime->second );
+        updateCursorMeasurement( aSymbol, settings, runtime->second );
+    }
+
+    return runtime->second.cursorMeasurement;
+}
+
+
+bool SCH_SCOPE::CursorXToPlot( const CURSOR& aCursor, const VIEWPORT& aViewport,
+                               const BOX2I& aPlotBox, int& aPosition )
+{
+    const double xRange = aViewport.xMax - aViewport.xMin;
+
+    if( !aCursor.valid || xRange <= 0.0 || aCursor.x < aViewport.xMin
+        || aCursor.x > aViewport.xMax || aPlotBox.GetWidth() <= 0 )
+    {
+        return false;
+    }
+
+    aPosition = KiROUND( aPlotBox.GetX()
+                         + ( aCursor.x - aViewport.xMin ) / xRange
+                                   * aPlotBox.GetWidth() );
+    return true;
+}
+
+
+bool SCH_SCOPE::CursorToPlot( const CURSOR& aCursor, const VIEWPORT& aViewport,
+                              const BOX2I& aPlotBox, VECTOR2I& aPosition )
+{
+    const double yRange = aViewport.yMax - aViewport.yMin;
+
+    if( !CursorXToPlot( aCursor, aViewport, aPlotBox, aPosition.x ) || yRange <= 0.0
+        || aCursor.y < aViewport.yMin || aCursor.y > aViewport.yMax
+        || aPlotBox.GetHeight() <= 0 )
+    {
+        return false;
+    }
+
+    aPosition.y = KiROUND( aPlotBox.GetEnd().y
+                           - ( aCursor.y - aViewport.yMin ) / yRange
+                                     * aPlotBox.GetHeight() );
+    return true;
 }
 
 
@@ -1551,6 +2000,27 @@ wxString SCH_SCOPE::FormatWaveformLabel( const wxString& aSource )
 }
 
 
+wxString SCH_SCOPE::FitLegendLabel( const wxString& aLabel, int aAvailableWidth,
+                                    int aTextSize )
+{
+    if( aLabel.IsEmpty() || aAvailableWidth <= 0 || aTextSize <= 0 )
+        return wxEmptyString;
+
+    const int maxChars = aAvailableWidth / std::max( 1, aTextSize );
+
+    if( maxChars <= 0 )
+        return wxEmptyString;
+
+    if( static_cast<int>( aLabel.length() ) <= maxChars )
+        return aLabel;
+
+    if( maxChars <= 3 )
+        return wxString( wxS( "..." ) ).Left( maxChars );
+
+    return aLabel.Left( maxChars - 3 ) + wxS( "..." );
+}
+
+
 std::vector<wxString> SCH_SCOPE::FormatEngineeringTicks( double aMin, double aMax,
                                                          int aDivisions )
 {
@@ -1616,24 +2086,54 @@ SCH_SCOPE::LAYOUT SCH_SCOPE::GetLayout( const SCH_SYMBOL* aSymbol )
     layout.textSize = std::clamp( settings.axisTextSize, schIUScale.mmToIU( 0.25 ),
                                   std::max( schIUScale.mmToIU( 0.25 ), height / 12 ) );
     layout.lineHeight = layout.textSize * 3 / 2;
-    const int maxLegendRows = std::max( 1, height / std::max( 1, layout.lineHeight * 5 ) );
-    layout.legendRows = std::min( static_cast<int>( settings.sources.size() ), maxLegendRows );
-    layout.legendColumns = layout.legendRows > 0
-                                   ? ( static_cast<int>( settings.sources.size() )
-                                       + layout.legendRows - 1 ) / layout.legendRows
-                                   : 1;
-
     layout.plotBox = layout.bodyBox;
     layout.plotBox.Inflate( -layout.margin );
+    const int gridCell = schIUScale.MilsToIU( 50 );
     const int leftAxisMargin = layout.textSize * 6;
-    const int rightAxisMargin = layout.textSize * 2;
-    const int bottomAxisMargin = layout.textSize * 4;
+    const int rightAxisMargin = std::max( 0, layout.textSize * 2 - gridCell );
+    const int bottomAxisMargin = std::max( layout.textSize * 3,
+                                           layout.textSize * 4 - gridCell * 4 / 5 );
     layout.plotBox.SetX( layout.plotBox.GetX() + leftAxisMargin );
     layout.plotBox.SetWidth( layout.plotBox.GetWidth()
                              - leftAxisMargin - rightAxisMargin );
-    layout.plotBox.SetY( layout.plotBox.GetY() + layout.legendRows * layout.lineHeight );
+
+    const int sourceCount = static_cast<int>( settings.sources.size() );
+    const int legendGridGap = sourceCount > 0 ? KiROUND( height * 0.025 ) : 0;
+    layout.legendTop = layout.plotBox.GetY();
+
+    if( sourceCount > 0 )
+    {
+        size_t longestLabel = 0;
+
+        for( const WAVEFORM_SOURCE& source : settings.sources )
+            longestLabel = std::max( longestLabel, FormatWaveformLabel( source.name ).length() );
+
+        const int swatchWidth = layout.textSize * 2;
+        const int estimatedLabelWidth = static_cast<int>( longestLabel ) * layout.textSize;
+        const int desiredColumnWidth = std::max( layout.textSize * 6,
+                                                 swatchWidth + estimatedLabelWidth
+                                                         + layout.textSize );
+        const int fittingColumns = std::max(
+                1, static_cast<int>( layout.plotBox.GetWidth() )
+                           / std::max( 1, desiredColumnWidth ) );
+        const int maxLegendRows = std::max(
+                1, height / std::max( 1, layout.lineHeight * 5 ) );
+        layout.legendColumns = std::min( sourceCount, fittingColumns );
+        layout.legendRows = ( sourceCount + layout.legendColumns - 1 )
+                            / layout.legendColumns;
+
+        if( layout.legendRows > maxLegendRows )
+        {
+            layout.legendRows = maxLegendRows;
+            layout.legendColumns = ( sourceCount + layout.legendRows - 1 )
+                                   / layout.legendRows;
+        }
+    }
+
+    layout.plotBox.SetY( layout.plotBox.GetY()
+                         + layout.legendRows * layout.lineHeight + legendGridGap );
     layout.plotBox.SetHeight( layout.plotBox.GetHeight()
-                              - layout.legendRows * layout.lineHeight
+                              - layout.legendRows * layout.lineHeight - legendGridGap
                               - bottomAxisMargin );
     layout.xDivisions = std::clamp( static_cast<int>( layout.plotBox.GetWidth()
                                                        / std::max( 1, layout.textSize * 7 ) ),
@@ -1642,6 +2142,36 @@ SCH_SCOPE::LAYOUT SCH_SCOPE::GetLayout( const SCH_SYMBOL* aSymbol )
                                                        / std::max( 1, layout.textSize * 3 ) ),
                                     2, 5 );
     return layout;
+}
+
+
+int SCH_SCOPE::HitTestLegend( const SCH_SYMBOL* aSymbol, const VECTOR2I& aPosition )
+{
+    if( !IsScopeSymbol( aSymbol ) )
+        return -1;
+
+    const LAYOUT   layout = GetLayout( aSymbol );
+    const SETTINGS settings = GetSettings( aSymbol );
+
+    if( layout.legendRows <= 0 || settings.sources.empty() )
+        return -1;
+
+    const int columnWidth = std::max( 1, static_cast<int>( layout.plotBox.GetWidth() )
+                                            / layout.legendColumns );
+
+    for( size_t index = 0; index < settings.sources.size(); ++index )
+    {
+        const int column = static_cast<int>( index ) % layout.legendColumns;
+        const int row = static_cast<int>( index ) / layout.legendColumns;
+        BOX2I entryBox( VECTOR2I( layout.plotBox.GetX() + column * columnWidth,
+                                  layout.legendTop + row * layout.lineHeight ),
+                        VECTOR2I( columnWidth, layout.lineHeight ) );
+
+        if( entryBox.Contains( aPosition ) )
+            return static_cast<int>( index );
+    }
+
+    return -1;
 }
 
 
@@ -1915,27 +2445,29 @@ void SCH_SCOPE::PlotWaveforms( PLOTTER* aPlotter, const SCH_SYMBOL* aSymbol )
         for( size_t index = 0; index < settings.sources.size(); ++index )
         {
             const WAVEFORM_SOURCE& source = settings.sources[index];
-            const int column = static_cast<int>( index ) / layout.legendRows;
-            const int row = static_cast<int>( index ) % layout.legendRows;
+            const int column = static_cast<int>( index ) % layout.legendColumns;
+            const int row = static_cast<int>( index ) / layout.legendColumns;
             const int x = layout.plotBox.GetX() + column * columnWidth;
-            const int y = layout.bodyBox.GetY() + layout.margin + row * layout.lineHeight
-                          + layout.lineHeight / 2;
-            const int swatchWidth = layout.textSize * 2;
-            const int maxChars = std::max( 3, ( columnWidth - swatchWidth )
-                                                   / std::max( 1, layout.textSize / 2 ) );
-            wxString label = FormatWaveformLabel( source.name );
-
-            if( static_cast<int>( label.length() ) > maxChars )
-                label = label.Left( std::max( 1, maxChars - 1 ) ) + wxS( "..." );
+            const int y = layout.legendTop + row * layout.lineHeight + layout.lineHeight / 2;
+            const int swatchWidth = std::min( layout.textSize * 2,
+                                              std::max( 0, columnWidth - layout.textSize ) );
+            const int availableLabelWidth = std::max(
+                    0, columnWidth - swatchWidth - layout.textSize );
+            const wxString label = FitLegendLabel( FormatWaveformLabel( source.name ),
+                                                   availableLabelWidth, layout.textSize );
 
             aPlotter->SetColor( source.color );
             aPlotter->ThickSegment( VECTOR2I( x, y ), VECTOR2I( x + swatchWidth, y ),
                                     source.lineWidth, nullptr );
-            textAttrs.m_Angle = ANGLE_0;
-            textAttrs.m_Halign = GR_TEXT_H_ALIGN_LEFT;
-            textAttrs.m_Valign = GR_TEXT_V_ALIGN_CENTER;
-            aPlotter->PlotText( VECTOR2I( x + swatchWidth + layout.textSize / 2, y ),
-                                settings.borderColor, label, textAttrs, font );
+
+            if( !label.IsEmpty() )
+            {
+                textAttrs.m_Angle = ANGLE_0;
+                textAttrs.m_Halign = GR_TEXT_H_ALIGN_LEFT;
+                textAttrs.m_Valign = GR_TEXT_V_ALIGN_CENTER;
+                aPlotter->PlotText( VECTOR2I( x + swatchWidth + layout.textSize / 2, y ),
+                                    settings.borderColor, label, textAttrs, font );
+            }
         }
     }
 
@@ -1961,6 +2493,136 @@ void SCH_SCOPE::PlotWaveforms( PLOTTER* aPlotter, const SCH_SYMBOL* aSymbol )
             {
                 aPlotter->ThickSegment( start, end, source.lineWidth, nullptr );
             }
+        }
+    }
+
+    aPlotter->SetColor( KIGFX::COLOR4D( BLACK ) );
+    const int cursorWidth = std::max( 1, settings.minorGridWidth );
+    const int cursorDiameter = cursorWidth * 2;
+    aPlotter->SetDash( cursorWidth, LINE_STYLE::SOLID );
+    const std::vector<CURSOR> cursors = GetCursors( aSymbol );
+
+    for( const CURSOR& cursor : cursors )
+    {
+        int cursorX = 0;
+
+        if( !CursorXToPlot( cursor, viewport, layout.plotBox, cursorX ) )
+            continue;
+
+        aPlotter->ThickSegment( VECTOR2I( cursorX, layout.plotBox.GetY() ),
+                                VECTOR2I( cursorX, layout.plotBox.GetEnd().y ),
+                                cursorWidth, nullptr );
+
+        VECTOR2I point;
+
+        if( !CursorToPlot( cursor, viewport, layout.plotBox, point ) )
+            continue;
+
+        aPlotter->ThickSegment( VECTOR2I( layout.plotBox.GetX(), point.y ),
+                                VECTOR2I( layout.plotBox.GetEnd().x, point.y ),
+                                cursorWidth, nullptr );
+        aPlotter->Circle( point, cursorDiameter, FILL_T::FILLED_SHAPE, 0 );
+    }
+
+    const CURSOR_MEASUREMENT measurement = GetCursorMeasurement( aSymbol );
+
+    if( measurement.valid && cursors.size() == 2 )
+    {
+        int x1 = 0;
+        int x2 = 0;
+
+        if( CursorXToPlot( cursors[0], viewport, layout.plotBox, x1 )
+            && CursorXToPlot( cursors[1], viewport, layout.plotBox, x2 ) )
+        {
+            if( x1 > x2 )
+                std::swap( x1, x2 );
+
+            const int arrowY = KiROUND( layout.plotBox.GetY()
+                                        + measurement.arrowY * layout.plotBox.GetHeight() );
+            const int span = x2 - x1;
+            const int arrowLength = std::max( 1, std::min( layout.textSize, span / 3 ) );
+            const int arrowHalfHeight = std::max( 1, KiROUND( arrowLength * 0.260284 ) );
+            const int arrowWidth = cursorWidth * 2;
+
+            auto plotCursorLine = [&]( const VECTOR2I& aStart, const VECTOR2I& aEnd )
+            {
+                aPlotter->ThickSegment( aStart, aEnd, arrowWidth, nullptr );
+            };
+
+            if( measurement.arrowVisible )
+            {
+                if( span > arrowLength * 2 )
+                {
+                    plotCursorLine( VECTOR2I( x1 + arrowLength, arrowY ),
+                                    VECTOR2I( x2 - arrowLength, arrowY ) );
+                }
+
+                const std::vector<VECTOR2I> leftArrow = {
+                    VECTOR2I( x1, arrowY ),
+                    VECTOR2I( x1 + arrowLength, arrowY - arrowHalfHeight ),
+                    VECTOR2I( x1 + arrowLength, arrowY + arrowHalfHeight )
+                };
+                const std::vector<VECTOR2I> rightArrow = {
+                    VECTOR2I( x2, arrowY ),
+                    VECTOR2I( x2 - arrowLength, arrowY - arrowHalfHeight ),
+                    VECTOR2I( x2 - arrowLength, arrowY + arrowHalfHeight )
+                };
+                aPlotter->PlotPoly( leftArrow, FILL_T::FILLED_SHAPE, 0, nullptr );
+                aPlotter->PlotPoly( rightArrow, FILL_T::FILLED_SHAPE, 0, nullptr );
+            }
+
+            const int cursorTextSize = std::max( 1, layout.textSize * 4 / 5 );
+            textAttrs.m_Size = VECTOR2I( cursorTextSize, cursorTextSize );
+            textAttrs.m_StrokeWidth = std::max( 1, cursorTextSize / 10 );
+
+            const VECTOR2I frequencyExtent = font->StringBoundaryLimits(
+                    measurement.frequencyLabel, textAttrs.m_Size, textAttrs.m_StrokeWidth,
+                    false, false, KIFONT::METRICS::Default() );
+            const VECTOR2I periodExtent = font->StringBoundaryLimits(
+                    measurement.periodLabel, textAttrs.m_Size, textAttrs.m_StrokeWidth,
+                    false, false, KIFONT::METRICS::Default() );
+            const int textWidth = std::max( frequencyExtent.x, periodExtent.x );
+            const int textGap = std::max( cursorTextSize * 2 / 3, arrowWidth * 2 );
+            const int leftSpace = x1 - layout.plotBox.GetX();
+            const int rightSpace = layout.plotBox.GetEnd().x - x2;
+            int textX = ( x1 + x2 ) / 2;
+            GR_TEXT_H_ALIGN_T textAlign = GR_TEXT_H_ALIGN_CENTER;
+
+            if( span < textWidth + textGap * 2 )
+            {
+                if( rightSpace >= textWidth + textGap )
+                {
+                    textX = x2 + textGap + textWidth;
+                    textAlign = GR_TEXT_H_ALIGN_RIGHT;
+                }
+                else if( leftSpace >= textWidth + textGap )
+                {
+                    textX = x1 - textGap - textWidth;
+                    textAlign = GR_TEXT_H_ALIGN_LEFT;
+                }
+                else if( rightSpace >= leftSpace )
+                {
+                    textX = layout.plotBox.GetEnd().x;
+                    textAlign = GR_TEXT_H_ALIGN_RIGHT;
+                }
+                else
+                {
+                    textX = layout.plotBox.GetX();
+                    textAlign = GR_TEXT_H_ALIGN_LEFT;
+                }
+            }
+
+            textAttrs.m_Angle = ANGLE_0;
+            textAttrs.m_Halign = textAlign;
+            textAttrs.m_Valign = GR_TEXT_V_ALIGN_TOP;
+            textAttrs.m_Color = KIGFX::COLOR4D( BLACK );
+            aPlotter->PlotText(
+                    VECTOR2I( textX, arrowY - cursorTextSize - textGap / 2 ),
+                    KIGFX::COLOR4D( BLACK ), measurement.frequencyLabel, textAttrs, font );
+            textAttrs.m_Valign = GR_TEXT_V_ALIGN_BOTTOM;
+            aPlotter->PlotText(
+                    VECTOR2I( textX, arrowY + cursorTextSize + textGap / 2 ),
+                    KIGFX::COLOR4D( BLACK ), measurement.periodLabel, textAttrs, font );
         }
     }
 
@@ -2007,10 +2669,18 @@ bool SCH_SCOPE::ZoomViewport( const SCH_SYMBOL* aSymbol, const VECTOR2D& aAnchor
     clampViewportAxis( viewport.xMin, viewport.xMax );
     clampViewportAxis( viewport.yMin, viewport.yMax );
 
-    return std::abs( viewport.xMin - previous.xMin ) > 1e-9
-           || std::abs( viewport.xMax - previous.xMax ) > 1e-9
-           || std::abs( viewport.yMin - previous.yMin ) > 1e-9
-           || std::abs( viewport.yMax - previous.yMax ) > 1e-9;
+    const bool changed = std::abs( viewport.xMin - previous.xMin ) > 1e-9
+                         || std::abs( viewport.xMax - previous.xMax ) > 1e-9
+                         || std::abs( viewport.yMin - previous.yMin ) > 1e-9
+                         || std::abs( viewport.yMax - previous.yMax ) > 1e-9;
+
+    if( changed )
+    {
+        SCOPE_RUNTIME_STATE& runtime = s_scopeRuntime[aSymbol->m_Uuid];
+        updateCursorMeasurement( aSymbol, GetSettings( aSymbol ), runtime );
+    }
+
+    return changed;
 }
 
 
@@ -2031,17 +2701,29 @@ bool SCH_SCOPE::PanViewport( const SCH_SYMBOL* aSymbol, const VECTOR2D& aDelta )
     clampViewportAxis( viewport.xMin, viewport.xMax );
     clampViewportAxis( viewport.yMin, viewport.yMax );
 
-    return std::abs( viewport.xMin - previous.xMin ) > 1e-9
-           || std::abs( viewport.xMax - previous.xMax ) > 1e-9
-           || std::abs( viewport.yMin - previous.yMin ) > 1e-9
-           || std::abs( viewport.yMax - previous.yMax ) > 1e-9;
+    const bool changed = std::abs( viewport.xMin - previous.xMin ) > 1e-9
+                         || std::abs( viewport.xMax - previous.xMax ) > 1e-9
+                         || std::abs( viewport.yMin - previous.yMin ) > 1e-9
+                         || std::abs( viewport.yMax - previous.yMax ) > 1e-9;
+
+    if( changed )
+    {
+        SCOPE_RUNTIME_STATE& runtime = s_scopeRuntime[aSymbol->m_Uuid];
+        updateCursorMeasurement( aSymbol, GetSettings( aSymbol ), runtime );
+    }
+
+    return changed;
 }
 
 
 void SCH_SCOPE::ResetViewport( const SCH_SYMBOL* aSymbol )
 {
     if( aSymbol )
-        s_scopeRuntime[aSymbol->m_Uuid].viewport = VIEWPORT();
+    {
+        SCOPE_RUNTIME_STATE& runtime = s_scopeRuntime[aSymbol->m_Uuid];
+        runtime.viewport = VIEWPORT();
+        updateCursorMeasurement( aSymbol, GetSettings( aSymbol ), runtime );
+    }
 }
 
 
@@ -2121,6 +2803,7 @@ bool SCH_SCOPE::FinishZoomSelection( const SCH_SYMBOL* aSymbol )
     runtime.viewport.yMax = previous.yMin + top * yRange;
     clampViewportAxis( runtime.viewport.xMin, runtime.viewport.xMax );
     clampViewportAxis( runtime.viewport.yMin, runtime.viewport.yMax );
+    updateCursorMeasurement( aSymbol, GetSettings( aSymbol ), runtime );
     return true;
 }
 

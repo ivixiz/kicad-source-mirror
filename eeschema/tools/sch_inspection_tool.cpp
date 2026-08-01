@@ -34,6 +34,7 @@
 #include <tools/sch_selection_tool.h>
 #include <tools/sch_selection.h>
 #include <sim/simulator_frame.h>
+#include <sim/spice_simulator.h>
 #include <sch_edit_frame.h>
 #include <symbol_edit_frame.h>
 #include <symbol_viewer_frame.h>
@@ -1282,6 +1283,49 @@ int SCH_INSPECTION_TOOL::RunSimulation( const TOOL_EVENT& aEvent )
 }
 
 
+int SCH_INSPECTION_TOOL::ControlSimulation( const TOOL_EVENT& aEvent )
+{
+    SIMULATOR_FRAME* simFrame = static_cast<SIMULATOR_FRAME*>(
+            m_frame->Kiway().Player( FRAME_SIMULATOR, true ) );
+
+    if( !simFrame || !simFrame->GetSimulator() )
+        return -1;
+
+    TOOL_MANAGER* simToolManager = simFrame->GetToolManager();
+
+    if( !simToolManager )
+        return -1;
+
+    if( simFrame->GetSimulator()->IsRunning() )
+    {
+        simToolManager->RunAction( SCH_ACTIONS::stopSimulation );
+        return 0;
+    }
+
+    wxString simCommand = simFrame->GetCurrentSimCommand();
+    simCommand.Trim( true ).Trim( false );
+    const bool needsConfiguration = !simFrame->GetCurrentSimTab() || simCommand.IsEmpty();
+
+    if( needsConfiguration )
+    {
+        if( wxWindow* blockingWindow = simFrame->Kiway().GetBlockingDialog() )
+            blockingWindow->Close( true );
+
+        simFrame->SuppressNextAutoProbe();
+        simFrame->Show( true );
+
+        if( simFrame->IsIconized() )
+            simFrame->Iconize( false );
+
+        simFrame->Raise();
+        simFrame->SetFocus();
+    }
+
+    simToolManager->RunAction( SCH_ACTIONS::runSimulation );
+    return 0;
+}
+
+
 int SCH_INSPECTION_TOOL::ShowDatasheet( const TOOL_EVENT& aEvent )
 {
     wxString datasheet;
@@ -1394,6 +1438,8 @@ void SCH_INSPECTION_TOOL::setTransitions()
         SCH_ACTIONS::compareSchematicWithFile.MakeEvent() );
     Go( &SCH_INSPECTION_TOOL::CompareSchematicWithHistory, SCH_ACTIONS::compareSchematicWithHistory.MakeEvent() );
     Go( &SCH_INSPECTION_TOOL::RunSimulation,         SCH_ACTIONS::showSimulator.MakeEvent() );
+    Go( &SCH_INSPECTION_TOOL::ControlSimulation,     SCH_ACTIONS::runSimulation.MakeEvent() );
+    Go( &SCH_INSPECTION_TOOL::ControlSimulation,     SCH_ACTIONS::stopSimulation.MakeEvent() );
     Go( &SCH_INSPECTION_TOOL::ShowBusSyntaxHelp,     SCH_ACTIONS::showBusSyntaxHelp.MakeEvent() );
 
     Go( &SCH_INSPECTION_TOOL::ShowDatasheet,         ACTIONS::showDatasheet.MakeEvent() );

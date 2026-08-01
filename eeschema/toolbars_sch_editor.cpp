@@ -205,8 +205,13 @@ std::optional<TOOLBAR_CONFIGURATION> SCH_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
         config.AppendSeparator()
               .AppendAction( SCH_ACTIONS::annotate )
               .AppendAction( SCH_ACTIONS::runERC )
-              .AppendAction( SCH_ACTIONS::showSimulator )
-              .AppendAction( SCH_ACTIONS::assignFootprints )
+              .AppendAction( SCH_ACTIONS::showSimulator );
+
+        config.AppendGroup( TOOLBAR_GROUP_CONFIG( _( "Simulation control" ) )
+                                    .AddAction( SCH_ACTIONS::runSimulation )
+                                    .AddAction( SCH_ACTIONS::stopSimulation ) );
+
+        config.AppendAction( SCH_ACTIONS::assignFootprints )
               .AppendAction( SCH_ACTIONS::editSymbolFields )
               .AppendAction( SCH_ACTIONS::generateBOM );
 

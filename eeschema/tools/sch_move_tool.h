@@ -86,6 +86,11 @@ public:
      */
     int AlignToGrid( const TOOL_EVENT& aEvent );
 
+    void SetScopeMeasurementOrigin( const VECTOR2I& aPosition )
+    {
+        m_scopeMeasurementOrigin = aPosition;
+    }
+
 private:
     bool doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aCommit );
 
@@ -105,6 +110,9 @@ private:
 
     ///< Clears the new drag lines and removes them from the screen
     void clearNewDragLines();
+
+    ///< Clear transient move flags before reverting a scope measurement drop.
+    void clearScopeDropMoveState( const SCH_SELECTION& aSelection );
 
     ///< Set up handlers for various events.
     void setTransitions() override;
@@ -171,6 +179,7 @@ private:
     MOVE_MODE             m_mode;
     SCH_SYMBOL*           m_scopeMeasurementTarget = nullptr;
     wxString              m_scopeMeasurementSignal;
+    OPT_VECTOR2I          m_scopeMeasurementOrigin;
 
     ///< Items (such as wires) which were added to the selection for a drag
     std::vector<KIID>                   m_dragAdditions;

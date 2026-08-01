@@ -1080,6 +1080,9 @@ void SIMULATOR_FRAME::setupUIConditions()
 void SIMULATOR_FRAME::onSimStarted( wxCommandEvent& aEvent )
 {
     SetCursor( wxCURSOR_ARROWWAIT );
+
+    if( m_schematicFrame )
+        m_schematicFrame->SelectToolbarAction( SCH_ACTIONS::stopSimulation );
 }
 
 
@@ -1106,6 +1109,9 @@ void SIMULATOR_FRAME::onSimFinished( wxCommandEvent& aEvent )
     // ensure the shown cursor is the default cursor, not the wxCURSOR_ARROWWAIT set when
     // staring the simulator in onSimStarted:
     SetCursor( wxNullCursor );
+
+    if( m_schematicFrame )
+        m_schematicFrame->SelectToolbarAction( SCH_ACTIONS::runSimulation );
 
     // Is a warning message useful if the simulatior is still running?
     SCHEMATIC& schematic = m_schematicFrame->Schematic();

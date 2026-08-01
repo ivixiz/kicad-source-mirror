@@ -56,6 +56,7 @@ protected:
 private:
     SCH_SYMBOL* scopeAt( const wxPoint& aPosition ) const;
     void refreshScope( SCH_SYMBOL* aScope );
+    bool updateScopeCursor( const wxPoint& aPosition );
     void onScopeMouseWheel( wxMouseEvent& aEvent );
     void onScopeLeftDown( wxMouseEvent& aEvent );
     void onScopeLeftUp( wxMouseEvent& aEvent );
@@ -67,6 +68,8 @@ private:
 private:
     SCH_SYMBOL* m_scopePanTarget = nullptr;
     SCH_SYMBOL* m_scopeZoomTarget = nullptr;
+    SCH_SYMBOL* m_scopeCursorTarget = nullptr;
+    int         m_scopeCursorIndex = -1;
     wxPoint     m_scopePanLast;
 };
 

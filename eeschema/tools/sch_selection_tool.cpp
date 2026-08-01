@@ -24,6 +24,7 @@
 #include <gal/graphics_abstraction_layer.h>
 #include <geometry/shape_compound.h>
 #include <hotkeys_basic.h>
+#include <kiway.h>
 #include <sch_actions.h>
 #include <sch_collectors.h>
 #include <sch_selection_tool.h>
@@ -912,7 +913,11 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
             }
             else
 #endif
-            if( m_selection.GetSize() != 0 && dynamic_cast<SCH_TABLECELL*>( m_selection.GetItem( 0 ) ) && m_additive
+            if( evt->Modifier() == MD_CTRL && removeScopeWaveformAt( evt->Position() ) )
+            {
+                selCancelled = true;
+            }
+            else if( m_selection.GetSize() != 0 && dynamic_cast<SCH_TABLECELL*>( m_selection.GetItem( 0 ) ) && m_additive
                 && collector.GetCount() == 1 && dynamic_cast<SCH_TABLECELL*>( collector[0] ) )
             {
                 SCH_TABLECELL* firstCell = static_cast<SCH_TABLECELL*>( m_selection.GetItem( 0 ) );
@@ -1100,6 +1105,8 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
             {
                 if( !m_selection.Empty() && selectionContains( evt->DragOrigin() ) )
                 {
+                    m_toolMgr->GetTool<SCH_MOVE_TOOL>()->SetScopeMeasurementOrigin(
+                            evt->DragOrigin() );
                     m_toolMgr->RunAction( SCH_ACTIONS::move );
                 }
                 else if( dragOnlySelectedSymbolAt( evt->DragOrigin() ) )
@@ -1157,6 +1164,12 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
                 // Check if dragging has started within any of selected items bounding box
                 if( evt->HasPosition() && selectionContains( evt->DragOrigin() ) )
                 {
+                    if( !m_isSymbolEditor )
+                    {
+                        m_toolMgr->GetTool<SCH_MOVE_TOOL>()->SetScopeMeasurementOrigin(
+                                evt->DragOrigin() );
+                    }
+
                     // drag_is_move option exists only in schematic editor, not in symbol editor
                     // (m_frame->eeconfig() returns nullptr in Symbol Editor)
                     if( m_isSymbolEditor || m_frame->eeconfig()->m_Input.drag_is_move )
@@ -3443,8 +3456,47 @@ bool SCH_SELECTION_TOOL::dragOnlySelectedSymbolAt( const VECTOR2I& aWhere )
 
     ClearSelection();
     AddItemToSel( symbolItem );
+    m_toolMgr->GetTool<SCH_MOVE_TOOL>()->SetScopeMeasurementOrigin( aWhere );
     m_toolMgr->RunAction( SCH_ACTIONS::move );
     return true;
+}
+
+
+bool SCH_SELECTION_TOOL::removeScopeWaveformAt( const VECTOR2I& aWhere )
+{
+    SCH_EDIT_FRAME* frame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
+    SCH_SCREEN*     screen = frame ? frame->GetScreen() : nullptr;
+
+    if( !screen )
+        return false;
+
+    for( SCH_ITEM* item : screen->Items().Overlapping( SCH_SYMBOL_T, aWhere ) )
+    {
+        SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( item );
+        const int   sourceIndex = SCH_SCOPE::HitTestLegend( symbol, aWhere );
+
+        if( sourceIndex < 0 )
+            continue;
+
+        SCH_SCOPE::SETTINGS settings = SCH_SCOPE::GetSettings( symbol );
+
+        if( sourceIndex >= static_cast<int>( settings.sources.size() ) )
+            return false;
+
+        SCH_COMMIT commit( m_toolMgr );
+        commit.Modify( symbol, screen );
+        settings.sources.erase( settings.sources.begin() + sourceIndex );
+        SCH_SCOPE::SetSettings( symbol, settings );
+
+        // Keep the cached samples so undo can restore the waveform without rerunning the
+        // simulation.  Rendering is already filtered by the sources stored in settings.
+        getView()->Update( symbol, KIGFX::REPAINT );
+        frame->UpdateItem( symbol, false, false );
+        commit.Push( _( "Remove Scope Waveform" ) );
+        return true;
+    }
+
+    return false;
 }
 
 
