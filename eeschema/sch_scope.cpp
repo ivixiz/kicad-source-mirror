@@ -884,23 +884,51 @@ void updateCursorReadout( const SCH_SYMBOL* aSymbol, const SCH_SCOPE::SETTINGS& 
     SCH_SCOPE::CURSOR_MEASUREMENT& measurement = aRuntime.cursorMeasurement;
     const bool hadPosition = measurement.valid;
     const double previousArrowY = measurement.arrowY;
+    const double previousYDeltaX = measurement.yDeltaX;
     measurement = SCH_SCOPE::CURSOR_MEASUREMENT();
 
-    if( !aSymbol || aRuntime.cursors.size() != 2
-        || !aRuntime.cursors[0].valid || !aRuntime.cursors[1].valid
-        || aSettings.sources.empty() )
+    if( !aSymbol || aRuntime.cursors.empty() || aSettings.sources.empty() )
     {
         return;
     }
 
     const double xRange = aRuntime.bounds.maxX - aRuntime.bounds.minX;
+    const double yRange = aRuntime.bounds.maxY - aRuntime.bounds.minY;
+
+    if( xRange <= 0.0 || yRange <= 0.0 )
+        return;
+
+    if( aRuntime.cursors.size() == 1 )
+    {
+        const SCH_SCOPE::CURSOR& cursor = aRuntime.cursors.front();
+
+        if( !cursor.valid )
+            return;
+        measurement.cursorXLabel = //wxS( "X=" ) + 
+                                   SCH_SCOPE::FormatEngineeringValue(
+                                           aRuntime.bounds.minX + cursor.x * xRange );
+        measurement.cursorYLabel = //wxS( "Y=" ) + 
+                                   SCH_SCOPE::FormatEngineeringValue(
+                                           aRuntime.bounds.minY + cursor.y * yRange );
+        measurement.singleCursorValid = true;
+        measurement.valid = true;
+        return;
+    }
+
+    if( aRuntime.cursors.size() != 2 || !aRuntime.cursors[0].valid
+        || !aRuntime.cursors[1].valid )
+    {
+        return;
+    }
+
     const double cursorMinX = std::min( aRuntime.cursors[0].x, aRuntime.cursors[1].x );
     const double cursorMaxX = std::max( aRuntime.cursors[0].x, aRuntime.cursors[1].x );
     const double period = ( cursorMaxX - cursorMinX ) * xRange;
     const SCH_SCOPE::LAYOUT layout = SCH_SCOPE::GetLayout( aSymbol );
 
     if( !std::isfinite( period ) || period <= std::numeric_limits<double>::epsilon()
-        || xRange <= 0.0 || layout.plotBox.GetHeight() <= 0 )
+        || xRange <= 0.0 || layout.plotBox.GetWidth() <= 0
+        || layout.plotBox.GetHeight() <= 0 )
     {
         return;
     }
@@ -910,6 +938,11 @@ void updateCursorReadout( const SCH_SYMBOL* aSymbol, const SCH_SCOPE::SETTINGS& 
                                  + wxS( "Hz" );
     measurement.periodLabel = wxS( "T=" ) + SCH_SCOPE::FormatEngineeringValue( period )
                               + wxS( "s" );
+    measurement.yDeltaLabel = //wxS( "dY=" ) + 
+                              SCH_SCOPE::FormatEngineeringValue(
+                                      std::abs( aRuntime.cursors[1].y
+                                                - aRuntime.cursors[0].y )
+                                      * yRange );
 
     const int textSize = std::max( 1, layout.textSize * 4 / 5 );
     const int lineWidth = std::max( 1, aSettings.minorGridWidth );
@@ -922,6 +955,7 @@ void updateCursorReadout( const SCH_SYMBOL* aSymbol, const SCH_SCOPE::SETTINGS& 
                                  : std::min( 0.5, edgeClearance
                                                          + static_cast<double>( inset )
                                                                    / layout.plotBox.GetHeight() );
+    measurement.yDeltaX = hadPosition ? previousYDeltaX : 0.95;
     measurement.valid = true;
 }
 
@@ -933,11 +967,12 @@ void updateCursorMeasurement( const SCH_SYMBOL* aSymbol, const SCH_SCOPE::SETTIN
 
     SCH_SCOPE::CURSOR_MEASUREMENT& measurement = aRuntime.cursorMeasurement;
 
-    if( !measurement.valid )
+    if( !measurement.valid || aRuntime.cursors.size() != 2 )
         return;
 
     const double xRange = aRuntime.bounds.maxX - aRuntime.bounds.minX;
     const double yRange = aRuntime.bounds.maxY - aRuntime.bounds.minY;
+    const double viewportXRange = aRuntime.viewport.xMax - aRuntime.viewport.xMin;
     const double viewportYRange = aRuntime.viewport.yMax - aRuntime.viewport.yMin;
     const double cursorMinX = std::min( aRuntime.cursors[0].x, aRuntime.cursors[1].x );
     const double cursorMaxX = std::max( aRuntime.cursors[0].x, aRuntime.cursors[1].x );
@@ -1025,6 +1060,18 @@ void updateCursorMeasurement( const SCH_SYMBOL* aSymbol, const SCH_SCOPE::SETTIN
 
     measurement.arrowY = topClearance >= bottomClearance ? topCandidate : bottomCandidate;
     measurement.arrowVisible = true;
+    const int horizontalInset = std::min( static_cast<int>( layout.plotBox.GetWidth() ) / 2,
+                                          textSize + textGap / 2 );
+    const double sideInset = std::min(
+            0.5, edgeClearance + static_cast<double>( horizontalInset )
+                                         / layout.plotBox.GetWidth() );
+    const double cursorCenterX =
+            viewportXRange > 0.0
+                    ? ( ( cursorMinX + cursorMaxX ) / 2.0 - aRuntime.viewport.xMin )
+                              / viewportXRange
+                    : 0.5;
+    measurement.yDeltaX = cursorCenterX < 0.5 ? 1.0 - sideInset : sideInset;
+    measurement.yDeltaVisible = true;
     measurement.valid = true;
 }
 
@@ -2396,6 +2443,15 @@ void SCH_SCOPE::PlotWaveforms( PLOTTER* aPlotter, const SCH_SYMBOL* aSymbol )
             FormatEngineeringTicks( minX, maxX, layout.xDivisions );
     const std::vector<wxString> yTickLabels =
             FormatEngineeringTicks( minY, maxY, layout.yDivisions );
+    int maxYTickWidth = 0;
+
+    for( const wxString& label : yTickLabels )
+    {
+        const VECTOR2I extent = font->StringBoundaryLimits(
+                label, textAttrs.m_Size, textAttrs.m_StrokeWidth, false, false,
+                KIFONT::METRICS::Default() );
+        maxYTickWidth = std::max( maxYTickWidth, extent.x );
+    }
 
     for( int division = 0; division <= layout.xDivisions; ++division )
     {
@@ -2430,12 +2486,30 @@ void SCH_SCOPE::PlotWaveforms( PLOTTER* aPlotter, const SCH_SYMBOL* aSymbol )
     aPlotter->PlotText( VECTOR2I( layout.plotBox.GetCenter().x,
                                  layout.plotBox.GetEnd().y + layout.textSize * 2 ),
                         settings.borderColor, axisInfo.xName, textAttrs, font );
+
+    const int yAxisLabelX = layout.bodyBox.GetX() + layout.margin + layout.textSize / 2;
+    const int yTickLeft = layout.plotBox.GetX() - layout.textSize / 3 - maxYTickWidth;
+
     textAttrs.m_Valign = GR_TEXT_V_ALIGN_CENTER;
-    textAttrs.m_Angle = ANGLE_90;
-    aPlotter->PlotText( VECTOR2I( layout.bodyBox.GetX() + layout.margin
-                                         + layout.textSize / 2,
-                                 layout.plotBox.GetCenter().y ),
-                        settings.borderColor, axisInfo.yName, textAttrs, font );
+
+    if( yAxisLabelX + layout.textSize / 2 >= yTickLeft && layout.yDivisions > 0 )
+    {
+        const int tickGap = layout.plotBox.GetHeight() / layout.yDivisions;
+        const int gapIndex = layout.yDivisions / 2;
+        const int labelY = layout.plotBox.GetEnd().y - tickGap * gapIndex - tickGap / 2;
+        textAttrs.m_Angle = ANGLE_0;
+        textAttrs.m_Halign = GR_TEXT_H_ALIGN_RIGHT;
+        aPlotter->PlotText( VECTOR2I( layout.plotBox.GetX() - layout.textSize / 3,
+                                      labelY ),
+                            settings.borderColor, axisInfo.yName, textAttrs, font );
+    }
+    else
+    {
+        textAttrs.m_Angle = ANGLE_90;
+        textAttrs.m_Halign = GR_TEXT_H_ALIGN_CENTER;
+        aPlotter->PlotText( VECTOR2I( yAxisLabelX, layout.plotBox.GetCenter().y ),
+                            settings.borderColor, axisInfo.yName, textAttrs, font );
+    }
 
     if( layout.legendRows > 0 )
     {
@@ -2623,7 +2697,196 @@ void SCH_SCOPE::PlotWaveforms( PLOTTER* aPlotter, const SCH_SYMBOL* aSymbol )
             aPlotter->PlotText(
                     VECTOR2I( textX, arrowY + cursorTextSize + textGap / 2 ),
                     KIGFX::COLOR4D( BLACK ), measurement.periodLabel, textAttrs, font );
+
+            VECTOR2I point1;
+            VECTOR2I point2;
+
+            if( measurement.yDeltaVisible
+                && CursorToPlot( cursors[0], viewport, layout.plotBox, point1 )
+                && CursorToPlot( cursors[1], viewport, layout.plotBox, point2 ) )
+            {
+                int y1 = point1.y;
+                int y2 = point2.y;
+
+                if( y1 > y2 )
+                    std::swap( y1, y2 );
+
+                const int ySpan = y2 - y1;
+                const int yArrowX = KiROUND( layout.plotBox.GetX()
+                                             + measurement.yDeltaX
+                                                       * layout.plotBox.GetWidth() );
+                const int yArrowLength = std::max( 1, std::min( layout.textSize, ySpan / 3 ) );
+                const int yArrowHalfWidth =
+                        std::max( 1, KiROUND( yArrowLength * 0.260284 ) );
+                const VECTOR2I yDeltaExtent = font->StringBoundaryLimits(
+                        measurement.yDeltaLabel, textAttrs.m_Size, textAttrs.m_StrokeWidth,
+                        false, false, KIFONT::METRICS::Default() );
+                const int labelWidth = std::max( cursorTextSize, yDeltaExtent.x );
+                const int labelHeight = std::max( cursorTextSize, yDeltaExtent.y );
+                const int yMinText = layout.plotBox.GetY() + labelHeight / 2 + textGap;
+                const int yMaxText = layout.plotBox.GetEnd().y - labelHeight / 2 - textGap;
+                const int labelY = yMinText <= yMaxText
+                                           ? std::clamp( ( y1 + y2 ) / 2, yMinText, yMaxText )
+                                           : ( y1 + y2 ) / 2;
+                GR_TEXT_H_ALIGN_T yDeltaAlign = GR_TEXT_H_ALIGN_CENTER;
+                int labelX = yArrowX;
+                const bool centeredLabel =
+                        ySpan >= labelHeight + textGap * 4
+                        && yArrowX - labelWidth / 2 >= layout.plotBox.GetX() + textGap
+                        && yArrowX + labelWidth / 2
+                                   <= layout.plotBox.GetEnd().x - textGap;
+
+                if( !centeredLabel )
+                {
+                    if( yArrowX < layout.plotBox.GetCenter().x )
+                    {
+                        labelX = std::min( yArrowX + textGap,
+                                           layout.plotBox.GetEnd().x - labelWidth );
+                        yDeltaAlign = GR_TEXT_H_ALIGN_LEFT;
+                    }
+                    else
+                    {
+                        labelX = std::max( yArrowX - textGap,
+                                           layout.plotBox.GetX() + labelWidth );
+                        yDeltaAlign = GR_TEXT_H_ALIGN_RIGHT;
+                    }
+                }
+
+                if( measurement.arrowVisible )
+                {
+                    int lineStart = y1 + yArrowLength;
+                    int lineEnd = y2 - yArrowLength;
+
+                    if( lineStart < lineEnd )
+                    {
+                        if( centeredLabel )
+                        {
+                            const int gapStart = labelY - labelHeight / 2 - textGap / 2;
+                            const int gapEnd = labelY + labelHeight / 2 + textGap / 2;
+
+                            if( lineStart < gapStart )
+                            {
+                                plotCursorLine( VECTOR2I( yArrowX, lineStart ),
+                                                VECTOR2I( yArrowX, gapStart ) );
+                            }
+
+                            if( gapEnd < lineEnd )
+                            {
+                                plotCursorLine( VECTOR2I( yArrowX, gapEnd ),
+                                                VECTOR2I( yArrowX, lineEnd ) );
+                            }
+                        }
+                        else
+                        {
+                            plotCursorLine( VECTOR2I( yArrowX, lineStart ),
+                                            VECTOR2I( yArrowX, lineEnd ) );
+                        }
+                    }
+
+                    const std::vector<VECTOR2I> topArrow = {
+                        VECTOR2I( yArrowX, y1 ),
+                        VECTOR2I( yArrowX - yArrowHalfWidth, y1 + yArrowLength ),
+                        VECTOR2I( yArrowX + yArrowHalfWidth, y1 + yArrowLength )
+                    };
+                    const std::vector<VECTOR2I> bottomArrow = {
+                        VECTOR2I( yArrowX, y2 ),
+                        VECTOR2I( yArrowX - yArrowHalfWidth, y2 - yArrowLength ),
+                        VECTOR2I( yArrowX + yArrowHalfWidth, y2 - yArrowLength )
+                    };
+                    aPlotter->PlotPoly( topArrow, FILL_T::FILLED_SHAPE, 0, nullptr );
+                    aPlotter->PlotPoly( bottomArrow, FILL_T::FILLED_SHAPE, 0, nullptr );
+                }
+
+                textAttrs.m_Angle = ANGLE_0;
+                textAttrs.m_Halign = yDeltaAlign;
+                textAttrs.m_Valign = GR_TEXT_V_ALIGN_CENTER;
+                textAttrs.m_Color = KIGFX::COLOR4D( BLACK );
+                aPlotter->PlotText( VECTOR2I( labelX, labelY ), KIGFX::COLOR4D( BLACK ),
+                                    measurement.yDeltaLabel, textAttrs, font );
+            }
         }
+    }
+
+    if( measurement.singleCursorValid && cursors.size() == 1 )
+    {
+        int cursorX = 0;
+        VECTOR2I point;
+        const int cursorTextSize = std::max( 1, layout.textSize * 4 / 5 );
+        const int textGap = std::max( cursorTextSize * 2 / 3, cursorWidth * 4 );
+        textAttrs.m_Size = VECTOR2I( cursorTextSize, cursorTextSize );
+        textAttrs.m_StrokeWidth = std::max( 1, cursorTextSize / 10 );
+        textAttrs.m_Angle = ANGLE_0;
+        textAttrs.m_Color = KIGFX::COLOR4D( BLACK );
+
+        if( CursorXToPlot( cursors.front(), viewport, layout.plotBox, cursorX ) )
+        {
+            const VECTOR2I xExtent = font->StringBoundaryLimits(
+                    measurement.cursorXLabel, textAttrs.m_Size, textAttrs.m_StrokeWidth,
+                    false, false, KIFONT::METRICS::Default() );
+            const int labelWidth = std::max( cursorTextSize, xExtent.x );
+            const int labelHeight = std::max( cursorTextSize, xExtent.y );
+            int labelX = cursorX + textGap;
+            GR_TEXT_H_ALIGN_T xAlign = GR_TEXT_H_ALIGN_LEFT;
+
+            if( labelX + labelWidth > layout.plotBox.GetEnd().x )
+            {
+                labelX = cursorX - textGap;
+                xAlign = GR_TEXT_H_ALIGN_RIGHT;
+            }
+
+            if( labelX - labelWidth < layout.plotBox.GetX() )
+            {
+                labelX = layout.plotBox.GetEnd().x - textGap;
+                xAlign = GR_TEXT_H_ALIGN_RIGHT;
+            }
+
+            const int labelY = std::min( layout.plotBox.GetY() + textGap,
+                                         layout.plotBox.GetEnd().y - labelHeight );
+            textAttrs.m_Halign = xAlign;
+            textAttrs.m_Valign = GR_TEXT_V_ALIGN_TOP;
+            aPlotter->PlotText( VECTOR2I( labelX, labelY ), KIGFX::COLOR4D( BLACK ),
+                                measurement.cursorXLabel, textAttrs, font );
+        }
+
+        if( CursorToPlot( cursors.front(), viewport, layout.plotBox, point ) )
+        {
+            const VECTOR2I yExtent = font->StringBoundaryLimits(
+                    measurement.cursorYLabel, textAttrs.m_Size, textAttrs.m_StrokeWidth,
+                    false, false, KIFONT::METRICS::Default() );
+            const int labelWidth = std::max( cursorTextSize, yExtent.x );
+            const int labelHeight = std::max( cursorTextSize, yExtent.y );
+            int labelX = layout.plotBox.GetX() + textGap;
+            GR_TEXT_H_ALIGN_T yAlign = GR_TEXT_H_ALIGN_LEFT;
+
+            if( labelX + labelWidth > layout.plotBox.GetEnd().x )
+            {
+                labelX = layout.plotBox.GetEnd().x - textGap;
+                yAlign = GR_TEXT_H_ALIGN_RIGHT;
+            }
+
+            GR_TEXT_V_ALIGN_T yValign = GR_TEXT_V_ALIGN_BOTTOM;
+            int labelY = point.y - textGap;
+
+            if( labelY - labelHeight < layout.plotBox.GetY() )
+            {
+                labelY = point.y + textGap;
+                yValign = GR_TEXT_V_ALIGN_TOP;
+            }
+
+            if( labelY + labelHeight > layout.plotBox.GetEnd().y )
+            {
+                labelY = point.y - textGap;
+                yValign = GR_TEXT_V_ALIGN_BOTTOM;
+            }
+
+            textAttrs.m_Halign = yAlign;
+            textAttrs.m_Valign = yValign;
+            aPlotter->PlotText( VECTOR2I( labelX, labelY ), KIGFX::COLOR4D( BLACK ),
+                                measurement.cursorYLabel, textAttrs, font );
+        }
+
+        textAttrs.m_Size = VECTOR2I( layout.textSize, layout.textSize );
+        textAttrs.m_StrokeWidth = std::max( 1, layout.textSize / 10 );
     }
 
     aPlotter->SetColor( settings.borderColor );

@@ -156,8 +156,14 @@ public:
         bool     valid = false;
         bool     arrowVisible = false;
         double   arrowY = 0.0;
+        bool     yDeltaVisible = false;
+        double   yDeltaX = 0.0;
         wxString frequencyLabel;
         wxString periodLabel;
+        wxString yDeltaLabel;
+        bool     singleCursorValid = false;
+        wxString cursorXLabel;
+        wxString cursorYLabel;
     };
 
     SCH_SCOPE( const VECTOR2I& aPosition = VECTOR2I( 0, 0 ), SCH_LAYER_ID aLayer = LAYER_DEVICE,

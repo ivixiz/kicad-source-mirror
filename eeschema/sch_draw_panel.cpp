@@ -139,6 +139,60 @@ SCH_SYMBOL* SCH_DRAW_PANEL::scopeAt( const wxPoint& aPosition ) const
 }
 
 
+bool SCH_DRAW_PANEL::scopeCursorAddEdgeAt( const wxPoint& aPosition,
+                                           SCH_SYMBOL** aScope ) const
+{
+    if( aScope )
+        *aScope = nullptr;
+
+    SCH_SYMBOL* scope = scopeAt( aPosition );
+
+    if( !scope )
+        return false;
+
+    const SCH_SCOPE::SETTINGS settings = SCH_SCOPE::GetSettings( scope );
+
+    if( settings.sources.empty() )
+        return false;
+
+    const SCH_SCOPE::LAYOUT layout = SCH_SCOPE::GetLayout( scope );
+    const BOX2I&            plotBox = layout.plotBox;
+
+    if( plotBox.GetWidth() <= 0 || plotBox.GetHeight() <= 0 )
+        return false;
+
+    const VECTOR2D world = GetView()->ToWorld( VECTOR2D( aPosition.x, aPosition.y ) );
+    const int edgeTolerance = std::max( settings.gridWidth * 2,
+                                        KiROUND( GetView()->ToWorld( 6.0 ) ) );
+    const bool withinHeight = world.y >= plotBox.GetY() - edgeTolerance
+                              && world.y <= plotBox.GetEnd().y + edgeTolerance;
+    const bool onVerticalEdge = withinHeight
+                                && ( std::abs( world.x - plotBox.GetX() ) <= edgeTolerance
+                                     || std::abs( world.x - plotBox.GetEnd().x )
+                                                <= edgeTolerance );
+
+    if( !onVerticalEdge )
+        return false;
+
+    const std::vector<SCH_SCOPE::CURSOR> cursors = SCH_SCOPE::GetCursors( scope );
+    const SCH_SCOPE::VIEWPORT viewport = SCH_SCOPE::GetViewport( scope );
+    const bool canRelocateOffscreenCursor =
+            std::any_of( cursors.begin(), cursors.end(),
+                         [&]( const SCH_SCOPE::CURSOR& aCursor )
+                         {
+                             return aCursor.x < viewport.xMin || aCursor.x > viewport.xMax;
+                         } );
+
+    if( cursors.size() >= 2 && !canRelocateOffscreenCursor )
+        return false;
+
+    if( aScope )
+        *aScope = scope;
+
+    return true;
+}
+
+
 void SCH_DRAW_PANEL::refreshScope( SCH_SYMBOL* aScope )
 {
     if( !aScope )
@@ -431,6 +485,14 @@ void SCH_DRAW_PANEL::onScopeMotion( wxMouseEvent& aEvent )
 {
     if( m_scopeCursorTarget )
     {
+        const BOX2I plotBox = SCH_SCOPE::GetLayout( m_scopeCursorTarget ).plotBox;
+        const VECTOR2D world = GetView()->ToWorld(
+                VECTOR2D( aEvent.GetX(), aEvent.GetY() ) );
+
+        SetCurrentCursor( world.x < plotBox.GetX() || world.x > plotBox.GetEnd().x
+                                  ? KICURSOR::SCOPE_REMOVE_PLOT
+                                  : KICURSOR::SCOPE );
+
         if( !aEvent.LeftIsDown() )
         {
             SCH_SYMBOL* scope = m_scopeCursorTarget;
@@ -481,6 +543,13 @@ void SCH_DRAW_PANEL::onScopeMotion( wxMouseEvent& aEvent )
 
     if( !m_scopePanTarget )
     {
+        if( aEvent.ControlDown() && !aEvent.ShiftDown() && !aEvent.AltDown()
+            && scopeCursorAddEdgeAt( aEvent.GetPosition() ) )
+        {
+            SetCurrentCursor( KICURSOR::SCOPE_ADD_CURSOR );
+            return;
+        }
+
         aEvent.Skip();
         return;
     }

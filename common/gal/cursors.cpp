@@ -51,12 +51,16 @@
 #include <cursors/differential_probe_win.xpm>
 #include <cursors/current_probe_win.xpm>
 #include <cursors/scope_cursor_win.xpm>
+#include <cursors/scope_add_cursor_win.xpm>
+#include <cursors/scope_remove_plot_win.xpm>
 #else
 #include <cursors/cursor_tune_black.xpm>
 #include <cursors/voltage_probe_black.xpm>
 #include <cursors/differential_probe_black.xpm>
 #include <cursors/current_probe_black.xpm>
 #include <cursors/scope_cursor_black.xpm>
+#include <cursors/scope_add_cursor_black.xpm>
+#include <cursors/scope_remove_plot_black.xpm>
 #endif
 
 // HiDPI cursor files
@@ -84,12 +88,16 @@
 #include <cursors/differential_probe_win64.xpm>
 #include <cursors/current_probe_win64.xpm>
 #include <cursors/scope_cursor_win64.xpm>
+#include <cursors/scope_add_cursor_win64.xpm>
+#include <cursors/scope_remove_plot_win64.xpm>
 #else
 #include <cursors/cursor_tune_black64.xpm>
 #include <cursors/voltage_probe_black64.xpm>
 #include <cursors/differential_probe_black64.xpm>
 #include <cursors/current_probe_black64.xpm>
 #include <cursors/scope_cursor_black64.xpm>
+#include <cursors/scope_add_cursor_black64.xpm>
+#include <cursors/scope_remove_plot_black64.xpm>
 #endif
 
 
@@ -151,6 +159,30 @@ static const std::map<KICURSOR, std::vector<CURSOR_STORE::CURSOR_DEF>> cursors_d
 #else
             { scope_cursor_black32_xpm, { 0, 0 } },
             { scope_cursor_black64_xpm, { 0, 0 } }
+#endif
+        }
+    },
+    {
+        KICURSOR::SCOPE_ADD_CURSOR,
+        {
+#ifdef __WINDOWS__
+            { scope_add_cursor_win32_xpm, { 16, 16 } },
+            { scope_add_cursor_win64_xpm, { 32, 32 } }
+#else
+            { scope_add_cursor_black32_xpm, { 16, 16 } },
+            { scope_add_cursor_black64_xpm, { 32, 32 } }
+#endif
+        }
+    },
+    {
+        KICURSOR::SCOPE_REMOVE_PLOT,
+        {
+#ifdef __WINDOWS__
+            { scope_remove_plot_win32_xpm, { 16, 16 } },
+            { scope_remove_plot_win64_xpm, { 32, 32 } }
+#else
+            { scope_remove_plot_black32_xpm, { 16, 16 } },
+            { scope_remove_plot_black64_xpm, { 32, 32 } }
 #endif
         }
     },

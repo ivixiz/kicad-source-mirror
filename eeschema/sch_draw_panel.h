@@ -55,6 +55,7 @@ protected:
 
 private:
     SCH_SYMBOL* scopeAt( const wxPoint& aPosition ) const;
+    bool scopeCursorAddEdgeAt( const wxPoint& aPosition, SCH_SYMBOL** aScope = nullptr ) const;
     void refreshScope( SCH_SYMBOL* aScope );
     bool updateScopeCursor( const wxPoint& aPosition );
     void onScopeMouseWheel( wxMouseEvent& aEvent );
