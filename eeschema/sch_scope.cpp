@@ -497,9 +497,14 @@ void removePinsByNumber( LIB_SYMBOL* aSymbol, const wxString& aNumber )
 }
 #endif
 
+// Scope configuration is a hidden field on the placed symbol so it travels with the schematic.
 const wxString SCOPE_WAVEFORMS_FIELD = wxS( "__ScopeWaveforms" );
 constexpr int  SCOPE_SETTINGS_VERSION = 3;
+
+// Drop numerical residue from adaptive simulation steps before calculating visible bounds.
 constexpr double SCOPE_ZERO_CLIP = 1e-18;
+
+// Avoid clipping a waveform that exactly reaches its computed min/max bounds.
 constexpr double SCOPE_VERTICAL_PADDING = 0.05;
 
 
@@ -534,6 +539,8 @@ wxString compactScopeNetName( wxString aNetName )
     return aNetName;
 }
 
+// Simulation samples and interaction state are intentionally session-local.  Keeping them out
+// of SETTINGS avoids serializing potentially very large transient ngspice vectors into a sheet.
 struct SCOPE_RUNTIME_STATE
 {
     std::vector<SCH_SCOPE::WAVEFORM> waveforms;
@@ -547,6 +554,7 @@ struct SCOPE_RUNTIME_STATE
 };
 
 
+// Settings are read during every paint pass; cache the parsed JSON until the hidden field changes.
 struct SCOPE_SETTINGS_CACHE
 {
     wxString            serialized;
@@ -554,6 +562,8 @@ struct SCOPE_SETTINGS_CACHE
 };
 
 
+// Eeschema accesses these maps on its GUI thread.  KIID makes the state independent of object
+// addresses, which can change during undo/redo or symbol replacement.
 std::unordered_map<KIID, SCOPE_RUNTIME_STATE> s_scopeRuntime;
 std::unordered_map<KIID, SCOPE_SETTINGS_CACHE> s_scopeSettingsCache;
 
@@ -583,6 +593,8 @@ int sanitizeWidth( int aWidth, int aDefault )
 }
 
 
+// Validate persisted user data at one boundary.  This keeps the render paths free of defensive
+// checks for negative widths, duplicate signals and incomplete older settings records.
 SCH_SCOPE::SETTINGS sanitizeSettings( SCH_SCOPE::SETTINGS aSettings )
 {
     SCH_SCOPE::SETTINGS defaults = SCH_SCOPE::DefaultSettings();
@@ -632,6 +644,8 @@ SCH_SCOPE::SETTINGS sanitizeSettings( SCH_SCOPE::SETTINGS aSettings )
 }
 
 
+// JSON is the current on-sheet format.  The newline list is accepted only as a migration path
+// for scopes written by the initial waveform-source prototype.
 SCH_SCOPE::SETTINGS parseSettings( const wxString& aSerialized )
 {
     SCH_SCOPE::SETTINGS settings = SCH_SCOPE::DefaultSettings();
@@ -775,6 +789,8 @@ bool sameSources( const SCH_SCOPE::SETTINGS& aLeft, const SCH_SCOPE::SETTINGS& a
 }
 
 
+// Cursor intersections use linear interpolation.  Monotonic simulator traces take the fast
+// binary-search path; the linear fallback also supports arbitrary imported sample ordering.
 bool sampleWaveformAtX( const SCH_SCOPE::WAVEFORM& aWaveform, double aX, double& aY )
 {
     const size_t size = std::min( aWaveform.x.size(), aWaveform.y.size() );
@@ -839,6 +855,7 @@ bool sampleWaveformAtX( const SCH_SCOPE::WAVEFORM& aWaveform, double aX, double&
 }
 
 
+// Cursors follow the first source in SETTINGS, which is also painted above the other waveforms.
 void updateCursorIntersections( const SCH_SCOPE::SETTINGS& aSettings,
                                 SCOPE_RUNTIME_STATE& aRuntime )
 {
@@ -878,6 +895,8 @@ void updateCursorIntersections( const SCH_SCOPE::SETTINGS& aSettings,
 }
 
 
+// Cheap during-drag update: only the labels change.  Expensive arrow placement waits until the
+// cursor move finishes in updateCursorMeasurement().
 void updateCursorReadout( const SCH_SYMBOL* aSymbol, const SCH_SCOPE::SETTINGS& aSettings,
                           SCOPE_RUNTIME_STATE& aRuntime )
 {
@@ -904,12 +923,10 @@ void updateCursorReadout( const SCH_SYMBOL* aSymbol, const SCH_SCOPE::SETTINGS& 
 
         if( !cursor.valid )
             return;
-        measurement.cursorXLabel = //wxS( "X=" ) + 
-                                   SCH_SCOPE::FormatEngineeringValue(
-                                           aRuntime.bounds.minX + cursor.x * xRange );
-        measurement.cursorYLabel = //wxS( "Y=" ) + 
-                                   SCH_SCOPE::FormatEngineeringValue(
-                                           aRuntime.bounds.minY + cursor.y * yRange );
+        measurement.cursorXLabel = SCH_SCOPE::FormatEngineeringValue(
+                aRuntime.bounds.minX + cursor.x * xRange );
+        measurement.cursorYLabel = SCH_SCOPE::FormatEngineeringValue(
+                aRuntime.bounds.minY + cursor.y * yRange );
         measurement.singleCursorValid = true;
         measurement.valid = true;
         return;
@@ -938,11 +955,8 @@ void updateCursorReadout( const SCH_SYMBOL* aSymbol, const SCH_SCOPE::SETTINGS& 
                                  + wxS( "Hz" );
     measurement.periodLabel = wxS( "T=" ) + SCH_SCOPE::FormatEngineeringValue( period )
                               + wxS( "s" );
-    measurement.yDeltaLabel = //wxS( "dY=" ) + 
-                              SCH_SCOPE::FormatEngineeringValue(
-                                      std::abs( aRuntime.cursors[1].y
-                                                - aRuntime.cursors[0].y )
-                                      * yRange );
+    measurement.yDeltaLabel = SCH_SCOPE::FormatEngineeringValue(
+            std::abs( aRuntime.cursors[1].y - aRuntime.cursors[0].y ) * yRange );
 
     const int textSize = std::max( 1, layout.textSize * 4 / 5 );
     const int lineWidth = std::max( 1, aSettings.minorGridWidth );
@@ -960,6 +974,8 @@ void updateCursorReadout( const SCH_SYMBOL* aSymbol, const SCH_SCOPE::SETTINGS& 
 }
 
 
+// Once a cursor move is complete, choose arrow and label positions that avoid traces and the
+// plot boundary.  This runs on committed interaction changes, not on every paint call.
 void updateCursorMeasurement( const SCH_SYMBOL* aSymbol, const SCH_SCOPE::SETTINGS& aSettings,
                               SCOPE_RUNTIME_STATE& aRuntime )
 {
@@ -1669,6 +1685,27 @@ const std::vector<SCH_SCOPE::WAVEFORM>* SCH_SCOPE::GetWaveforms( const SCH_SYMBO
 }
 
 
+const SCH_SCOPE::WAVEFORM* SCH_SCOPE::GetWaveform( const SCH_SYMBOL* aSymbol,
+                                                    const wxString& aName )
+{
+    const std::vector<WAVEFORM>* waveforms = GetWaveforms( aSymbol );
+
+    if( !waveforms )
+        return nullptr;
+
+    const auto waveform = std::find_if(
+            waveforms->begin(), waveforms->end(),
+            [&]( const WAVEFORM& aWaveform )
+            {
+                return aWaveform.name == aName;
+            } );
+
+    return waveform == waveforms->end() ? nullptr : &*waveform;
+}
+
+
+// Replace only transient simulation data.  In particular, preserve the user's viewport so a
+// re-run, a deleted probe or a waveform edit does not unexpectedly reset pan or zoom.
 void SCH_SCOPE::SetWaveforms( const SCH_SYMBOL* aSymbol, std::vector<WAVEFORM> aWaveforms )
 {
     if( !aSymbol )
@@ -2226,6 +2263,9 @@ std::vector<std::pair<VECTOR2I, VECTOR2I>> SCH_SCOPE::BuildWaveformSegments(
         const WAVEFORM& aWaveform, const DATA_BOUNDS& aBounds, const VIEWPORT& aViewport,
         const BOX2I& aPlotBox, size_t aBucketCount )
 {
+    // Both GAL and PLOTTER consume this geometry.  For dense monotonic traces retain the first,
+    // last, minimum and maximum sample from each horizontal bucket: this preserves narrow peaks
+    // without issuing one draw operation per simulator sample.
     std::vector<std::pair<VECTOR2I, VECTOR2I>> segments;
     const size_t size = std::min( aWaveform.x.size(), aWaveform.y.size() );
     const double xRange = aBounds.maxX - aBounds.minX;
@@ -2371,6 +2411,8 @@ std::vector<std::pair<VECTOR2I, VECTOR2I>> SCH_SCOPE::BuildWaveformSegments(
 
 void SCH_SCOPE::PlotWaveforms( PLOTTER* aPlotter, const SCH_SYMBOL* aSymbol )
 {
+    // This is the vector-export backend.  Screen drawing stays in SCH_PAINTER because it owns
+    // GAL state and depth ordering; layout, labels and decimated trace geometry are shared here.
     if( !aPlotter || !IsScopeSymbol( aSymbol ) )
         return;
 
@@ -2383,7 +2425,6 @@ void SCH_SCOPE::PlotWaveforms( PLOTTER* aPlotter, const SCH_SYMBOL* aSymbol )
     const VIEWPORT viewport = GetViewport( aSymbol );
     const DATA_BOUNDS bounds = GetDataBounds( aSymbol );
     const AXIS_INFO axisInfo = GetAxisInfo( aSymbol );
-    const std::vector<WAVEFORM>* waveforms = GetWaveforms( aSymbol );
 
     auto drawGrid = [&]( int aXDivisions, int aYDivisions, bool aSkipMajor,
                          const KIGFX::COLOR4D& aColor, int aWidth, LINE_STYLE aStyle )
@@ -2545,28 +2586,21 @@ void SCH_SCOPE::PlotWaveforms( PLOTTER* aPlotter, const SCH_SYMBOL* aSymbol )
         }
     }
 
-    if( waveforms )
+    for( auto sourceIt = settings.sources.rbegin(); sourceIt != settings.sources.rend();
+         ++sourceIt )
     {
-        for( auto sourceIt = settings.sources.rbegin(); sourceIt != settings.sources.rend();
-             ++sourceIt )
+        const WAVEFORM_SOURCE& source = *sourceIt;
+        const WAVEFORM* waveform = GetWaveform( aSymbol, source.name );
+
+        if( !waveform )
+            continue;
+
+        aPlotter->SetColor( source.color );
+
+        for( const auto& [start, end] : BuildWaveformSegments(
+                     *waveform, bounds, viewport, layout.plotBox, 1200 ) )
         {
-            const WAVEFORM_SOURCE& source = *sourceIt;
-            auto waveform = std::find_if( waveforms->begin(), waveforms->end(),
-                                          [&]( const WAVEFORM& aWaveform )
-                                          {
-                                              return aWaveform.name == source.name;
-                                          } );
-
-            if( waveform == waveforms->end() )
-                continue;
-
-            aPlotter->SetColor( source.color );
-
-            for( const auto& [start, end] : BuildWaveformSegments(
-                         *waveform, bounds, viewport, layout.plotBox, 1200 ) )
-            {
-                aPlotter->ThickSegment( start, end, source.lineWidth, nullptr );
-            }
+            aPlotter->ThickSegment( start, end, source.lineWidth, nullptr );
         }
     }
 

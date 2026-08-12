@@ -37,6 +37,19 @@ class PLOTTER;
 class SCH_SYMBOL;
 
 
+/**
+ * Schematic waveform canvas.
+ *
+ * A placed scope is a SCH_SYMBOL with LibId() and a single SCH_SCOPE rectangle in its local
+ * library symbol.  This class deliberately owns the scope-specific data model, serialization,
+ * geometry calculations, waveform decimation and PDF plotting.  Editor tools own wx event
+ * handling, SCH_PAINTER owns GAL calls, and SIMULATOR_FRAME owns ngspice data acquisition.
+ *
+ * SETTINGS is persisted in a hidden field on the placed symbol.  Samples, viewport and cursor
+ * state are runtime-only and are keyed by the symbol UUID; they must never be written into the
+ * schematic file.  This keeps scope configuration portable while avoiding large schematic files
+ * and stale simulation data after a reload.
+ */
 class SCH_SCOPE : public SCH_SHAPE
 {
 public:
@@ -59,6 +72,7 @@ public:
     };
 #endif
 
+    /** Runtime samples supplied by SIMULATOR_FRAME after a completed simulation. */
     struct WAVEFORM
     {
         wxString           name;
@@ -71,6 +85,7 @@ public:
         bool               monotonicX = false;
     };
 
+    /** Persisted display settings for one simulator signal.  Source order is z-order. */
     struct WAVEFORM_SOURCE
     {
         wxString       name;
@@ -80,6 +95,12 @@ public:
         bool operator==( const WAVEFORM_SOURCE& aOther ) const;
     };
 
+    /**
+     * Persisted scope appearance and selected signals.
+     *
+     * The defaults are intentionally independent of the editor color theme: a scope is a
+     * document object and therefore preserves its explicitly selected appearance.
+     */
     struct SETTINGS
     {
         std::vector<WAVEFORM_SOURCE> sources;
@@ -101,6 +122,7 @@ public:
         bool operator!=( const SETTINGS& aOther ) const { return !( *this == aOther ); }
     };
 
+    /** Normalized visible data interval.  [0, 1] displays the complete simulation result. */
     struct VIEWPORT
     {
         double xMin = 0.0;
@@ -109,6 +131,7 @@ public:
         double yMax = 1.0;
     };
 
+    /** Cached bounds of the current runtime samples, including the small vertical headroom. */
     struct DATA_BOUNDS
     {
         double minX = 0.0;
@@ -117,12 +140,19 @@ public:
         double maxY = 1.0;
     };
 
+    /** Names derived from the currently selected simulator analysis. */
     struct AXIS_INFO
     {
         wxString xName = wxS( "X" );
         wxString yName = wxS( "Amplitude" );
     };
 
+    /**
+     * World-coordinate layout shared by screen hit testing, GAL painting and PDF plotting.
+     *
+     * Keeping this calculation in the model prevents renderer-specific margins and legend hit
+     * boxes from drifting apart when the scope is resized.
+     */
     struct LAYOUT
     {
         BOX2I bodyBox;
@@ -137,6 +167,7 @@ public:
         int   yDivisions = 5;
     };
 
+    /** Transient normalized rectangle used for the LTspice-style zoom selection gesture. */
     struct ZOOM_SELECTION
     {
         bool     active = false;
@@ -144,6 +175,10 @@ public:
         VECTOR2D end;
     };
 
+    /**
+     * A crosshair cursor in normalized viewport coordinates.  Its y value follows the topmost
+     * visible waveform so a cursor remains useful while the view is panned or zoomed.
+     */
     struct CURSOR
     {
         double x = 0.0;
@@ -151,6 +186,7 @@ public:
         bool   valid = false;
     };
 
+    /** Precomputed labels and placements for cursor readouts and delta arrows. */
     struct CURSOR_MEASUREMENT
     {
         bool     valid = false;
@@ -169,26 +205,42 @@ public:
     SCH_SCOPE( const VECTOR2I& aPosition = VECTOR2I( 0, 0 ), SCH_LAYER_ID aLayer = LAYER_DEVICE,
                int aLineWidth = 0, FILL_T aFillType = FILL_T::FILLED_WITH_COLOR );
 
+    /** Default and smallest permitted size for a newly placed scope canvas. */
     static VECTOR2I DefaultSize();
     static VECTOR2I MinimumSize();
+
+    /** Library identity used to distinguish canvas symbols from ordinary schematic symbols. */
     static LIB_ID LibId();
     static bool IsScopeSymbol( const SCH_SYMBOL* aSymbol );
+
+    /**
+     * Migrate a placed scope to the pinless canvas representation and synchronize its body
+     * shape with SETTINGS.  This is intentionally idempotent and may be called on load, edit or
+     * before simulation refresh.
+     */
     static bool NormalizeCanvasSymbol( SCH_SYMBOL* aSymbol );
 
+    /** Persisted configuration access.  SetSettings preserves runtime samples and viewport. */
     static SETTINGS DefaultSettings();
     static KIGFX::COLOR4D DefaultWaveformColor( size_t aIndex );
     static SETTINGS GetSettings( const SCH_SYMBOL* aSymbol );
     static void SetSettings( SCH_SYMBOL* aSymbol, const SETTINGS& aSettings );
 
+    /** Compatibility helpers for callers that only need the selected signal names. */
     static std::vector<wxString> GetWaveformSources( const SCH_SYMBOL* aSymbol );
     static void SetWaveformSources( SCH_SYMBOL* aSymbol,
                                     const std::vector<wxString>& aSources );
+
+    /** Runtime waveform access.  SetWaveforms sanitizes samples and recomputes data bounds. */
     static const std::vector<WAVEFORM>* GetWaveforms( const SCH_SYMBOL* aSymbol );
+    static const WAVEFORM* GetWaveform( const SCH_SYMBOL* aSymbol, const wxString& aName );
     static void SetWaveforms( const SCH_SYMBOL* aSymbol, std::vector<WAVEFORM> aWaveforms );
     static void ClearWaveforms( const SCH_SYMBOL* aSymbol );
     static DATA_BOUNDS GetDataBounds( const SCH_SYMBOL* aSymbol );
     static AXIS_INFO GetAxisInfo( const SCH_SYMBOL* aSymbol );
     static void SetAxisInfo( const SCH_SYMBOL* aSymbol, const AXIS_INFO& aInfo );
+
+    /** Crosshair lifetime and measurements.  At most two cursors are retained per scope. */
     static std::vector<CURSOR> GetCursors( const SCH_SYMBOL* aSymbol );
     static int AddCursor( const SCH_SYMBOL* aSymbol, double aNormalizedX );
     static bool MoveCursor( const SCH_SYMBOL* aSymbol, int aIndex, double aNormalizedX );
@@ -200,6 +252,7 @@ public:
                                const BOX2I& aPlotBox, int& aPosition );
     static bool CursorToPlot( const CURSOR& aCursor, const VIEWPORT& aViewport,
                               const BOX2I& aPlotBox, VECTOR2I& aPosition );
+    /** Formatting helpers shared by the screen renderer and vector PDF renderer. */
     static wxString FormatEngineeringValue( double aValue );
     static wxString FormatWaveformLabel( const wxString& aSource );
     static wxString FitLegendLabel( const wxString& aLabel, int aAvailableWidth,
@@ -207,13 +260,22 @@ public:
     static std::vector<wxString> FormatEngineeringTicks( double aMin, double aMax,
                                                          int aDivisions );
 
+    /** Shared geometry, legend hit testing and bounded waveform decimation. */
     static LAYOUT GetLayout( const SCH_SYMBOL* aSymbol );
     static int HitTestLegend( const SCH_SYMBOL* aSymbol, const VECTOR2I& aPosition );
     static std::vector<std::pair<VECTOR2I, VECTOR2I>> BuildWaveformSegments(
             const WAVEFORM& aWaveform, const DATA_BOUNDS& aBounds, const VIEWPORT& aViewport,
             const BOX2I& aPlotBox, size_t aBucketCount );
+    /**
+     * Emit the complete scope canvas to a PLOTTER for schematic export.
+     *
+     * SCH_PAINTER has a matching GAL-specific draw path.  The two backends intentionally remain
+     * separate because GAL and PLOTTER have different clipping, font and depth APIs; all data
+     * calculations they share are exposed above instead of being duplicated in the renderers.
+     */
     static void PlotWaveforms( PLOTTER* aPlotter, const SCH_SYMBOL* aSymbol );
 
+    /** Runtime viewport and box-zoom operations.  They never modify the schematic. */
     static VIEWPORT GetViewport( const SCH_SYMBOL* aSymbol );
     static bool ZoomViewport( const SCH_SYMBOL* aSymbol, const VECTOR2D& aAnchor,
                               double aFactor );
@@ -225,6 +287,7 @@ public:
     static bool FinishZoomSelection( const SCH_SYMBOL* aSymbol );
     static void CancelZoomSelection( const SCH_SYMBOL* aSymbol );
 
+    /** Scope placement/resize grid; retained separately from the canvas display grid. */
     static int GridSize();
 
 #if 0
