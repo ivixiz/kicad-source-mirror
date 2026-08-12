@@ -779,6 +779,12 @@ private:
 };
 
 
+/*
+ * A placed scope is represented by a local-library rectangle rather than a standalone shape.
+ * This behavior exposes the familiar rectangle handles while translating their world-space edits
+ * back through the symbol transform.  Keeping the transform handling here prevents a rotated
+ * scope from accumulating its previous size or position during resize.
+ */
 class SCOPE_SYMBOL_POINT_EDIT_BEHAVIOR : public POINT_EDIT_BEHAVIOR
 {
 public:
@@ -820,6 +826,8 @@ public:
 
     static void SetMovingFlags( SCH_SYMBOL& aSymbol )
     {
+        // The symbol body is painted through a child LIB_SYMBOL.  Mark both parent and children
+        // while the handle moves so GAL discards old cached primitives instead of leaving trails.
         aSymbol.SetFlags( IS_MOVING );
         aSymbol.RunOnChildren(
                 []( SCH_ITEM* aChild )
@@ -866,6 +874,9 @@ public:
         const BOX2I    oldBox = getBodyBox();
         const VECTOR2I minSize = getWorldMinimumSize();
 
+        // Side handles are deliberately single-axis.  Apart from feeling like a normal rectangle,
+        // this removes the opposing-corner feedback that caused visible handle jitter at slow
+        // pointer speeds.
         if( isModified( aEditedPoint, aPoints.Line( RECT_TOP ) ) )
         {
             topLeft = VECTOR2I( oldBox.GetLeft(),
@@ -998,6 +1009,8 @@ private:
     VECTOR2I getSymbolPositionForWorldBox( const BOX2I& aWorldBox,
                                            const VECTOR2I& aLocalSize ) const
     {
+        // Derive the placement anchor from the transformed local rectangle.  Subtracting only a
+        // width/height is wrong for mirrored and quarter-turn rotations.
         BOX2I transformedBox = BOX2I::ByCorners( VECTOR2I( 0, 0 ),
                                                  m_symbol.GetTransform().TransformCoordinate( aLocalSize ) );
 
@@ -1091,6 +1104,8 @@ private:
         BOX2I worldBox = BOX2I::ByCorners( aTopLeft, aBotRight );
         worldBox.Normalize();
 
+        // Enforce the canvas minimum after returning to local axes; world X/Y are swapped for a
+        // 90-degree rotation.  The body style mirrors SETTINGS so a resize never resets colors.
         VECTOR2I size = getLocalSizeFromWorldSize( worldBox.GetSize() );
         const VECTOR2I minSize = SCH_SCOPE::MinimumSize();
 

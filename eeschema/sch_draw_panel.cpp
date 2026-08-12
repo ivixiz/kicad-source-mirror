@@ -114,6 +114,12 @@ SCH_DRAW_PANEL::~SCH_DRAW_PANEL()
 }
 
 
+/*
+ * Scope canvas interaction lives here rather than in SCH_SCOPE because this is the layer that
+ * owns wx mouse capture and conversion between screen pixels and schematic world coordinates.
+ * SCH_SCOPE receives normalized coordinates only, which also makes its viewport state usable by
+ * the GAL and PDF renderers without any UI dependency.
+ */
 SCH_SYMBOL* SCH_DRAW_PANEL::scopeAt( const wxPoint& aPosition ) const
 {
     SCH_BASE_FRAME* frame = dynamic_cast<SCH_BASE_FRAME*>( GetParentEDAFrame() );
@@ -176,6 +182,8 @@ bool SCH_DRAW_PANEL::scopeCursorAddEdgeAt( const wxPoint& aPosition,
 
     const std::vector<SCH_SCOPE::CURSOR> cursors = SCH_SCOPE::GetCursors( scope );
     const SCH_SCOPE::VIEWPORT viewport = SCH_SCOPE::GetViewport( scope );
+    // Ctrl+drag rehomes an off-screen cursor before allocating a third cursor.  This keeps the
+    // model limit of two cursors while making a panned view practical to work with.
     const bool canRelocateOffscreenCursor =
             std::any_of( cursors.begin(), cursors.end(),
                          [&]( const SCH_SCOPE::CURSOR& aCursor )
@@ -198,6 +206,8 @@ void SCH_DRAW_PANEL::refreshScope( SCH_SYMBOL* aScope )
     if( !aScope )
         return;
 
+    // Scope samples and viewport changes do not alter schematic geometry, so a repaint-only
+    // update avoids rebuilding the complete schematic view while dragging or panning.
     GetView()->Update( aScope, KIGFX::REPAINT );
     Refresh();
 }
@@ -217,6 +227,8 @@ bool SCH_DRAW_PANEL::updateScopeCursor( const wxPoint& aPosition )
     const double plotX = std::clamp( ( world.x - plotBox.GetX() ) / plotBox.GetWidth(),
                                      0.0, 1.0 );
     const SCH_SCOPE::VIEWPORT viewport = SCH_SCOPE::GetViewport( m_scopeCursorTarget );
+    // Cursor positions are stored in full-data normalized coordinates, not in screen pixels.
+    // They consequently survive pan/zoom and can be re-rendered by the PDF backend.
     const double normalizedX = viewport.xMin + plotX * ( viewport.xMax - viewport.xMin );
     return SCH_SCOPE::MoveCursor( m_scopeCursorTarget, m_scopeCursorIndex, normalizedX );
 }
@@ -237,6 +249,7 @@ void SCH_DRAW_PANEL::onScopeMouseWheel( wxMouseEvent& aEvent )
                          / std::max( 1, aEvent.GetWheelDelta() );
     bool changed = false;
 
+    // Wheel zooms around its current sample; Ctrl/Shift select horizontal/vertical pan.
     if( aEvent.GetWheelAxis() == wxMOUSE_WHEEL_HORIZONTAL || aEvent.ControlDown() )
     {
         changed = SCH_SCOPE::PanViewport( scope, VECTOR2D( steps * 0.12, 0.0 ) );
@@ -278,6 +291,8 @@ void SCH_DRAW_PANEL::onScopeLeftDown( wxMouseEvent& aEvent )
     const VECTOR2D world = GetView()->ToWorld(
             VECTOR2D( aEvent.GetX(), aEvent.GetY() ) );
 
+    // Ctrl on a vertical grid edge creates a cursor, or brings an existing off-screen cursor
+    // into the current viewport.  Shift and Alt retain their schematic-tool meanings.
     if( aEvent.ControlDown() && !aEvent.ShiftDown() && !aEvent.AltDown() )
     {
         const SCH_SCOPE::SETTINGS settings = SCH_SCOPE::GetSettings( scope );
@@ -367,6 +382,8 @@ void SCH_DRAW_PANEL::onScopeLeftDown( wxMouseEvent& aEvent )
         }
     }
 
+    // An existing vertical cursor is draggable without a modifier.  Dropping it outside the
+    // plot removes it, which avoids another on-canvas control just for cursor deletion.
     if( cursorIndex >= 0 )
     {
         m_scopeCursorTarget = scope;
@@ -387,6 +404,8 @@ void SCH_DRAW_PANEL::onScopeLeftDown( wxMouseEvent& aEvent )
         return;
     }
 
+    // A regular drag inside the plot is an LTspice-style box zoom.  The model defers the more
+    // expensive cursor-delta placement calculation until this interaction finishes.
     m_scopeZoomTarget = scope;
     SCH_SCOPE::BeginZoomSelection(
             scope, VECTOR2D( ( world.x - plotBox.GetX() ) / plotBox.GetWidth(),
@@ -588,6 +607,7 @@ void SCH_DRAW_PANEL::onScopeCaptureLost( wxMouseCaptureLostEvent& aEvent )
         return;
     }
 
+    // Restore a coherent transient state when another wx window takes capture mid-gesture.
     if( m_scopeZoomTarget )
         SCH_SCOPE::CancelZoomSelection( m_scopeZoomTarget );
 

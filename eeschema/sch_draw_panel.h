@@ -54,6 +54,13 @@ protected:
     void setDefaultLayerDeps();     ///< Set rendering targets & dependencies for layers.
 
 private:
+    /**
+     * Runtime scope-canvas interaction.
+     *
+     * SCH_SCOPE owns normalized viewport/cursor state, while the draw panel owns wx mouse
+     * capture, pixel-to-world conversion and repaint scheduling.  These handlers consume events
+     * only inside a scope plot box so ordinary schematic tools keep their normal behaviour.
+     */
     SCH_SYMBOL* scopeAt( const wxPoint& aPosition ) const;
     bool scopeCursorAddEdgeAt( const wxPoint& aPosition, SCH_SYMBOL** aScope = nullptr ) const;
     void refreshScope( SCH_SYMBOL* aScope );

@@ -913,6 +913,7 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
             }
             else
 #endif
+            // Ctrl+click on a scope legend entry is a scoped edit, not a selection modifier.
             if( evt->Modifier() == MD_CTRL && removeScopeWaveformAt( evt->Position() ) )
             {
                 selCancelled = true;
@@ -1519,6 +1520,8 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
             {
                 SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( item );
 
+                // Use the scope cursor only over the plot.  Its border and legend must retain
+                // ordinary selection and Ctrl+click removal behaviour.
                 if( SCH_SCOPE::IsScopeSymbol( symbol )
                     && SCH_SCOPE::GetLayout( symbol ).plotBox.Contains(
                             KiROUND( evt->Position() ) ) )
