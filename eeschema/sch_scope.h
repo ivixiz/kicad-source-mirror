@@ -34,6 +34,8 @@
 
 class LIB_SYMBOL;
 class PLOTTER;
+class SCHEMATIC;
+class SCH_SHEET_PATH;
 class SCH_SYMBOL;
 
 
@@ -212,6 +214,16 @@ public:
     /** Library identity used to distinguish canvas symbols from ordinary schematic symbols. */
     static LIB_ID LibId();
     static bool IsScopeSymbol( const SCH_SYMBOL* aSymbol );
+
+    /**
+     * Create the pinless local symbol used by the Place Scope tool.
+     *
+     * The caller owns the returned symbol and is responsible for adding it to a screen and an
+     * undo commit.  Keeping construction here makes the representation invariant independent of
+     * the placement workflow.
+     */
+    static SCH_SYMBOL* CreateSymbol( SCHEMATIC* aSchematic, const SCH_SHEET_PATH& aSheetPath,
+                                     const VECTOR2I& aPosition );
 
     /**
      * Migrate a placed scope to the pinless canvas representation and synchronize its body

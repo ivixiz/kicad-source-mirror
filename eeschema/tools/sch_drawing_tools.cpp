@@ -75,56 +75,6 @@
 #include <wx/filedlg.h>
 #include <wx/msgdlg.h>
 
-
-namespace
-{
-LIB_ID scopeLibId()
-{
-    return SCH_SCOPE::LibId();
-}
-
-
-std::unique_ptr<LIB_SYMBOL> makeScopeLibSymbol()
-{
-    std::unique_ptr<LIB_SYMBOL> symbol = std::make_unique<LIB_SYMBOL>( wxS( "Scope" ) );
-    const LIB_ID                libId = scopeLibId();
-
-    symbol->SetLibId( libId );
-    symbol->SetDescription( _( "Interactive simulation waveform canvas" ) );
-    symbol->SetShowPinNames( false );
-    symbol->SetShowPinNumbers( false );
-    symbol->SetExcludedFromBOM( true );
-    symbol->SetExcludedFromBoard( true );
-    symbol->SetExcludedFromPosFiles( true );
-
-    symbol->GetReferenceField().SetText( wxS( "SCOPE" ) );
-    symbol->GetReferenceField().SetVisible( false );
-    symbol->GetValueField().SetText( wxS( "Scope" ) );
-    symbol->GetValueField().SetVisible( false );
-
-    symbol->AddDrawItem( new SCH_SCOPE( VECTOR2I( 0, 0 ) ) );
-
-    return symbol;
-}
-
-
-SCH_SYMBOL* makeScopeSymbol( SCHEMATIC* aSchematic, const SCH_SHEET_PATH& aSheetPath,
-                             const VECTOR2I& aPosition )
-{
-    std::unique_ptr<LIB_SYMBOL> libSymbol = makeScopeLibSymbol();
-
-    SCH_SYMBOL* symbol = new SCH_SYMBOL( *libSymbol, scopeLibId(), &aSheetPath, 1, 1, aPosition,
-                                         aSchematic );
-
-    symbol->SetExcludedFromBOM( true, &aSheetPath );
-    symbol->SetExcludedFromBoard( true, &aSheetPath );
-    symbol->SetExcludedFromPosFiles( true, &aSheetPath );
-    symbol->SetExcludedFromSim( true, &aSheetPath );
-
-    return symbol;
-}
-} // namespace
-
 using SCOPED_DRAW_MODE = SCOPED_SET_RESET<SCH_DRAWING_TOOLS::MODE>;
 
 
@@ -2754,7 +2704,8 @@ int SCH_DRAWING_TOOLS::PlaceScope( const TOOL_EVENT& aEvent )
 
     REENTRANCY_GUARD guard( &m_inDrawingTool );
 
-    previewItem = makeScopeSymbol( schematic, m_frame->GetCurrentSheet(), VECTOR2I( 0, 0 ) );
+    previewItem = SCH_SCOPE::CreateSymbol( schematic, m_frame->GetCurrentSheet(),
+                                           VECTOR2I( 0, 0 ) );
     previewItem->SetFlags( IS_NEW | IS_MOVING );
 
     m_toolMgr->DeactivateTool();
@@ -2825,7 +2776,8 @@ int SCH_DRAWING_TOOLS::PlaceScope( const TOOL_EVENT& aEvent )
                 || isSyntheticClick
                 || evt->IsAction( &ACTIONS::cursorClick ) || evt->IsAction( &ACTIONS::cursorDblClick ) )
         {
-            SCH_SYMBOL* scope = makeScopeSymbol( schematic, m_frame->GetCurrentSheet(), cursorPos );
+            SCH_SYMBOL* scope = SCH_SCOPE::CreateSymbol( schematic, m_frame->GetCurrentSheet(),
+                                                          cursorPos );
             scope->SetFlags( IS_NEW );
 
             m_frame->AddToScreen( scope, screen );

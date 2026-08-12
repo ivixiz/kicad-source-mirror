@@ -32,8 +32,10 @@
 #include <plotters/plotter.h>
 #include <sch_field.h>
 #include <sch_pin.h>
+#include <sch_sheet_path.h>
 #include <sch_symbol.h>
 #include <sch_text.h>
+#include <schematic.h>
 #include <units_provider.h>
 
 #include <algorithm>
@@ -41,6 +43,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <unordered_map>
 #include <utility>
@@ -1214,6 +1217,37 @@ LIB_ID SCH_SCOPE::LibId()
 bool SCH_SCOPE::IsScopeSymbol( const SCH_SYMBOL* aSymbol )
 {
     return aSymbol && aSymbol->GetLibId() == LibId();
+}
+
+
+SCH_SYMBOL* SCH_SCOPE::CreateSymbol( SCHEMATIC* aSchematic, const SCH_SHEET_PATH& aSheetPath,
+                                     const VECTOR2I& aPosition )
+{
+    std::unique_ptr<LIB_SYMBOL> libSymbol = std::make_unique<LIB_SYMBOL>( wxS( "Scope" ) );
+    const LIB_ID                libId = LibId();
+
+    libSymbol->SetLibId( libId );
+    libSymbol->SetDescription( _( "Interactive simulation waveform canvas" ) );
+    libSymbol->SetShowPinNames( false );
+    libSymbol->SetShowPinNumbers( false );
+    libSymbol->SetExcludedFromBOM( true );
+    libSymbol->SetExcludedFromBoard( true );
+    libSymbol->SetExcludedFromPosFiles( true );
+    libSymbol->GetReferenceField().SetText( wxS( "SCOPE" ) );
+    libSymbol->GetReferenceField().SetVisible( false );
+    libSymbol->GetValueField().SetText( wxS( "Scope" ) );
+    libSymbol->GetValueField().SetVisible( false );
+    libSymbol->AddDrawItem( new SCH_SCOPE( VECTOR2I( 0, 0 ) ) );
+
+    SCH_SYMBOL* symbol = new SCH_SYMBOL( *libSymbol, libId, &aSheetPath, 1, 1, aPosition,
+                                         aSchematic );
+
+    // A scope is an editor-only visualization object, never a netlist, board or simulator item.
+    symbol->SetExcludedFromBOM( true, &aSheetPath );
+    symbol->SetExcludedFromBoard( true, &aSheetPath );
+    symbol->SetExcludedFromPosFiles( true, &aSheetPath );
+    symbol->SetExcludedFromSim( true, &aSheetPath );
+    return symbol;
 }
 
 
