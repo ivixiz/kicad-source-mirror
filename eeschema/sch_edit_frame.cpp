@@ -2388,7 +2388,9 @@ void SCH_EDIT_FRAME::DisplayCurrentSheet()
 
     SCH_BASE_FRAME::SetScreen( screen );
 
-    // Migrate the old pin/channel-based scope prototype to the pinless waveform canvas.
+    // Migrate the old pin/channel-based scope prototype to the pinless waveform canvas.  The
+    // operation is idempotent, so it also repairs a scope body whose cached symbol graphics were
+    // loaded without its persisted appearance settings.
     for( SCH_ITEM* item : screen->Items().OfType( SCH_SYMBOL_T ) )
     {
         SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( item );

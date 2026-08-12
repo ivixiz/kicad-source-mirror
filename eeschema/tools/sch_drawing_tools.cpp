@@ -2692,6 +2692,9 @@ int SCH_DRAWING_TOOLS::DrawShape( const TOOL_EVENT& aEvent )
 
 int SCH_DRAWING_TOOLS::PlaceScope( const TOOL_EVENT& aEvent )
 {
+    // Scope placement follows the symbol placement lifecycle for preview, undo and automatic
+    // annotation.  SCH_SCOPE::CreateSymbol owns the special local-library representation; this
+    // tool owns only the interactive placement transaction.
     SCHEMATIC*           schematic = getModel<SCHEMATIC>();
     SCH_SCREEN*          screen = m_frame->GetScreen();
     SCH_SYMBOL*          previewItem = nullptr;
@@ -2792,6 +2795,8 @@ int SCH_DRAWING_TOOLS::PlaceScope( const TOOL_EVENT& aEvent )
             SCHEMATIC_SETTINGS& schSettings = schematic->Settings();
             NULL_REPORTER       reporter;
 
+            // A scope is a normal schematic symbol for reference annotation even though it is
+            // excluded from BOM, board, position files and the simulation netlist.
             m_frame->AnnotateSymbols( &commit, ANNOTATE_SELECTION,
                                       static_cast<ANNOTATE_ORDER_T>(
                                               schSettings.m_AnnotateSortOrder ),

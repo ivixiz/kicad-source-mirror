@@ -1005,6 +1005,8 @@ void SCH_SCREEN::Plot( PLOTTER* aPlotter, const SCH_PLOT_OPTS& aPlotOpts, const 
                 const SCH_SYMBOL* symbol = static_cast<const SCH_SYMBOL*>( item );
 
                 if( SCH_SCOPE::IsScopeSymbol( symbol ) )
+                    // The symbol plot draws the canvas body.  SCH_SCOPE owns the matching
+                    // PLOTTER overlay so traces, axes, legend and cursors also reach PDF.
                     SCH_SCOPE::PlotWaveforms( aPlotter, symbol );
             }
         }
