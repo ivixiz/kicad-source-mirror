@@ -585,15 +585,22 @@ bool SIMULATOR_FRAME::GetWaveformColor( const wxString& aSignal, wxColour& aColo
 
 void SIMULATOR_FRAME::RefreshSchematicScopes( SCH_SYMBOL* aScope )
 {
+    /*
+     * Simulator-to-schematic bridge.  SCH_SCOPE owns rendering and the transient vector cache,
+     * while this frame is the sole owner of ngspice results.  Do not move simulator calls into
+     * SCH_SCOPE: that would make the schematic model depend on a live simulator window.
+     */
     auto refreshScope =
             [&]( SCH_SYMBOL* aSymbol )
             {
                 if( !SCH_SCOPE::IsScopeSymbol( aSymbol ) )
                     return;
 
+                // Normalize legacy pin-based scopes before accessing their canvas settings.
                 SCH_SCOPE::NormalizeCanvasSymbol( aSymbol );
                 std::vector<SCH_SCOPE::WAVEFORM> waveforms;
                 SCH_SCOPE::AXIS_INFO axisInfo;
+                const std::vector<wxString> sources = SCH_SCOPE::GetWaveformSources( aSymbol );
 
                 switch( GetCurrentSimType() )
                 {
@@ -610,7 +617,7 @@ void SIMULATOR_FRAME::RefreshSchematicScopes( SCH_SYMBOL* aScope )
                 bool haveCurrent = false;
                 bool havePower = false;
 
-                for( const wxString& source : SCH_SCOPE::GetWaveformSources( aSymbol ) )
+                for( const wxString& source : sources )
                 {
                     haveCurrent = haveCurrent || source.StartsWith( wxS( "I(" ) );
                     havePower = havePower || source.StartsWith( wxS( "P(" ) )
@@ -637,11 +644,14 @@ void SIMULATOR_FRAME::RefreshSchematicScopes( SCH_SYMBOL* aScope )
 
                 if( m_simFinished )
                 {
-                    for( const wxString& source : SCH_SCOPE::GetWaveformSources( aSymbol ) )
+                    for( const wxString& source : sources )
                     {
                         SCH_SCOPE::WAVEFORM waveform;
                         waveform.name = source;
 
+                        // ngspice exposes differential voltages through a named user vector.
+                        // Ensure it exists before requesting samples.  A missing vector simply
+                        // contributes no runtime samples to the scope after this refresh.
                         if( source.Contains( wxS( ")-V(" ) ) )
                             EnsureUserDefinedSignal( source );
 
@@ -650,6 +660,8 @@ void SIMULATOR_FRAME::RefreshSchematicScopes( SCH_SYMBOL* aScope )
                     }
                 }
 
+                // SetWaveforms replaces samples and auto-scale bounds, but intentionally keeps
+                // the existing normalized viewport and cursor state.
                 SCH_SCOPE::SetWaveforms( aSymbol, std::move( waveforms ) );
             };
 
@@ -659,6 +671,8 @@ void SIMULATOR_FRAME::RefreshSchematicScopes( SCH_SYMBOL* aScope )
     }
     else
     {
+        // A screen may be instantiated by more than one hierarchical path.  Refresh it once so
+        // a shared sheet does not redundantly copy every vector or repaint its scopes.
         std::unordered_set<SCH_SCREEN*> visitedScreens;
 
         for( const SCH_SHEET_PATH& path : m_schematicFrame->Schematic().Hierarchy() )
@@ -673,6 +687,8 @@ void SIMULATOR_FRAME::RefreshSchematicScopes( SCH_SYMBOL* aScope )
         }
     }
 
+    // Only the visible sheet needs an immediate GAL update; other scopes repaint when their
+    // screen becomes active.
     if( SCH_SCREEN* screen = m_schematicFrame->GetScreen() )
     {
         for( SCH_ITEM* item : screen->Items().OfType( SCH_SYMBOL_T ) )

@@ -125,7 +125,14 @@ public:
                       std::vector<double>& aDataY );
     bool GetWaveformColor( const wxString& aSignal, wxColour& aColor );
 
-    /** Refresh one scope, or every scope in the schematic when aScope is null. */
+    /**
+     * Copy completed simulator vectors into the runtime state of one scope, or every scope when
+     * aScope is null.
+     *
+     * Scope samples are deliberately not persisted in the schematic.  Refreshing retains each
+     * scope's viewport and cursor positions, so edits and simulation restarts do not reset a
+     * user's pan/zoom view.
+     */
     void RefreshSchematicScopes( SCH_SYMBOL* aScope = nullptr );
 
     const std::map<int, wxString>& UserDefinedSignals();
