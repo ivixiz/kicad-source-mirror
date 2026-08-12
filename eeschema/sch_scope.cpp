@@ -1667,6 +1667,30 @@ void SCH_SCOPE::SetSettings( SCH_SYMBOL* aSymbol, const SETTINGS& aSettings )
 }
 
 
+bool SCH_SCOPE::AddWaveformSource( SCH_SYMBOL* aSymbol, const wxString& aName,
+                                   const KIGFX::COLOR4D& aColor, int aLineWidth )
+{
+    if( !IsScopeSymbol( aSymbol ) || aName.IsEmpty() )
+        return false;
+
+    SETTINGS settings = GetSettings( aSymbol );
+    const auto existing = std::find_if(
+            settings.sources.begin(), settings.sources.end(),
+            [&]( const WAVEFORM_SOURCE& aSource )
+            {
+                return aSource.name == aName;
+            } );
+
+    if( existing != settings.sources.end() )
+        return false;
+
+    const int lineWidth = aLineWidth > 0 ? aLineWidth : schIUScale.mmToIU( 0.2 );
+    settings.sources.push_back( { aName, aColor, lineWidth } );
+    SetSettings( aSymbol, settings );
+    return true;
+}
+
+
 std::vector<wxString> SCH_SCOPE::GetWaveformSources( const SCH_SYMBOL* aSymbol )
 {
     std::vector<wxString> sources;

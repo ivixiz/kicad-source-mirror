@@ -238,6 +238,16 @@ public:
     static SETTINGS GetSettings( const SCH_SYMBOL* aSymbol );
     static void SetSettings( SCH_SYMBOL* aSymbol, const SETTINGS& aSettings );
 
+    /**
+     * Add a unique persisted source with its display appearance.
+     *
+     * Callers remain responsible for undo bookkeeping and, when applicable, making an ngspice
+     * user-defined expression available.  Returns false for an invalid scope, empty name or an
+     * already selected source.
+     */
+    static bool AddWaveformSource( SCH_SYMBOL* aSymbol, const wxString& aName,
+                                   const KIGFX::COLOR4D& aColor, int aLineWidth = 0 );
+
     /** Compatibility helpers for callers that only need the selected signal names. */
     static std::vector<wxString> GetWaveformSources( const SCH_SYMBOL* aSymbol );
     static void SetWaveformSources( SCH_SYMBOL* aSymbol,

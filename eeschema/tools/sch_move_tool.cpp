@@ -73,6 +73,8 @@
 #define QUIET_MODE true
 
 
+// A scope drop is accepted only over its plot canvas.  Legend and border clicks retain the normal
+// selection behaviour, so drag-and-drop cannot accidentally add a measurement while editing UI.
 static SCH_SYMBOL* scopeAtPosition( SCH_SCREEN* aScreen, const VECTOR2I& aPosition )
 {
     if( !aScreen )
@@ -101,6 +103,9 @@ static bool makeScopeMeasurementSignal( SCH_EDIT_FRAME* aFrame, SCH_SYMBOL* aSym
         return false;
 
     SCH_SHEET_PATH& sheet = aFrame->GetCurrentSheet();
+    // Drop modifiers are resolved on mouse release: Shift selects current, Alt selects power,
+    // Ctrl selects the nearest net relative to GND, otherwise a symbol's first two nets form a
+    // differential voltage.  Resolving late avoids colliding with selection-drag modifiers.
     const bool wantsPower = aModifiers & MD_ALT;
     const bool wantsCurrent = !wantsPower && ( aModifiers & MD_SHIFT );
     const bool wantsGroundReferenced = !wantsPower && !wantsCurrent
@@ -226,6 +231,9 @@ static bool makeScopeMeasurementSignal( SCH_EDIT_FRAME* aFrame, SCH_SYMBOL* aSym
 }
 
 
+// The move tool selects a simulator palette color, then delegates source persistence and
+// duplicate handling to SCH_SCOPE.  Simulator expression creation remains here because it
+// belongs to the optional simulator frame, not to the schematic model.
 static bool addScopeMeasurement( SCH_SYMBOL* aScope, const wxString& aSignal,
                                  SIMULATOR_FRAME* aSimulator, SCH_COMMIT* aCommit,
                                  SCH_SCREEN* aScreen )
@@ -257,8 +265,9 @@ static bool addScopeMeasurement( SCH_SYMBOL* aScope, const wxString& aSignal,
     }
 
     aCommit->Modify( aScope, aScreen );
-    settings.sources.push_back( { aSignal, color, schIUScale.mmToIU( 0.2 ) } );
-    SCH_SCOPE::SetSettings( aScope, settings );
+
+    if( !SCH_SCOPE::AddWaveformSource( aScope, aSignal, color ) )
+        return false;
 
     if( aSimulator )
         aSimulator->RefreshSchematicScopes( aScope );
@@ -745,6 +754,9 @@ void SCH_MOVE_TOOL::orthoLineDrag( SCH_COMMIT* aCommit, SCH_LINE* line, const VE
 
 int SCH_MOVE_TOOL::Main( const TOOL_EVENT& aEvent )
 {
+    // A scope drop is represented as a settings edit, never as a move of the source symbol.
+    // The normal move commit is reverted below and replaced with one "Add Scope Measurement"
+    // commit after transient drag wires and flags have been cleared.
     m_scopeMeasurementTarget = nullptr;
     m_scopeMeasurementSignal.Clear();
 
@@ -958,6 +970,8 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
     {
         measurementSymbol = dynamic_cast<SCH_SYMBOL*>( selection.Front() );
 
+        // Prepare the two inexpensive voltage expressions up front.  Shift/Alt expressions are
+        // generated at release because their modifiers may change during an interactive drag.
         if( measurementSymbol && !SCH_SCOPE::IsScopeSymbol( measurementSymbol ) )
         {
             measurementOriginalPosition = measurementSymbol->GetPosition();
@@ -1291,6 +1305,9 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
 
                     if( target )
                     {
+                        // Return the source symbol before committing the scope edit.  This is
+                        // essential for DRAG mode: it prevents temporary wire bends and collision
+                        // previews from becoming real schematic changes when dropping on a plot.
                         const VECTOR2I movedPosition = measurementSymbol->GetPosition();
                         measurementSymbol->Move( measurementOriginalPosition - movedPosition );
                         scopeDropSignal.Clear();
@@ -1413,6 +1430,9 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
 
         if( scopeDropTarget )
         {
+            // Discard all drag-only state before Main() reverts the normal move commit.  Without
+            // this cleanup, collision-generated wire fragments could survive the scope drop and
+            // would not belong to its undo record.
             m_selectionTool->RemoveItemsFromSel( &m_dragAdditions, QUIET_MODE );
             m_scopeMeasurementTarget = scopeDropTarget;
             m_scopeMeasurementSignal = scopeDropSignal;
@@ -3331,6 +3351,9 @@ void SCH_MOVE_TOOL::clearNewDragLines()
 
 void SCH_MOVE_TOOL::clearScopeDropMoveState( const SCH_SELECTION& aSelection )
 {
+    // The standard drag cleanup assumes moved items will remain in the resulting commit.  A
+    // scope drop explicitly reverts that commit, so clear transient state from all involved
+    // items before reverting to avoid stale move flags and preview artifacts.
     auto clearFlags = []( EDA_ITEM* aItem )
     {
         aItem->ClearTempFlags();
