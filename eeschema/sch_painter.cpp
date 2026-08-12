@@ -22,7 +22,6 @@
 
 
 #include <trigo.h>
-#include <array>
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -3024,6 +3023,8 @@ void SCH_PAINTER::draw( const SCH_SYMBOL* aSymbol, int aLayer )
 }
 
 
+// GAL-specific scope backend.  SCH_SCOPE owns all renderer-neutral layout, waveform lookup and
+// decimation so this method only establishes painter state and emits the resulting primitives.
 void SCH_PAINTER::drawScopeWaveforms( const SCH_SYMBOL* aSymbol )
 {
     const SCH_SCOPE::LAYOUT layout = SCH_SCOPE::GetLayout( aSymbol );
@@ -3036,7 +3037,6 @@ void SCH_PAINTER::drawScopeWaveforms( const SCH_SYMBOL* aSymbol )
     const SCH_SCOPE::SETTINGS settings = SCH_SCOPE::GetSettings( aSymbol );
     const SCH_SCOPE::VIEWPORT viewport = SCH_SCOPE::GetViewport( aSymbol );
     const SCH_SCOPE::DATA_BOUNDS bounds = SCH_SCOPE::GetDataBounds( aSymbol );
-    const std::vector<SCH_SCOPE::WAVEFORM>* waveforms = SCH_SCOPE::GetWaveforms( aSymbol );
     const int textSize = layout.textSize;
     const int lineHeight = layout.lineHeight;
     const int legendRows = layout.legendRows;
@@ -3121,8 +3121,6 @@ void SCH_PAINTER::drawScopeWaveforms( const SCH_SYMBOL* aSymbol )
     const int legendColumnWidth =
             std::max( 1, static_cast<int>( plotBox.GetWidth() ) / legendColumns );
 
-    const double xViewportRange = viewport.xMax - viewport.xMin;
-    const double yViewportRange = viewport.yMax - viewport.yMin;
     const int pixelWidth = KiROUND( plotBox.GetWidth() * m_gal->GetWorldScale() );
     const size_t bucketCount = static_cast<size_t>( std::clamp( pixelWidth / 2, 64, 400 ) );
 
@@ -3164,152 +3162,18 @@ void SCH_PAINTER::drawScopeWaveforms( const SCH_SYMBOL* aSymbol )
             }
         }
 
-        if( !waveforms )
+        const SCH_SCOPE::WAVEFORM* waveform = SCH_SCOPE::GetWaveform( aSymbol, source.name );
+
+        if( !waveform )
             continue;
-
-        auto waveformIt = std::find_if( waveforms->begin(), waveforms->end(),
-                                        [&]( const SCH_SCOPE::WAVEFORM& aWaveform )
-                                        {
-                                            return aWaveform.name == source.name;
-                                        } );
-
-        if( waveformIt == waveforms->end() )
-            continue;
-
-        const SCH_SCOPE::WAVEFORM& waveform = *waveformIt;
-        const size_t size = std::min( waveform.x.size(), waveform.y.size() );
-
-        if( size < 2 )
-            continue;
-
-        const double xRange = bounds.maxX - bounds.minX;
-        const double yRange = bounds.maxY - bounds.minY;
-        const double visibleMinX = bounds.minX + viewport.xMin * xRange;
-        const double visibleMaxX = bounds.minX + viewport.xMax * xRange;
-        size_t first = 0;
-        size_t last = size;
-
-        if( waveform.monotonicX )
-        {
-            auto begin = waveform.x.begin();
-            auto end = begin + static_cast<ptrdiff_t>( size );
-            first = static_cast<size_t>( std::lower_bound( begin, end, visibleMinX ) - begin );
-            last = static_cast<size_t>( std::upper_bound( begin, end, visibleMaxX ) - begin );
-
-            if( first > 0 )
-                --first;
-
-            if( last < size )
-                ++last;
-        }
-
-        std::vector<size_t> selectedIndices;
-        selectedIndices.reserve( std::min<size_t>( last - first, bucketCount * 4 + 2 ) );
-
-        if( !waveform.monotonicX || last - first <= bucketCount * 4 )
-        {
-            const size_t stride = waveform.monotonicX
-                                          ? 1
-                                          : std::max<size_t>( 1, ( last - first )
-                                                                       / ( bucketCount * 2 ) );
-
-            for( size_t ii = first; ii < last; ii += stride )
-                selectedIndices.push_back( ii );
-
-            if( last > first && selectedIndices.back() != last - 1 )
-                selectedIndices.push_back( last - 1 );
-        }
-        else
-        {
-            size_t bucketFirst = first;
-            size_t bucketMin = first;
-            size_t bucketMax = first;
-            size_t bucketLast = first;
-            int    currentBucket = -1;
-
-            auto flushBucket = [&]()
-            {
-                std::array<size_t, 4> candidates = { bucketFirst, bucketMin, bucketMax,
-                                                     bucketLast };
-                std::sort( candidates.begin(), candidates.end() );
-
-                for( size_t index : candidates )
-                {
-                    if( selectedIndices.empty() || selectedIndices.back() != index )
-                        selectedIndices.push_back( index );
-                }
-            };
-
-            for( size_t ii = first; ii < last; ++ii )
-            {
-                if( !std::isfinite( waveform.x[ii] ) || !std::isfinite( waveform.y[ii] ) )
-                    continue;
-
-                const double normalizedX = ( waveform.x[ii] - bounds.minX ) / xRange;
-                const int bucket = std::clamp(
-                        static_cast<int>( ( normalizedX - viewport.xMin ) / xViewportRange
-                                          * bucketCount ),
-                        0, static_cast<int>( bucketCount ) - 1 );
-
-                if( currentBucket != bucket )
-                {
-                    if( currentBucket >= 0 )
-                        flushBucket();
-
-                    currentBucket = bucket;
-                    bucketFirst = bucketMin = bucketMax = bucketLast = ii;
-                }
-                else
-                {
-                    if( waveform.y[ii] < waveform.y[bucketMin] )
-                        bucketMin = ii;
-
-                    if( waveform.y[ii] > waveform.y[bucketMax] )
-                        bucketMax = ii;
-
-                    bucketLast = ii;
-                }
-            }
-
-            if( currentBucket >= 0 )
-                flushBucket();
-        }
 
         m_gal->SetStrokeColor( color );
         m_gal->SetLineWidth( std::max( 1, source.lineWidth ) );
-        bool     havePrevious = false;
-        VECTOR2I previousPoint;
 
-        for( size_t index : selectedIndices )
+        for( const auto& [start, end] : SCH_SCOPE::BuildWaveformSegments(
+                     *waveform, bounds, viewport, plotBox, bucketCount ) )
         {
-            if( !std::isfinite( waveform.x[index] ) || !std::isfinite( waveform.y[index] ) )
-            {
-                havePrevious = false;
-                continue;
-            }
-
-            const double normalizedX = ( waveform.x[index] - bounds.minX ) / xRange;
-            const double normalizedY = ( waveform.y[index] - bounds.minY ) / yRange;
-            VECTOR2I point( KiROUND( plotBox.GetX()
-                                     + ( normalizedX - viewport.xMin ) / xViewportRange
-                                               * plotBox.GetWidth() ),
-                            KiROUND( plotBox.GetEnd().y
-                                     - ( normalizedY - viewport.yMin ) / yViewportRange
-                                               * plotBox.GetHeight() ) );
-
-            if( havePrevious )
-            {
-                int x1 = previousPoint.x;
-                int y1 = previousPoint.y;
-                int x2 = point.x;
-                int y2 = point.y;
-
-                if( !ClipLine( &plotBox, x1, y1, x2, y2 ) )
-                    m_gal->DrawLine( VECTOR2I( x1, y1 ), VECTOR2I( x2, y2 ) );
-            }
-
-            previousPoint = point;
-            havePrevious = true;
+            m_gal->DrawLine( start, end );
         }
     }
 

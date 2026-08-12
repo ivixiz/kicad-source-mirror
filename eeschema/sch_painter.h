@@ -81,6 +81,8 @@ private:
     void draw( const LIB_SYMBOL* aSymbol, int, bool aDrawFields = true, int aUnit = 0,
                int aBodyStyle = 0, bool aDimmed = false );
     void draw( const SCH_SYMBOL* aSymbol, int aLayer );
+    // GAL adapter for SCH_SCOPE.  Renderer-independent waveform geometry lives in SCH_SCOPE so
+    // the screen and PLOTTER backends stay visually consistent.
     void drawScopeWaveforms( const SCH_SYMBOL* aSymbol );
     void draw( const SCH_SHAPE* aShape, int aLayer, bool aDimmed );
     void draw( const SCH_JUNCTION* aJct, int aLayer );
