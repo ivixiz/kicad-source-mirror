@@ -3087,6 +3087,8 @@ void SCH_EDIT_TOOL::EditProperties( EDA_ITEM* aItem )
 
         if( SCH_SCOPE::IsScopeSymbol( symbol ) )
         {
+            // Scope properties use a dedicated dialog because the local symbol body is only the
+            // canvas frame; waveform sources and appearance live in the hidden SETTINGS field.
             SCH_SCOPE::NormalizeCanvasSymbol( symbol );
 
             SIMULATOR_FRAME* simFrame = static_cast<SIMULATOR_FRAME*>(
@@ -3107,6 +3109,8 @@ void SCH_EDIT_TOOL::EditProperties( EDA_ITEM* aItem )
                 }
             }
 
+            // Pass a simulator snapshot into a UI-only dialog.  It remains functional without
+            // completed data and never makes simulator calls while editing individual controls.
             DIALOG_SCOPE_WAVEFORMS dialog( m_frame, settings, available, signalColors );
 
             if( dialog.ShowModal() == wxID_OK && dialog.GetSettings() != settings )
@@ -3127,6 +3131,8 @@ void SCH_EDIT_TOOL::EditProperties( EDA_ITEM* aItem )
                 commit.Modify( symbol, m_frame->GetScreen() );
                 SCH_SCOPE::SetSettings( symbol, dialog.GetSettings() );
 
+                // Pure appearance edits only repaint.  Changed sources require new runtime
+                // vectors, but RefreshSchematicScopes preserves pan/zoom and cursor state.
                 if( simFrame && sourcesChanged )
                     simFrame->RefreshSchematicScopes( symbol );
 

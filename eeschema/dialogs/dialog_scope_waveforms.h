@@ -33,6 +33,14 @@ class wxStaticText;
 class wxTextCtrl;
 
 
+/**
+ * Editor for the persisted display portion of SCH_SCOPE::SETTINGS.
+ *
+ * The caller supplies simulator signal names and their current plot colors.  The dialog operates
+ * on a private SETTINGS copy and does not query ngspice itself, so it remains usable before a
+ * simulation has completed.  Source order is significant: the first row is the topmost waveform
+ * in both the canvas and PDF output.
+ */
 class DIALOG_SCOPE_WAVEFORMS : public DIALOG_SHIM
 {
 public:
@@ -40,6 +48,7 @@ public:
                             const std::vector<wxString>& aAvailable,
                             const std::map<wxString, KIGFX::COLOR4D>& aSignalColors );
 
+    /** Validated working copy to be committed by SCH_EDIT_TOOL after OK. */
     const SCH_SCOPE::SETTINGS& GetSettings() const { return m_settings; }
 
     bool TransferDataFromWindow() override;
@@ -63,6 +72,7 @@ private:
     void onMinorGridStyleChanged( wxCommandEvent& aEvent );
 
 private:
+    // This is a working copy.  Cancel must leave the symbol field and its runtime view untouched.
     SCH_SCOPE::SETTINGS   m_settings;
     std::vector<wxString> m_available;
     std::map<wxString, KIGFX::COLOR4D> m_signalColors;

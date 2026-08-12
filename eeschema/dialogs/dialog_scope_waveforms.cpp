@@ -56,6 +56,8 @@ DIALOG_SCOPE_WAVEFORMS::DIALOG_SCOPE_WAVEFORMS( SCH_EDIT_FRAME* aParent,
         m_available( aAvailable ),
         m_signalColors( aSignalColors )
 {
+    // Keep simulator acquisition out of this dialog.  The edit tool passes a snapshot of known
+    // signals, while the settings copy below is committed only after the user accepts the dialog.
     const KIGFX::COLOR4D canvasColor =
             aParent->GetColorSettings()->GetColor( LAYER_SCHEMATIC_BACKGROUND );
     const SCH_SCOPE::SETTINGS defaults = SCH_SCOPE::DefaultSettings();
@@ -299,6 +301,9 @@ DIALOG_SCOPE_WAVEFORMS::DIALOG_SCOPE_WAVEFORMS( SCH_EDIT_FRAME* aParent,
 
 bool DIALOG_SCOPE_WAVEFORMS::TransferDataFromWindow()
 {
+    // Commit the grid editor before reading colors and widths.  SETTINGS is updated atomically
+    // from the caller's point of view because this method must succeed before GetSettings() is
+    // applied to the scope symbol.
     if( !m_selectedGrid->CommitPendingChanges() || !syncSourcesFromGrid( true ) )
         return false;
 
@@ -350,6 +355,8 @@ void DIALOG_SCOPE_WAVEFORMS::addSelectedWaveforms()
 
         if( !exists )
         {
+            // Match the Simulator palette where possible; retain a deterministic local fallback
+            // when the dialog is opened before a simulation provides trace colors.
             auto color = m_signalColors.find( value );
             const KIGFX::COLOR4D defaultColor =
                     color != m_signalColors.end()
@@ -366,6 +373,7 @@ void DIALOG_SCOPE_WAVEFORMS::addSelectedWaveforms()
 
 void DIALOG_SCOPE_WAVEFORMS::removeSelectedWaveforms()
 {
+    // Delete from high to low so a multi-row removal cannot invalidate the next row index.
     syncSourcesFromGrid( false );
     wxArrayInt selectedRows = m_selectedGrid->GetSelectedRows();
     std::set<int, std::greater<int>> rows;
@@ -405,6 +413,7 @@ void DIALOG_SCOPE_WAVEFORMS::moveSelectedWaveform( int aDelta )
         return;
     }
 
+    // Source order is paint z-order; moving upward makes the trace and legend entry topmost.
     std::swap( m_settings.sources[row], m_settings.sources[destination] );
     rebuildLists();
     m_selectedGrid->SetGridCursor( destination, COL_WAVEFORM );
@@ -414,6 +423,8 @@ void DIALOG_SCOPE_WAVEFORMS::moveSelectedWaveform( int aDelta )
 
 void DIALOG_SCOPE_WAVEFORMS::rebuildLists()
 {
+    // Both controls are rebuilt as one logical update.  Freeze prevents row-by-row layout and
+    // paint churn, which is noticeable for scopes with many available simulator vectors.
     m_selectedGrid->Freeze();
     m_availableList->Freeze();
 
@@ -459,6 +470,8 @@ void DIALOG_SCOPE_WAVEFORMS::rebuildLists()
 
 bool DIALOG_SCOPE_WAVEFORMS::syncSourcesFromGrid( bool aShowErrors )
 {
+    // The source name is read-only; only appearance can be changed in place.  Centralizing width
+    // validation here keeps add/remove/reorder actions and the final OK path consistent.
     if( !m_selectedGrid->CommitPendingChanges( !aShowErrors ) )
         return false;
 
@@ -504,6 +517,8 @@ void DIALOG_SCOPE_WAVEFORMS::updateButtons()
 
 void DIALOG_SCOPE_WAVEFORMS::updateGridControls()
 {
+    // "Off" preserves the selected style, color and width for a later re-enable instead of
+    // discarding a user's grid appearance preferences.
     const bool enabled = m_gridStyle->GetSelection() > 0;
     m_gridSwatch->Enable( enabled );
     m_gridWidth->Enable( enabled );
