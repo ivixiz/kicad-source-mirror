@@ -927,7 +927,8 @@ public:
         {
             if( !isModified( aEditedPoint, aPoints.Line( i ) ) )
             {
-                aPoints.Line( i ).SetConstraint( new EC_PERPLINE( aPoints.Line( i ) ) );
+                aPoints.Line( i ).SetRelation(
+                        EDIT_RELATION::PerpendicularTranslation( aPoints.Line( i ) ) );
             }
         }
     }
@@ -1055,13 +1056,17 @@ private:
                                     ( aTopLeft.y + aBotRight.y ) / 2 ) );
 
         aPoints.AddLine( aPoints.Point( RECT_TOPLEFT ), aPoints.Point( RECT_TOPRIGHT ) );
-        aPoints.Line( RECT_TOP ).SetConstraint( new EC_PERPLINE( aPoints.Line( RECT_TOP ) ) );
+        aPoints.Line( RECT_TOP ).SetRelation(
+                EDIT_RELATION::PerpendicularTranslation( aPoints.Line( RECT_TOP ) ) );
         aPoints.AddLine( aPoints.Point( RECT_TOPRIGHT ), aPoints.Point( RECT_BOTRIGHT ) );
-        aPoints.Line( RECT_RIGHT ).SetConstraint( new EC_PERPLINE( aPoints.Line( RECT_RIGHT ) ) );
+        aPoints.Line( RECT_RIGHT ).SetRelation(
+                EDIT_RELATION::PerpendicularTranslation( aPoints.Line( RECT_RIGHT ) ) );
         aPoints.AddLine( aPoints.Point( RECT_BOTRIGHT ), aPoints.Point( RECT_BOTLEFT ) );
-        aPoints.Line( RECT_BOT ).SetConstraint( new EC_PERPLINE( aPoints.Line( RECT_BOT ) ) );
+        aPoints.Line( RECT_BOT ).SetRelation(
+                EDIT_RELATION::PerpendicularTranslation( aPoints.Line( RECT_BOT ) ) );
         aPoints.AddLine( aPoints.Point( RECT_BOTLEFT ), aPoints.Point( RECT_TOPLEFT ) );
-        aPoints.Line( RECT_LEFT ).SetConstraint( new EC_PERPLINE( aPoints.Line( RECT_LEFT ) ) );
+        aPoints.Line( RECT_LEFT ).SetRelation(
+                EDIT_RELATION::PerpendicularTranslation( aPoints.Line( RECT_LEFT ) ) );
     }
 
     static void updateRectanglePoints( EDIT_POINTS& aPoints, const VECTOR2I& aTopLeft,

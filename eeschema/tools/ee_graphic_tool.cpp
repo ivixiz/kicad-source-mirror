@@ -82,11 +82,26 @@ bool EE_GRAPHIC_TOOL::Init()
                 return m_mode == MODE::ARC || m_mode == MODE::BEZIER || m_mode == MODE::ELLIPSE_ARC;
             };
 
+    const auto isDrawingItem =
+            []( const SELECTION& aSel )
+            {
+                SCH_ITEM* item = dynamic_cast<SCH_ITEM*>( aSel.Front() );
+                return item && item->IsNew();
+            };
+
+    const auto canEditDrawingItem =
+            [this, isDrawingItem]( const SELECTION& aSel )
+            {
+                return IsSymbolEditor() && isDrawingItem( aSel );
+            };
+
     CONDITIONAL_MENU& ctxMenu = m_menu->GetMenu();
 
     // clang-format off
     ctxMenu.AddItem( ACTIONS::arcPosture,          inDrawingArc,    200 );
     ctxMenu.AddItem( ACTIONS::deleteLastPoint,     canUndoPoint,    200 );
+    ctxMenu.AddItem( ACTIONS::finishInteractive,   isDrawingItem,   200 );
+    ctxMenu.AddItem( SCH_ACTIONS::properties,      canEditDrawingItem, 200 );
     // clang-format on
 
     return true;
@@ -300,6 +315,7 @@ int EE_GRAPHIC_TOOL::DrawShape( const TOOL_EVENT& aEvent )
 
             m_view->ClearPreview();
             m_view->AddToPreview( item->Clone() );
+            m_selectionTool->AddItemToSel( item.get() );
         }
         else if( item && (   evt->IsClick( BUT_LEFT ) || evt->IsDblClick( BUT_LEFT )
                           || isSyntheticClick
@@ -355,8 +371,6 @@ int EE_GRAPHIC_TOOL::DrawShape( const TOOL_EVENT& aEvent )
                     m_lastFillColor = item->GetFillColor();
                 }
 
-                m_selectionTool->AddItemToSel( item.get() );
-
                 SCH_COMMIT commit( m_toolMgr );
                 wxString   msg = wxString::Format( _( "Draw %s" ), item->GetClass() );
 
@@ -389,6 +403,11 @@ int EE_GRAPHIC_TOOL::DrawShape( const TOOL_EVENT& aEvent )
             m_view->AddToPreview( item->Clone() );
 
             frame()->SetMsgPanel( item.get() );
+        }
+        else if( item && evt->IsAction( &SCH_ACTIONS::properties ) )
+        {
+            m_toolMgr->PostAction( ACTIONS::refreshPreview );
+            evt->SetPassEvent();
         }
         else if( evt->IsDblClick( BUT_LEFT ) && !item )
         {
