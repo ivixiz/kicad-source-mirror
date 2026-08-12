@@ -27,7 +27,7 @@
 #include <sch_plotter.h>
 #include <drawing_sheet/ds_proxy_view_item.h>
 #include <font/kicad_font_name.h>
-#include <jobs/job_export_sch_bom.h>
+#include <jobs/job_export_bom.h>
 #include <jobs/job_export_sch_pythonbom.h>
 #include <jobs/job_export_sch_netlist.h>
 #include <jobs/job_export_sch_plot.h>
@@ -43,6 +43,7 @@
 #include <sch_sheet.h>
 #include <sch_sheet_path.h>
 #include <sch_commit.h>
+#include <symbol_import_reconciler.h>
 #include <save_project_utils.h>
 #include <tool/tool_manager.h>
 #include <project.h>
@@ -83,7 +84,7 @@
 #include <netlist_exporter_pads.h>
 #include <netlist_exporter_allegro.h>
 
-#include <fields_data_model.h>
+#include <symbol_fields_data_model.h>
 
 #include <dialogs/dialog_export_netlist.h>
 #include <dialogs/dialog_plot_schematic.h>
@@ -102,7 +103,7 @@ EESCHEMA_JOBS_HANDLER::EESCHEMA_JOBS_HANDLER( KIWAY* aKiway ) :
     Register( "bom", std::bind( &EESCHEMA_JOBS_HANDLER::JobExportBom, this, std::placeholders::_1 ),
               [aKiway]( JOB* job, wxWindow* aParent ) -> bool
               {
-                  JOB_EXPORT_SCH_BOM* bomJob = dynamic_cast<JOB_EXPORT_SCH_BOM*>( job );
+                  JOB_EXPORT_BOM* bomJob = dynamic_cast<JOB_EXPORT_BOM*>( job );
 
                   SCH_EDIT_FRAME* editFrame = static_cast<SCH_EDIT_FRAME*>( aKiway->Player( FRAME_SCH, false ) );
 
@@ -575,7 +576,7 @@ int EESCHEMA_JOBS_HANDLER::JobExportNetlist( JOB* aJob )
 
 int EESCHEMA_JOBS_HANDLER::JobExportBom( JOB* aJob )
 {
-    JOB_EXPORT_SCH_BOM* aBomJob = dynamic_cast<JOB_EXPORT_SCH_BOM*>( aJob );
+    JOB_EXPORT_BOM* aBomJob = dynamic_cast<JOB_EXPORT_BOM*>( aJob );
 
     wxCHECK( aBomJob, CLI::EXIT_CODES::ERR_UNKNOWN );
 
@@ -621,7 +622,7 @@ int EESCHEMA_JOBS_HANDLER::JobExportBom( JOB* aJob )
         m_reporter->Report( _( "Warning: duplicate sheet names.\n" ), RPT_SEVERITY_WARNING );
 
     // Build our data model
-    FIELDS_EDITOR_GRID_DATA_MODEL dataModel( referenceList, nullptr );
+    SYMBOL_FIELDS_EDITOR_GRID_DATA_MODEL dataModel( referenceList, nullptr );
     dataModel.SetCurrentVariant( currentVariant );
 
     // Mandatory fields first
@@ -629,10 +630,12 @@ int EESCHEMA_JOBS_HANDLER::JobExportBom( JOB* aJob )
         dataModel.AddColumn( GetCanonicalFieldName( fieldId ), GetDefaultFieldName( fieldId, DO_TRANSLATE ), false );
 
     // Generated/virtual fields (e.g. ${QUANTITY}, ${ITEM_NUMBER}) present only in the fields table
-    dataModel.AddColumn( FIELDS_EDITOR_GRID_DATA_MODEL::QUANTITY_VARIABLE,
-                         GetGeneratedFieldDisplayName( FIELDS_EDITOR_GRID_DATA_MODEL::QUANTITY_VARIABLE ), false );
-    dataModel.AddColumn( FIELDS_EDITOR_GRID_DATA_MODEL::ITEM_NUMBER_VARIABLE,
-                         GetGeneratedFieldDisplayName( FIELDS_EDITOR_GRID_DATA_MODEL::ITEM_NUMBER_VARIABLE ), false );
+    dataModel.AddColumn( SYMBOL_FIELDS_EDITOR_GRID_DATA_MODEL::QUANTITY_VARIABLE,
+                         GetGeneratedFieldDisplayName( SYMBOL_FIELDS_EDITOR_GRID_DATA_MODEL::QUANTITY_VARIABLE ),
+                         false );
+    dataModel.AddColumn( SYMBOL_FIELDS_EDITOR_GRID_DATA_MODEL::ITEM_NUMBER_VARIABLE,
+                         GetGeneratedFieldDisplayName( SYMBOL_FIELDS_EDITOR_GRID_DATA_MODEL::ITEM_NUMBER_VARIABLE ),
+                         false );
 
     // Attribute fields (boolean flags on symbols)
     dataModel.AddColumn( wxS( "${DNP}" ), GetGeneratedFieldDisplayName( wxS( "${DNP}" ) ), false );
@@ -1311,7 +1314,7 @@ int EESCHEMA_JOBS_HANDLER::JobSymUpgrade( JOB* aJob )
     }
     else
     {
-        if( !SCH_IO_MGR::ConvertLibrary( nullptr, fn.GetAbsolutePath(), upgradeJob->m_outputLibraryPath ) )
+        if( !SCH_IO_MGR::ConvertLibrary( nullptr, fn.GetAbsolutePath(), upgradeJob->m_outputLibraryPath, m_reporter ) )
         {
             m_reporter->Report( ( "Unable to convert library\n" ), RPT_SEVERITY_ERROR );
             return CLI::EXIT_CODES::ERR_UNKNOWN;
@@ -1570,18 +1573,19 @@ int EESCHEMA_JOBS_HANDLER::JobImport( JOB* aJob )
     wxString   formatName = SCH_IO_MGR::ShowType( fileType );
     SCH_SHEET* loadedSheet = nullptr;
 
+    // outlives the load so the retained symbol definitions can be reconciled below
+    IO_RELEASER<SCH_IO> pi( SCH_IO_MGR::FindPlugin( fileType ) );
+
+    if( !pi )
+    {
+        m_reporter->Report( wxString::Format( _( "No plugin found for file type '%s'\n" ),
+                                              formatName ),
+                            RPT_SEVERITY_ERROR );
+        return CLI::EXIT_CODES::ERR_UNKNOWN;
+    }
+
     try
     {
-        IO_RELEASER<SCH_IO> pi( SCH_IO_MGR::FindPlugin( fileType ) );
-
-        if( !pi )
-        {
-            m_reporter->Report( wxString::Format( _( "No plugin found for file type '%s'\n" ),
-                                                  formatName ),
-                                RPT_SEVERITY_ERROR );
-            return CLI::EXIT_CODES::ERR_UNKNOWN;
-        }
-
         m_reporter->Report( wxString::Format( _( "Importing '%s' using %s format...\n" ),
                                               inputFn.GetFullPath(), formatName ),
                             RPT_SEVERITY_INFO );
@@ -1617,6 +1621,11 @@ int EESCHEMA_JOBS_HANDLER::JobImport( JOB* aJob )
         if( !loadedIsTopLevel && !loadedIsVirtualRoot )
             schematic->SetTopLevelSheets( { loadedSheet } );
 
+        // Extract a project symbol library and re-link LIB_IDs, as importFile() does; without it
+        // the saved schematic references nicknames no library table row resolves.
+        ReconcileImportedSymbols( *pi, *schematic, project, inputFn.GetFullPath(), nullptr,
+                                  *m_reporter );
+
         // Recompute connectivity so instance data is valid before saving, as importFile() does.
         std::unique_ptr<TOOL_MANAGER> toolManager = std::make_unique<TOOL_MANAGER>();
         toolManager->SetEnvironment( schematic.get(), nullptr, nullptr, Kiface().KifaceSettings(),
@@ -1651,7 +1660,7 @@ int EESCHEMA_JOBS_HANDLER::JobImport( JOB* aJob )
 
         // PrepareSaveAsFiles seeds an entry (empty for sheets it does not relocate) for every
         // screen; empty paths are skipped.
-        IO_RELEASER<SCH_IO> pi( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
+        IO_RELEASER<SCH_IO> kicadPi( SCH_IO_MGR::FindPlugin( SCH_IO_MGR::SCH_KICAD ) );
 
         for( size_t i = 0; i < screens.GetCount(); i++ )
         {
@@ -1664,7 +1673,7 @@ int EESCHEMA_JOBS_HANDLER::JobImport( JOB* aJob )
             wxFileName fn( path );
             fn.SetExt( FILEEXT::KiCadSchematicFileExtension );
 
-            pi->SaveSchematicFile( fn.GetFullPath(), screens.GetSheet( i ), schematic.get() );
+            kicadPi->SaveSchematicFile( fn.GetFullPath(), screens.GetSheet( i ), schematic.get() );
             sheetCount++;
 
             auto symbols = screen->Items().OfType( SCH_SYMBOL_T );

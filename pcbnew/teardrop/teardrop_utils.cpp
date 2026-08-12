@@ -106,7 +106,7 @@ void TEARDROP_MANAGER::BuildTrackCaches()
     {
         if( track->Type() == PCB_TRACE_T || track->Type() == PCB_ARC_T )
         {
-            m_tracksRTree.Insert( track, track->GetLayer() );
+            m_tracksRTree.Insert( track, track->GetLayer(), CLEARANCE_CONSTRAINT );
             m_trackLookupList.AddTrack( track, track->GetLayer(), track->GetNetCode() );
         }
     }
@@ -197,8 +197,7 @@ int TEARDROP_MANAGER::computeChordThroughShape( PCB_TRACK* aTrack, BOARD_ITEM* a
     else
     {
         wxCHECK_MSG( aOther->Type() == PCB_PAD_T, 0, wxT( "Expected non-round item to be PAD" ) );
-        static_cast<PAD*>( aOther )->TransformShapeToPolygon( shapebuffer, aLayer, 0, maxError,
-                                                              ERROR_INSIDE );
+        static_cast<PAD*>( aOther )->TransformShapeToPolygon( shapebuffer, aLayer, 0, maxError, ERROR_INSIDE );
     }
 
     // Measure the chord on the extended centerline, not the short track segment.
@@ -378,10 +377,8 @@ void TEARDROP_MANAGER::computeCurvedForRoundShape( const TEARDROP_PARAMETERS& aP
     double biasBC = 0.5 * SEG( pts[1], pts[2] ).Length();
     double biasAE = 0.5 * SEG( pts[4], pts[0] ).Length();
 
-    VECTOR2I tangentC = VECTOR2I( pts[2].x - vecC.y * biasBC * weaken,
-                                pts[2].y + vecC.x * biasBC * weaken );
-    VECTOR2I tangentE = VECTOR2I( pts[4].x + vecE.y * biasAE * weaken,
-                                pts[4].y - vecE.x * biasAE * weaken );
+    VECTOR2I tangentC = VECTOR2I( pts[2].x - vecC.y * biasBC * weaken, pts[2].y + vecC.x * biasBC * weaken );
+    VECTOR2I tangentE = VECTOR2I( pts[4].x + vecE.y * biasAE * weaken, pts[4].y - vecE.x * biasAE * weaken );
 
     VECTOR2I tangentB = VECTOR2I( pts[1].x - aTrackDir.x * biasBC, pts[1].y - aTrackDir.y * biasBC );
     VECTOR2I tangentA = VECTOR2I( pts[0].x - aTrackDir.x * biasAE, pts[0].y - aTrackDir.y * biasAE );
@@ -452,9 +449,8 @@ static VECTOR2I computeCornerTangentControlPoint( const VECTOR2I& aAnchor,
  * @param aArcCenter [out] if on curved end, receives the semicircle center
  * @return true if point is on a curved end of the oval
  */
-static bool isPointOnOvalEnd( const VECTOR2I& aPoint, const VECTOR2I& aPadPos,
-                              const VECTOR2I& aPadSize, const EDA_ANGLE& aRotation,
-                              VECTOR2I& aArcCenter )
+static bool isPointOnOvalEnd( const VECTOR2I& aPoint, const VECTOR2I& aPadPos, const VECTOR2I& aPadSize,
+                              const EDA_ANGLE& aRotation, VECTOR2I& aArcCenter )
 {
     // Transform point to pad-local coordinates (unrotated)
     VECTOR2I localPt = aPoint - aPadPos;
@@ -515,9 +511,8 @@ static bool isPointOnOvalEnd( const VECTOR2I& aPoint, const VECTOR2I& aPadPos,
  * @param aCornerCenter [out] if in corner, receives the corner arc center
  * @return true if point is in a corner arc region
  */
-static bool isPointOnRoundedCorner( const VECTOR2I& aPoint, const VECTOR2I& aPadPos,
-                                    const VECTOR2I& aPadSize, int aCornerRadius,
-                                    const EDA_ANGLE& aRotation, VECTOR2I& aCornerCenter )
+static bool isPointOnRoundedCorner( const VECTOR2I& aPoint, const VECTOR2I& aPadPos, const VECTOR2I& aPadSize,
+                                    int aCornerRadius, const EDA_ANGLE& aRotation, VECTOR2I& aCornerCenter )
 {
     // Transform point to pad-local coordinates (unrotated)
     VECTOR2I localPt = aPoint - aPadPos;
@@ -621,8 +616,7 @@ void TEARDROP_MANAGER::computeCurvedForRectShape( const TEARDROP_PARAMETERS& aPa
     {
         VECTOR2I cornerCenter;
 
-        if( isPointOnRoundedCorner( aPts[2], aOtherPos, padSize, cornerRadius,
-                                    padRotation, cornerCenter ) )
+        if( isPointOnRoundedCorner( aPts[2], aOtherPos, padSize, cornerRadius, padRotation, cornerCenter ) )
         {
             // Anchor is on a corner arc - use tangent-based control point
             double bias = 0.5 * side1.EuclideanNorm();
@@ -658,8 +652,7 @@ void TEARDROP_MANAGER::computeCurvedForRectShape( const TEARDROP_PARAMETERS& aPa
     {
         VECTOR2I cornerCenter;
 
-        if( isPointOnRoundedCorner( aPts[4], aOtherPos, padSize, cornerRadius,
-                                    padRotation, cornerCenter ) )
+        if( isPointOnRoundedCorner( aPts[4], aOtherPos, padSize, cornerRadius, padRotation, cornerCenter ) )
         {
             // Anchor is on a corner arc - use tangent-based control point
             double bias = 0.5 * side2.EuclideanNorm();
@@ -717,8 +710,7 @@ bool TEARDROP_MANAGER::computeAnchorPoints( const TEARDROP_PARAMETERS& aParams, 
     // (only reduce the size of polygonal shape does not give good anchor points)
     if( IsRound( aItem, aLayer ) )
     {
-        TransformCircleToPolygon( c_buffer, aPos, GetWidth( aItem, aLayer ) / 2, maxError,
-                                  ERROR_INSIDE, 16 );
+        TransformCircleToPolygon( c_buffer, aPos, GetWidth( aItem, aLayer ) / 2, maxError, ERROR_INSIDE, 16 );
     }
     else    // Only PADS can have a not round shape
     {
@@ -1154,16 +1146,18 @@ bool TEARDROP_MANAGER::computeTeardropPolygon( const TEARDROP_PARAMETERS& aParam
     int padRadius = GetWidth( aOther, layer ) / 2;
     VECTOR2D intToPad = VECTOR2D( aOtherPos - intersection );
     double projOnTrack = -( intToPad.x * vecVia.x + intToPad.y * vecVia.y );
-    double effectiveDist = std::max( projOnTrack, static_cast<double>( padRadius ) );
     int offset = pcbIUScale.mmToIU( 0.001 );
 
-    // For non-round pads, clamp effectiveDist so pointD stays within the pad outline.
-    // pointD is placed at effectiveDist from the intersection along -vecVia (into the pad).
-    // The intersection lies on the pad edge, so the segment from the intersection into the pad
-    // must exit again through the far edge. Clamp effectiveDist to that far edge so pointD can
-    // never escape the pad outline. This is essential for oblique connections where the track
-    // only grazes a corner of an elongated pad. There the track axis crosses the pad rather
-    // than entering its body, and an unclamped projection sends pointD spiking out the side.
+    // A custom pad's position is only its anchor, so projecting it yields a depth unrelated to the
+    // lobe the track enters; padRadius comes from that same anchor and is the consistent bound
+    bool isCustomPad = aOther->Type() == PCB_PAD_T
+                       && static_cast<PAD*>( aOther )->GetShape( layer ) == PAD_SHAPE::CUSTOM;
+
+    double effectiveDist = isCustomPad ? static_cast<double>( padRadius )
+                                       : std::max( projOnTrack, static_cast<double>( padRadius ) );
+
+    // For non-round pads, clamp effectiveDist so pointD stays inside the copper the track enters
+    // rather than spiking out the far side on an oblique entry that only grazes a corner
     if( !IsRound( aOther, layer ) && aOther->Type() == PCB_PAD_T )
     {
         PAD*           pad = static_cast<PAD*>( aOther );
@@ -1171,23 +1165,36 @@ bool TEARDROP_MANAGER::computeTeardropPolygon( const TEARDROP_PARAMETERS& aParam
         SHAPE_POLY_SET padPoly;
         pad->TransformShapeToPolygon( padPoly, layer, 0, maxError, ERROR_INSIDE );
 
-        SHAPE_LINE_CHAIN& padOutline = padPoly.Outline( 0 );
-        padOutline.SetClosed( true );
-
         // Cast the into-pad ray from the intersection well past the candidate point so a chord
-        // through the pad always produces a far-edge crossing to clamp against. The reach must
+        // through the pad always produces an exit crossing to clamp against. The reach must
         // span the longest possible chord from the entry, so use the pad's circumscribed radius
         // rather than the minor half-axis (padRadius). On an elongated pad entered along its long
-        // axis the far edge sits up to two major half-axes away, and a reach scaled by the minor
-        // axis stops short of it, leaving farEdge == 0 and wrongly collapsing the teardrop.
+        // axis the exit sits up to two major half-axes away, and a reach scaled by the minor
+        // axis stops short of it, leaving no crossing and wrongly collapsing the teardrop.
         double   reach = effectiveDist + 2.0 * pad->GetBoundingRadius() + offset;
         VECTOR2I rayEnd = intersection + VECTOR2I( KiROUND( -vecVia.x * reach ),
                                                    KiROUND( -vecVia.y * reach ) );
 
+        // A custom pad's copper can be several disjoint outlines and the ray may cross a hole, so
+        // gather crossings from every contour rather than outline 0 alone
         SHAPE_LINE_CHAIN::INTERSECTIONS hits;
-        padOutline.Intersect( SEG( intersection, rayEnd ), hits );
 
-        double farEdge = 0;
+        for( int ii = 0; ii < padPoly.OutlineCount(); ++ii )
+        {
+            SHAPE_LINE_CHAIN& padOutline = padPoly.Outline( ii );
+            padOutline.SetClosed( true );
+            padOutline.Intersect( SEG( intersection, rayEnd ), hits );
+
+            for( int jj = 0; jj < padPoly.HoleCount( ii ); ++jj )
+            {
+                SHAPE_LINE_CHAIN& hole = padPoly.Hole( ii, jj );
+                hole.SetClosed( true );
+                hole.Intersect( SEG( intersection, rayEnd ), hits );
+            }
+        }
+
+        std::vector<double> crossings;
+        crossings.reserve( hits.size() );
 
         for( const SHAPE_LINE_CHAIN::INTERSECTION& hit : hits )
         {
@@ -1195,12 +1202,30 @@ bool TEARDROP_MANAGER::computeTeardropPolygon( const TEARDROP_PARAMETERS& aParam
             double d = ( hit.p - intersection ).EuclideanNorm();
 
             if( d > offset )
-                farEdge = std::max( farEdge, d );
+                crossings.push_back( d );
         }
 
-        // farEdge == 0 means -vecVia does not penetrate the pad (a tangential graze); collapse
+        std::sort( crossings.begin(), crossings.end() );
+
+        // Concave copper is re-entered further along the ray, so the last crossing can sit in an
+        // unrelated lobe; probe past each crossing so a vertex graze does not count as the exit
+        double exitEdge = 0;
+
+        for( double d : crossings )
+        {
+            VECTOR2I probe = intersection + VECTOR2I( KiROUND( -vecVia.x * ( d + offset ) ),
+                                                      KiROUND( -vecVia.y * ( d + offset ) ) );
+
+            if( !padPoly.Contains( probe ) )
+            {
+                exitEdge = d;
+                break;
+            }
+        }
+
+        // exitEdge == 0 means -vecVia does not penetrate the pad (a tangential graze); collapse
         // pointD onto the entry so the teardrop simply flares from the track to the pad edge.
-        effectiveDist = std::min( effectiveDist, std::max( 0.0, farEdge - 2.0 * offset ) );
+        effectiveDist = std::min( effectiveDist, std::max( 0.0, exitEdge - 2.0 * offset ) );
     }
     else
     {

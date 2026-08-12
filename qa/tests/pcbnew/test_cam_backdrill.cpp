@@ -27,9 +27,12 @@
 #include <pcbnew/exporters/gendrill_gerber_writer.h>
 #include <pcbnew/pcb_io/odbpp/pcb_io_odbpp.h>
 #include <pcbnew/pcb_track.h>
+#include <pcbnew_utils/board_test_utils.h>
+#include <settings/settings_manager.h>
 #include <base_units.h>
 
 #include <map>
+#include <memory>
 
 #include <core/utf8.h>
 
@@ -339,6 +342,42 @@ BOOST_AUTO_TEST_CASE( GerberDrillPrecision )
 }
 
 
+// Regression test for https://gitlab.com/kicad/code/kicad/-/issues/23452
+// Drill files for vias spanning inner-to-back or back-to-inner layers produced
+// reversed layer order in the generated file name (e.g. "back-in2" instead of "in2-back").
+BOOST_AUTO_TEST_CASE( DrillFileLayerOrderInFilename )
+{
+    wxFileName tempDir = MakeTempDir();
+    wxFileName boardFile( tempDir.GetFullPath(), wxT( "layer_order_board.kicad_pcb" ) );
+
+    BOARD board;
+    board.SetCopperLayerCount( 4 );
+    board.SetFileName( boardFile.GetFullPath() );
+
+    // Via spanning In2 (bottom inner) to B_Cu: file must be named "in2-back", not "back-in2".
+    auto via = new PCB_VIA( &board );
+    via->SetPosition( VECTOR2I( 0, 0 ) );
+    via->SetViaType( VIATYPE::BURIED );
+    via->SetLayerPair( In2_Cu, B_Cu );
+    via->SetDrill( pcbIUScale.mmToIU( 0.30 ) );
+    via->SetWidth( pcbIUScale.mmToIU( 0.60 ) );
+    board.Add( via );
+
+    EXCELLON_WRITER excellon( &board );
+    excellon.SetOptions( false, false, VECTOR2I( 0, 0 ), false );
+    excellon.SetFormat( true );
+    BOOST_REQUIRE( excellon.CreateDrillandMapFilesSet( tempDir.GetFullPath(), true, false, nullptr ) );
+
+    // Correct order: top inner layer first, then back layer.
+    wxFileName correctFile( tempDir.GetFullPath(), wxT( "layer_order_board-in2-back.drl" ) );
+    wxFileName reversedFile( tempDir.GetFullPath(), wxT( "layer_order_board-back-in2.drl" ) );
+    BOOST_CHECK_MESSAGE( correctFile.FileExists(), "Expected drill file 'in2-back' not found" );
+    BOOST_CHECK_MESSAGE( !reversedFile.FileExists(), "Incorrectly named drill file 'back-in2' found" );
+
+    wxFileName::Rmdir( tempDir.GetFullPath(), wxPATH_RMDIR_RECURSIVE );
+}
+
+
 // Regression test for https://gitlab.com/kicad/code/kicad/-/issues/23005
 // GenDrillReportFile crashed when aReporter was null (the default)
 BOOST_AUTO_TEST_CASE( DrillReportNullReporter )
@@ -469,6 +508,117 @@ BOOST_AUTO_TEST_CASE( OdbPpUnfilledRectangleOnSilk )
 
     // The degenerate donut_rc symbol should not appear anymore.
     BOOST_CHECK( !silkContents.Contains( wxT( "donut_rc" ) ) );
+
+    wxFileName::Rmdir( odbRoot.GetFullPath(), wxPATH_RMDIR_RECURSIVE );
+    wxFileName::Rmdir( tempDir.GetFullPath(), wxPATH_RMDIR_RECURSIVE );
+}
+
+
+// Export aBoard to a fresh ODB++ tree below aTempDir and return the root of that tree.  Symbol
+// dimensions come out in micrometres because the file units are millimetres.
+static wxFileName ExportOdbTree( BOARD* aBoard, const wxFileName& aTempDir )
+{
+    wxFileName odbRoot( aTempDir.GetFullPath(), wxEmptyString );
+    odbRoot.AppendDir( wxT( "odb_out" ) );
+    BOOST_REQUIRE( odbRoot.Mkdir( wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL ) );
+
+    PCB_IO_ODBPP                odbExporter;
+    std::map<std::string, UTF8> props;
+    props["units"] = "mm";
+    props["sigfig"] = "4";
+    BOOST_REQUIRE_NO_THROW( odbExporter.SaveBoard( odbRoot.GetFullPath(), aBoard, &props ) );
+
+    return odbRoot;
+}
+
+
+static wxString ReadOdbLayerFeatures( const wxFileName& aOdbRoot, const wxString& aLayerDir )
+{
+    wxFileName features( aOdbRoot.GetFullPath(), wxT( "features" ) );
+    features.AppendDir( wxT( "steps" ) );
+    features.AppendDir( wxT( "pcb" ) );
+    features.AppendDir( wxT( "layers" ) );
+    features.AppendDir( aLayerDir );
+    BOOST_REQUIRE( features.FileExists() );
+
+    wxFFile  stream( features.GetFullPath(), wxT( "rb" ) );
+    wxString contents;
+    BOOST_REQUIRE( stream.ReadAll( &contents ) );
+    stream.Close();
+
+    return contents;
+}
+
+
+// Regression test for https://gitlab.com/kicad/code/kicad/-/issues/25089
+// The inner diameter of the donut_r symbol standing in for an unfilled circle subtracted only
+// half the line width from the diameter, so the exported annulus was a quarter width too thin
+// and sat off-centre from the circle it came from.  The board is the reporter's own project.
+BOOST_AUTO_TEST_CASE( OdbPpUnfilledCircleAnnulus )
+{
+    SETTINGS_MANAGER       settingsManager;
+    std::unique_ptr<BOARD> board;
+
+    KI_TEST::LoadBoard( settingsManager, wxT( "issue25089/odb_circles" ), board );
+    BOOST_REQUIRE( board );
+
+    wxFileName tempDir = MakeTempDir();
+    wxFileName odbRoot = ExportOdbTree( board.get(), tempDir );
+
+    // Every circle in the project is 2 mm across with a 0.1 mm stroke, so the ring spans radius
+    // 0.95 mm to 1.05 mm
+    for( const wxString& layerDir : { wxString( wxT( "f.cu" ) ), wxString( wxT( "edge.cuts" ) ) } )
+    {
+        wxString contents = ReadOdbLayerFeatures( odbRoot, layerDir );
+
+        BOOST_CHECK_MESSAGE( contents.Contains( wxT( "donut_r2100.0x1900.0" ) ),
+                             "Wrong annulus on " + layerDir + ", features file holds:\n"
+                                     + contents );
+    }
+
+    wxFileName::Rmdir( odbRoot.GetFullPath(), wxPATH_RMDIR_RECURSIVE );
+    wxFileName::Rmdir( tempDir.GetFullPath(), wxPATH_RMDIR_RECURSIVE );
+}
+
+
+// Companion to OdbPpUnfilledCircleAnnulus covering the two circles that have no donut_r spelling,
+// derived from the same project.  On F.Cu the stroke is as wide as the circle and closes the hole;
+// on B.Cu the radius sits at the EDA_SHAPE clamp of INT_MAX / 2, where the doubled diameter used to
+// overflow a signed int and emit a negative dimension.
+BOOST_AUTO_TEST_CASE( OdbPpUnfilledCircleWithoutHole )
+{
+    SETTINGS_MANAGER       settingsManager;
+    std::unique_ptr<BOARD> board;
+
+    KI_TEST::LoadBoard( settingsManager, wxT( "issue25089/odb_circle_edge_cases" ), board );
+    BOOST_REQUIRE( board );
+
+    wxFileName tempDir = MakeTempDir();
+    wxFileName odbRoot = ExportOdbTree( board.get(), tempDir );
+
+    wxString frontContents = ReadOdbLayerFeatures( odbRoot, wxT( "f.cu" ) );
+
+    BOOST_CHECK_MESSAGE( frontContents.Contains( wxT( "r400.0" ) )
+                                 && !frontContents.Contains( wxT( "donut" ) ),
+                         "Circle with a hole-closing stroke should export as a solid pad, "
+                         "features file holds:\n"
+                                 + frontContents );
+
+    // Feature records carry signed Y coordinates, so only the symbol definitions can be checked
+    wxString          backContents = ReadOdbLayerFeatures( odbRoot, wxT( "b.cu" ) );
+    wxStringTokenizer backLines( backContents, wxT( "\n" ) );
+
+    while( backLines.HasMoreTokens() )
+    {
+        wxString line = backLines.GetNextToken();
+
+        if( line.StartsWith( wxT( "$" ) ) )
+        {
+            BOOST_CHECK_MESSAGE( !line.Contains( wxT( "-" ) ),
+                                 "Oversized circle overflowed to a negative symbol dimension: "
+                                         + line );
+        }
+    }
 
     wxFileName::Rmdir( odbRoot.GetFullPath(), wxPATH_RMDIR_RECURSIVE );
     wxFileName::Rmdir( tempDir.GetFullPath(), wxPATH_RMDIR_RECURSIVE );
@@ -625,5 +775,101 @@ BOOST_AUTO_TEST_CASE( OdbPpPlatedSlotDrill )
     BOOST_CHECK_EQUAL( countLinesStartingWith( nonPlatedToolsContents, wxT( "TYPE=PLATED" ) ), 0 );
 
     wxFileName::Rmdir( odbRoot.GetFullPath(), wxPATH_RMDIR_RECURSIVE );
+    wxFileName::Rmdir( tempDir.GetFullPath(), wxPATH_RMDIR_RECURSIVE );
+}
+
+
+// Regression test for https://gitlab.com/kicad/code/kicad/-/issues/25021
+// Backdrill holes are recorded as non-plated, so the report's backdrill sections asked
+// printToolSummary() for plated tools only and always claimed zero holes, even though
+// the matching Excellon files carried them.
+BOOST_AUTO_TEST_CASE( DrillReportBackdrillHoleCount )
+{
+    SETTINGS_MANAGER       settingsManager;
+    std::unique_ptr<BOARD> board;
+
+    KI_TEST::LoadBoard( settingsManager, wxT( "issue25021/backdrill" ), board );
+    BOOST_REQUIRE( board );
+
+    wxFileName tempDir = MakeTempDir();
+    wxFileName boardFile( tempDir.GetFullPath(), wxT( "backdrill.kicad_pcb" ) );
+
+    // Keep the derived drill file names out of the source tree
+    board->SetFileName( boardFile.GetFullPath() );
+
+    wxFileName reportFile( tempDir.GetFullPath(), wxT( "backdrill-drl.rpt" ) );
+
+    EXCELLON_WRITER excellon( board.get() );
+    excellon.SetOptions( false, false, VECTOR2I( 0, 0 ), false );
+    excellon.SetFormat( true );
+    BOOST_REQUIRE( excellon.GenDrillReportFile( reportFile.GetFullPath() ) );
+
+    wxFFile  reportStream( reportFile.GetFullPath(), wxT( "rb" ) );
+    wxString reportContents;
+    BOOST_REQUIRE( reportStream.ReadAll( &reportContents ) );
+    reportStream.Close();
+
+    struct BACKDRILL_SECTION
+    {
+        long holes = -1;
+        int  toolLines = 0;
+    };
+
+    std::map<wxString, BACKDRILL_SECTION> sections;
+    wxString                              currentFile;
+    wxStringTokenizer                     lines( reportContents, wxT( "\n" ) );
+
+    while( lines.HasMoreTokens() )
+    {
+        wxString line = lines.GetNextToken();
+        line.Trim( true ).Trim( false );
+
+        if( line.StartsWith( wxT( "Drill file '" ) ) )
+            currentFile = line.AfterFirst( '\'' ).BeforeFirst( '\'' );
+
+        if( line.StartsWith( wxT( "T" ) ) && line.Contains( wxT( "0.330mm" ) ) )
+            sections[currentFile].toolLines++;
+
+        wxString count;
+
+        if( line.StartsWith( wxT( "Total backdrilled holes count " ), &count ) )
+        {
+            long value = -1;
+            BOOST_REQUIRE( count.ToLong( &value ) );
+            sections[currentFile].holes = value;
+        }
+    }
+
+    // The board backdrills two vias from F.Cu down to In3.Cu, and one via each from
+    // B.Cu up to In3.Cu and to In6.Cu
+    const std::map<wxString, long> expected = {
+        { wxT( "backdrill_Backdrills_Drill_1_4.drl" ), 2 },
+        { wxT( "backdrill_Backdrills_Drill_10_4.drl" ), 1 },
+        { wxT( "backdrill_Backdrills_Drill_10_7.drl" ), 1 }
+    };
+
+    // No backdrill section beyond the three expected ones
+    BOOST_CHECK_EQUAL( sections.size(), expected.size() );
+
+    for( const auto& [file, holes] : expected )
+    {
+        auto section = sections.find( file );
+
+        if( section == sections.end() )
+        {
+            BOOST_ERROR( "No backdrill section for " << file );
+            continue;
+        }
+
+        BOOST_CHECK_EQUAL( section->second.holes, holes );
+
+        // The section must also list the 0.33mm backdrill tool it counted
+        BOOST_CHECK_EQUAL( section->second.toolLines, 1 );
+    }
+
+    // Plated through holes and the unplated summary must be unaffected
+    BOOST_CHECK( reportContents.Contains( wxT( "Total plated holes count 4" ) ) );
+    BOOST_CHECK( reportContents.Contains( wxT( "Total unplated holes count 0" ) ) );
+
     wxFileName::Rmdir( tempDir.GetFullPath(), wxPATH_RMDIR_RECURSIVE );
 }

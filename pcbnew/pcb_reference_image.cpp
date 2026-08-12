@@ -144,8 +144,7 @@ const BOX2I PCB_REFERENCE_IMAGE::GetBoundingBox() const
 }
 
 
-std::shared_ptr<SHAPE> PCB_REFERENCE_IMAGE::GetEffectiveShape( PCB_LAYER_ID aLayer,
-                                                               FLASHING aFlash ) const
+std::shared_ptr<SHAPE> PCB_REFERENCE_IMAGE::GetEffectiveShape( PCB_LAYER_ID aLayer, FLASHING, DRC_CONSTRAINT_T ) const
 {
     const BOX2I box = GetBoundingBox();
     return std::make_shared<SHAPE_RECT>( box.GetPosition(), box.GetWidth(), box.GetHeight() );
@@ -186,6 +185,11 @@ void PCB_REFERENCE_IMAGE::Serialize( google::protobuf::Any& aContainer ) const
     refImage.mutable_image_scale()->set_value( m_referenceImage.GetImageScale() );
     refImage.set_locked( IsLocked() ? kiapi::common::types::LockedState::LS_LOCKED
                                     : kiapi::common::types::LockedState::LS_UNLOCKED );
+
+    if( FOOTPRINT* parent = GetParentFootprint() )
+        refImage.mutable_parent()->set_value( parent->m_Uuid.AsStdString() );
+    else if( const BOARD* board = GetBoard() )
+        refImage.mutable_parent()->set_value( board->m_Uuid.AsStdString() );
 
     m_referenceImage.PackToBytes( *refImage.mutable_image_data() );
 

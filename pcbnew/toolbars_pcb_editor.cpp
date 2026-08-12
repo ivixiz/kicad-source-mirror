@@ -279,6 +279,7 @@ std::optional<TOOLBAR_CONFIGURATION> PCB_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
                             .AddAction( PCB_ACTIONS::addConstraintPointOnLine )
                             .AddAction( PCB_ACTIONS::addConstraintMidpoint )
                             .AddAction( PCB_ACTIONS::addConstraintSymmetric )
+                            .AddAction( PCB_ACTIONS::addConstraintFixedPosition )
                             .AddAction( PCB_ACTIONS::addConstraintParallel )
                             .AddAction( PCB_ACTIONS::addConstraintPerpendicular )
                             .AddAction( PCB_ACTIONS::addConstraintCollinear )
@@ -313,6 +314,7 @@ std::optional<TOOLBAR_CONFIGURATION> PCB_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
                             .AddAction( ACTIONS::gridSetOrigin )
                             .AddAction( PCB_ACTIONS::drillOrigin ) )
                             .AppendAction( PCB_ACTIONS::placePoint )
+              .AppendAction( PCB_ACTIONS::placeGridItem )
               .AppendAction( ACTIONS::measureTool );
 
         break;
@@ -371,7 +373,8 @@ std::optional<TOOLBAR_CONFIGURATION> PCB_EDIT_TOOLBAR_SETTINGS::DefaultToolbarCo
         else
             config.AppendAction( PCB_ACTIONS::importNetlist );
 
-        config.AppendAction( PCB_ACTIONS::runDRC );
+        config.AppendAction( PCB_ACTIONS::runDRC )
+              .AppendAction( PCB_ACTIONS::editFootprintFields );
 
         config.AppendSeparator();
         config.AppendAction( PCB_ACTIONS::showEeschema );
@@ -534,6 +537,7 @@ void PCB_EDIT_FRAME::UpdateVariantSelectionCtrl()
 void PCB_EDIT_FRAME::SetCurrentVariant( const wxString& aVariantName )
 {
     GetBoard()->SetCurrentVariant( aVariantName );
+    UpdateVariantSelectionCtrl();
 
     if( PCB_DRAW_PANEL_GAL* canvas = dynamic_cast<PCB_DRAW_PANEL_GAL*>( GetCanvas() ) )
     {

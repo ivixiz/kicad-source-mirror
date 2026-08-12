@@ -33,6 +33,7 @@ include_directories(
     ${CMAKE_SOURCE_DIR}/eeschema/symbol_editor
     # dialog_sim_model.h (white-box tested for issue 23687) includes <dialog_sim_model_base.h>.
     ${CMAKE_SOURCE_DIR}/eeschema/dialogs
+    ${CMAKE_SOURCE_DIR}/common/dialogs
     ${CMAKE_SOURCE_DIR}/qa/mocks/include
     ${CMAKE_SOURCE_DIR}/qa/qa_utils
     ${CMAKE_SOURCE_DIR}/qa
@@ -102,6 +103,7 @@ set( QA_EESCHEMA_SRCS
     test_issue18119_bus_hierarchy.cpp
     test_issue18299_bus_member_rename.cpp
     test_issue23840_bus_group_to_vector.cpp
+    test_issue19951_directive_label_coincident.cpp
     test_issue20173_paste_subsheet.cpp
     test_issue21401_paste_pin_numbers.cpp
     test_issue21798_bus_sheet_copy.cpp
@@ -128,8 +130,10 @@ set( QA_EESCHEMA_SRCS
     test_issue24858_variant_persistence.cpp
     test_issue24915_job_variant_fields.cpp
     test_issue24943_variant_unit_sync.cpp
+    test_issue25119_bom_netlist_variant.cpp
     test_issue24961_group_promotion.cpp
     test_issue24663_sheet_dnp_fields.cpp
+    test_issue25112_shared_sheet_field_scope.cpp
     test_issue24360_root_sheetname.cpp
     test_unique_sheet_name.cpp
     test_unique_group_name.cpp
@@ -147,6 +151,7 @@ set( QA_EESCHEMA_SRCS
     test_crossing_label.cpp
     test_eagle_plugin.cpp
     test_sch_footprint_field_reconciler.cpp
+    test_symbol_import_reconciler.cpp
     test_easyedapro_v3_import.cpp
     test_easyedapro_v3_plugin.cpp
     test_junction_helpers.cpp

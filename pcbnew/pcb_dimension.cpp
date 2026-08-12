@@ -361,6 +361,11 @@ void PCB_DIMENSION_BASE::Serialize( google::protobuf::Any &aContainer ) const
     dimension.set_precision( ToProtoEnum<DIM_PRECISION, DimensionPrecision>( m_precision ) );
     dimension.set_suppress_trailing_zeroes( m_suppressZeroes );
 
+    if( FOOTPRINT* parent = GetParentFootprint() )
+        dimension.mutable_parent()->set_value( parent->m_Uuid.AsStdString() );
+    else if( const BOARD* board = GetBoard() )
+        dimension.mutable_parent()->set_value( board->m_Uuid.AsStdString() );
+
     dimension.mutable_line_thickness()->set_value_nm( m_lineThickness );
     dimension.mutable_arrow_length()->set_value_nm( m_arrowLength );
     dimension.mutable_extension_offset()->set_value_nm( m_extensionOffset );
@@ -862,7 +867,7 @@ void PCB_DIMENSION_BASE::GetMsgPanelInfo( EDA_DRAW_FRAME* aFrame,
 }
 
 
-std::shared_ptr<SHAPE> PCB_DIMENSION_BASE::GetEffectiveShape( PCB_LAYER_ID aLayer, FLASHING aFlash ) const
+std::shared_ptr<SHAPE> PCB_DIMENSION_BASE::GetEffectiveShape( PCB_LAYER_ID aLayer, FLASHING, DRC_CONSTRAINT_T ) const
 {
     std::shared_ptr<SHAPE_COMPOUND> effectiveShape = std::make_shared<SHAPE_COMPOUND>();
 

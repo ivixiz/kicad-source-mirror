@@ -89,6 +89,8 @@ public:
         m_updateRequired = true;
     }
 
+    virtual void UpdateForNewData() { SetCoordX( m_coords.x ); }
+
     bool Inside( const wxPoint& aPoint ) const override;
 
     void Move( wxPoint aDelta ) override;
@@ -211,16 +213,17 @@ public:
 
     bool HasBBox() const override { return false; }
 
+    ///< Zero when no single reference applies, which labels the grid normalized.
     void SetReferenceImpedance( double aZ0 ) { m_z0 = aZ0; }
 
-    void SetNormalizedLabels( bool aNormalized ) { m_normalized = aNormalized; }
+    void SetMixedReferences( bool aMixed ) { m_mixedReferences = aMixed; }
 
     ///< Chart placement including pan/zoom.
     static bool GetChartView( mpWindow& aWindow, double aZoom, const wxRealPoint& aPan, SMITH_VIEW& aView );
 
 private:
-    double m_z0 = 50.0;
-    bool   m_normalized = false;
+    double m_z0 = 0.0;
+    bool   m_mixedReferences = false;
 };
 
 
@@ -241,12 +244,13 @@ public:
     void                       SetFrequencies( const std::vector<double>& aFreqs ) { m_frequencies = aFreqs; }
     const std::vector<double>& GetFrequencies() const { return m_frequencies; }
 
+    ///< Zero until the response port resolves one, which leaves only normalized values readable.
     void   SetReferenceImpedance( double aZ0 ) { m_z0 = aZ0; }
     double GetReferenceImpedance() const { return m_z0; }
 
 private:
     std::vector<double> m_frequencies;
-    double              m_z0 = 50.0;
+    double              m_z0 = 0.0;
 };
 
 
@@ -259,6 +263,7 @@ public:
             CURSOR( aTrace, aPlotTab ),
             m_index( -1 ),
             m_gamma( 0.0, 0.0 ),
+            m_requestFreq( 0.0 ),
             m_pendingFreq( false ),
             m_dragging( false )
     {
@@ -274,6 +279,10 @@ public:
 
     void SetCoordX( double aValue ) override;
 
+    void UpdateForNewData() override;
+
+    const wxRealPoint& GetGamma() const { return m_gamma; }
+
 private:
     void snapToIndex( int aIndex );
     void snapToFrequency( double aFreq );
@@ -281,6 +290,7 @@ private:
 private:
     int         m_index;
     wxRealPoint m_gamma;
+    double      m_requestFreq;
     bool        m_pendingFreq; // a saved frequency waiting for the sim data to load
     bool        m_dragging;    // the pending update comes from a drag, not a data refresh
 };

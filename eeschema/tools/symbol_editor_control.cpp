@@ -138,11 +138,10 @@ bool SYMBOL_EDITOR_CONTROL::Init()
 
                         LIB_SYMBOL_LIBRARY_MANAGER& libMgr = editFrame->GetLibManager();
                         const LIB_SYMBOL* sym = libMgr.GetSymbol( sel.GetLibItemName(), sel.GetLibNickname() );
-                        wxArrayString     derived;
 
-                        libMgr.GetDerivedSymbolNames( sel.GetLibItemName(), sel.GetLibNickname(), derived );
-
-                        return ( sym && sym->IsDerived() ) || !derived.IsEmpty();
+                        // This runs on every menu evaluation, so ask for the answer and not the list
+                        return ( sym && sym->IsDerived() )
+                               || libMgr.HasDerivedSymbols( sel.GetLibItemName(), sel.GetLibNickname() );
                     }
 
                     return false;
@@ -654,7 +653,6 @@ int SYMBOL_EDITOR_CONTROL::RenameSymbol( const TOOL_EVENT& aEvent )
 
         editFrame->RebuildView();
         editFrame->OnModify();
-        editFrame->UpdateTitle();
 
         // N.B. The view needs to be rebuilt first as the Symbol Properties change may
         // invalidate the view pointers by rebuilting the field table
@@ -1087,7 +1085,7 @@ int SYMBOL_EDITOR_CONTROL::CompareLibraryWithFile( const TOOL_EVENT& aEvent )
 
     wxCHECK( editFrame, 0 );
 
-    const wxString currentLib = editFrame->GetCurLib();
+    const wxString currentLib = editFrame->GetTreeLIBID().GetLibNickname();
 
     if( currentLib.IsEmpty() )
     {

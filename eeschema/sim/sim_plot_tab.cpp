@@ -347,16 +347,30 @@ void SMITH_GRID::Plot( wxDC& aDC, mpWindow& aWindow )
         return wxString::Format( wxS( "%g" ), aValue );
     };
 
-    // ohm labels for a single reference impedance, normalized labels when the traces disagree
-    double labelScale = m_normalized ? 1.0 : m_z0;
+    // ohm labels for a single reference impedance, normalized labels without one
+    double labelScale = m_z0 > 0.0 ? m_z0 : 1.0;
 
     static const std::vector<double> baseVals = { 0.2, 0.5, 1.0, 2.0, 5.0 };
     std::vector<double>              gridVals = baseVals;
 
-    if( view.zoom >= 2.0 )
+    constexpr double FINEST_SCALE = 2.0 / ( 1.0 + 20.0 );
+
+    wxRealPoint lowGamma = view.ToGamma( wxPoint( mL, mT + plotH ) );
+    wxRealPoint highGamma = view.ToGamma( wxPoint( mL + plotW, mT ) );
+
+    auto poleDistance = [&]( double aRe )
+    {
+        return std::hypot( std::max( { lowGamma.x - aRe, aRe - highGamma.x, 0.0 } ),
+                           std::max( { lowGamma.y, -highGamma.y, 0.0 } ) );
+    };
+
+    bool zoomedIn = ( plotW / 2.0 ) / view.radius < 1.0;
+    bool converged = zoomedIn && std::min( poleDistance( 1.0 ), poleDistance( -1.0 ) ) < FINEST_SCALE;
+
+    if( view.zoom >= 2.0 && !converged )
         gridVals.insert( gridVals.end(), { 0.1, 0.3, 0.4, 0.7, 1.5, 3.0, 10.0 } );
 
-    if( view.zoom >= 5.0 )
+    if( view.zoom >= 5.0 && !converged )
         gridVals.insert( gridVals.end(), { 0.05, 0.15, 0.6, 0.8, 1.2, 1.7, 2.5, 4.0, 7.0, 20.0 } );
 
     wxPen gridPen = m_pen;
@@ -440,11 +454,30 @@ void SMITH_GRID::Plot( wxDC& aDC, mpWindow& aWindow )
                         std::clamp( aPos.y, mT + 1, mT + plotH - aExt.y - 1 ) );
     };
 
+    std::vector<wxRect> placed;
+
+    auto drawLabel = [&]( const wxString& aLabel, const wxPoint& aPos, const wxSize& aExt )
+    {
+        wxPoint pos = clampToPlot( aPos, aExt );
+        wxRect  box( pos, aExt );
+
+        box.Inflate( 2, 1 );
+
+        for( const wxRect& seen : placed )
+        {
+            if( seen.Intersects( box ) )
+                return;
+        }
+
+        placed.push_back( box );
+        aDC.DrawText( aLabel, pos );
+    };
+
     auto drawEdgeLabel = [&]( const wxString& aLabel, const wxPoint& aAt )
     {
         wxSize ext = aDC.GetTextExtent( aLabel );
 
-        aDC.DrawText( aLabel, clampToPlot( wxPoint( aAt.x - ext.x / 2, aAt.y + 3 ), ext ) );
+        drawLabel( aLabel, wxPoint( aAt.x - ext.x / 2, aAt.y + 3 ), ext );
     };
 
     // push reactance labels just outside the rim, clamped so j50 and -j50 are not clipped
@@ -458,7 +491,7 @@ void SMITH_GRID::Plot( wxDC& aDC, mpWindow& aWindow )
         pos.x -= KiROUND( ext.x * ( 1.0 - aRe ) / 2.0 );
         pos.y -= KiROUND( ext.y * ( 1.0 + aIm ) / 2.0 );
 
-        aDC.DrawText( aLabel, clampToPlot( pos, ext ) );
+        drawLabel( aLabel, pos, ext );
     };
 
     wxPoint at;
@@ -496,13 +529,19 @@ void SMITH_GRID::Plot( wxDC& aDC, mpWindow& aWindow )
             drawEdgeLabel( negLabel, at );
     }
 
-    if( m_normalized )
-    {
-        wxString note = _( "normalized" );
-        wxSize   ext = aDC.GetTextExtent( note );
+    // the ohm labels mean nothing unless the reference impedance is named
+    wxString note;
 
-        aDC.DrawText( note, mL + 4, mT + plotH - ext.y - 4 );
-    }
+    if( m_z0 > 0.0 )
+        note = wxString::Format( wxS( "Z0 = %s Ω" ), formatValue( m_z0 ) );
+    else if( m_mixedReferences )
+        note = _( "Normalized Z/Z0 (ports differ)" );
+    else
+        note = _( "Normalized Z/Z0" );
+
+    wxSize ext = aDC.GetTextExtent( note );
+
+    aDC.DrawText( note, mL + 4, mT + plotH - ext.y - 4 );
 
     aDC.DestroyClippingRegion();
 }
@@ -640,22 +679,30 @@ void SMITH_CURSOR::snapToFrequency( double aFreq )
 
 void SMITH_CURSOR::SetCoordX( double aValue )
 {
+    m_requestFreq = aValue;
+
+    UpdateForNewData();
+
+    if( m_window )
+        m_window->Refresh();
+}
+
+
+void SMITH_CURSOR::UpdateForNewData()
+{
     if( static_cast<SMITH_TRACE*>( m_trace )->GetFrequencies().empty() )
     {
         // no data yet, remember the frequency and resolve it once the sim fills in
-        m_coords.x = aValue;
+        m_coords.x = m_requestFreq;
         m_pendingFreq = true;
         m_updateRequired = false;
         return;
     }
 
-    snapToFrequency( aValue );
+    snapToFrequency( m_requestFreq );
     m_pendingFreq = false;
     m_updateRequired = false;
     m_updateRef = true;
-
-    if( m_window )
-        m_window->Refresh();
 }
 
 
@@ -713,7 +760,7 @@ void SMITH_CURSOR::Plot( wxDC& aDC, mpWindow& aWindow )
     if( m_pendingFreq )
     {
         // sim data has arrived, restore the frequency saved from the workbook
-        snapToFrequency( m_coords.x );
+        snapToFrequency( m_requestFreq );
         m_pendingFreq = false;
         m_updateRequired = false;
         m_updateRef = true;
@@ -744,7 +791,10 @@ void SMITH_CURSOR::Plot( wxDC& aDC, mpWindow& aWindow )
             }
 
             if( best >= 0 )
+            {
                 snapToIndex( best );
+                m_requestFreq = m_coords.x;
+            }
 
             m_dragging = false;
         }
@@ -752,8 +802,7 @@ void SMITH_CURSOR::Plot( wxDC& aDC, mpWindow& aWindow )
         {
             // the trace data changed under the cursor, follow the frequency rather than
             // the screen position so a re-run cannot hop to another point of the locus
-            snapToFrequency( m_coords.x );
-            m_updateRef = true;
+            UpdateForNewData();
         }
 
         m_updateRequired = false;
@@ -764,7 +813,10 @@ void SMITH_CURSOR::Plot( wxDC& aDC, mpWindow& aWindow )
     else
     {
         if( m_index < 0 )
+        {
             snapToIndex( (int) count / 2 );
+            m_requestFreq = m_coords.x;
+        }
 
         m_updateRef = true;
     }
@@ -819,11 +871,14 @@ void SMITH_CURSOR::Plot( wxDC& aDC, mpWindow& aWindow )
 
     lines.push_back( getID() + wxS( ":  f = " ) + formatSI( freq, wxS( "Hz" ) ) );
 
-    if( !SMITH_MATH::GammaToImpedance( m_gamma.x, m_gamma.y, z0, zr, zi ) )
+    // ohms need the port impedance, without one only the normalized z is known
+    bool absolute = z0 > 0.0;
+
+    if( !SMITH_MATH::GammaToImpedance( m_gamma.x, m_gamma.y, absolute ? z0 : 1.0, zr, zi ) )
     {
         lines.push_back( wxS( "Z = inf" ) );
     }
-    else
+    else if( absolute )
     {
         lines.push_back( wxString::Format( wxS( "Z = %s %s j%s" ), formatSI( zr, wxS( "Ω" ) ),
                                            zi < 0 ? wxS( "-" ) : wxS( "+" ),
@@ -837,6 +892,11 @@ void SMITH_CURSOR::Plot( wxDC& aDC, mpWindow& aWindow )
             else
                 lines.push_back( wxS( "C = " ) + formatSI( SMITH_MATH::SeriesCapacitance( zi, freq ), wxS( "F" ) ) );
         }
+    }
+    else
+    {
+        lines.push_back( wxString::Format( wxS( "z = %s %s j%s" ), formatFloat( zr, 3 ),
+                                           zi < 0 ? wxS( "-" ) : wxS( "+" ), formatFloat( std::fabs( zi ), 3 ) ) );
     }
 
     double rl = SMITH_MATH::ReturnLoss( gm );
@@ -1116,9 +1176,16 @@ void CURSOR::Plot( wxDC& aDC, mpWindow& aWindow )
         m_updateRef = false;
     }
 
+    if( !std::isfinite( m_coords.x ) )
+        return;
+
+    // A silent trace interpolates to no y value at all, and converting that to a pixel is
+    // undefined behaviour, so carry the x cursor on its own
+    const bool hasY = std::isfinite( m_coords.y );
+
     // Line length in horizontal and vertical dimensions
     const wxPoint cursorPos( aWindow.x2p( m_trace->x2s( m_coords.x ) ),
-                             aWindow.y2p( m_trace->y2s( m_coords.y ) ) );
+                             hasY ? aWindow.y2p( m_trace->y2s( m_coords.y ) ) : 0 );
 
     wxCoord leftPx   = aWindow.GetMarginLeft();
     wxCoord rightPx  = aWindow.GetScrX() - aWindow.GetMarginRight();
@@ -1137,7 +1204,7 @@ void CURSOR::Plot( wxDC& aDC, mpWindow& aWindow )
     pen.SetStyle( m_continuous ? wxPENSTYLE_SOLID : wxPENSTYLE_LONG_DASH );
     aDC.SetPen( pen );
 
-    if( topPx < cursorPos.y && cursorPos.y < bottomPx )
+    if( hasY && topPx < cursorPos.y && cursorPos.y < bottomPx )
         aDC.DrawLine( leftPx, cursorPos.y, rightPx, cursorPos.y );
 
     if( leftPx < cursorPos.x && cursorPos.x < rightPx )
@@ -1209,10 +1276,13 @@ bool CURSOR::Inside( const wxPoint& aPoint ) const
     if( !m_window || !m_trace )
         return false;
 
-    return ( std::abs( (double) aPoint.x -
-                       m_window->x2p( m_trace->x2s( m_coords.x ) ) ) <= DRAG_MARGIN )
-        || ( std::abs( (double) aPoint.y -
-                       m_window->y2p( m_trace->y2s( m_coords.y ) ) ) <= DRAG_MARGIN );
+    // An undefined coordinate draws no line, so it offers nothing to grab
+    bool nearX = std::isfinite( m_coords.x )
+            && std::abs( (double) aPoint.x - m_window->x2p( m_trace->x2s( m_coords.x ) ) ) <= DRAG_MARGIN;
+    bool nearY = std::isfinite( m_coords.y )
+            && std::abs( (double) aPoint.y - m_window->y2p( m_trace->y2s( m_coords.y ) ) ) <= DRAG_MARGIN;
+
+    return nearX || nearY;
 }
 
 
@@ -1221,8 +1291,13 @@ void CURSOR::UpdateReference()
     if( !m_window )
         return;
 
-    m_reference.x = m_window->x2p( m_trace->x2s( m_coords.x ) );
-    m_reference.y = m_window->y2p( m_trace->y2s( m_coords.y ) );
+    // An undefined coordinate has no pixel, so keep the last good reference for a drag to
+    // measure against
+    if( std::isfinite( m_coords.x ) )
+        m_reference.x = m_window->x2p( m_trace->x2s( m_coords.x ) );
+
+    if( std::isfinite( m_coords.y ) )
+        m_reference.y = m_window->y2p( m_trace->y2s( m_coords.y ) );
 }
 
 
@@ -1756,11 +1831,7 @@ void SIM_PLOT_TAB::SetTraceData( TRACE* trace, std::vector<double>& aX, std::vec
         else
         {
             for( double& pt : aY )
-            {
-                // log( 0 ) is not valid.
-                if( pt != 0 )
-                    pt = 20 * log( pt ) / log( 10.0 );      // convert to dB
-            }
+                pt = MagnitudeToDb( pt );                   // NaN where there is no signal
         }
     }
 
@@ -1793,7 +1864,7 @@ void SIM_PLOT_TAB::SetTraceData( TRACE* trace, std::vector<double>& aX, std::vec
     for( auto& [ cursorId, cursor ] : trace->GetCursors() )
     {
         if( cursor )
-            cursor->SetCoordX( cursor->GetCoords().x );
+            cursor->UpdateForNewData();
     }
 
     UpdateAxisVisibility();
@@ -1939,6 +2010,7 @@ void SIM_PLOT_TAB::UpdateSmithReferenceImpedance()
 
     double z0 = 0.0;
     bool   mixed = false;
+    bool   unresolved = false;
 
     for( const auto& [name, trace] : m_traces )
     {
@@ -1947,17 +2019,19 @@ void SIM_PLOT_TAB::UpdateSmithReferenceImpedance()
         if( !smithTrace )
             continue;
 
-        if( z0 == 0.0 )
-            z0 = smithTrace->GetReferenceImpedance();
-        else if( smithTrace->GetReferenceImpedance() != z0 )
+        double traceZ0 = smithTrace->GetReferenceImpedance();
+
+        if( traceZ0 <= 0.0 )
+            unresolved = true;
+        else if( z0 == 0.0 )
+            z0 = traceZ0;
+        else if( traceZ0 != z0 )
             mixed = true;
     }
 
-    // with no smith traces the grid keeps its last z0
-    if( z0 > 0.0 )
-        m_smithGrid->SetReferenceImpedance( z0 );
-
-    m_smithGrid->SetNormalizedLabels( mixed );
+    // a trace whose port impedance is unknown leaves no single reference to name either
+    m_smithGrid->SetReferenceImpedance( mixed || unresolved ? 0.0 : z0 );
+    m_smithGrid->SetMixedReferences( mixed );
 }
 
 

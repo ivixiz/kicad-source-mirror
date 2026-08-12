@@ -1323,6 +1323,24 @@ std::vector<SCH_PIN*> LIB_SYMBOL::GetPinsByNumber( const wxString& aNumber, int 
 }
 
 
+bool LIB_SYMBOL::HasPinNumber( const wxString& aNumber ) const
+{
+    if( GetPin( aNumber ) )
+        return true;
+
+    for( const SCH_PIN* pin : GetGraphicalPins( 0, 0 ) )
+    {
+        for( const wxString& logicalNumber : pin->GetStackedPinNumbers() )
+        {
+            if( aNumber == logicalNumber )
+                return true;
+        }
+    }
+
+    return false;
+}
+
+
 bool LIB_SYMBOL::PinsConflictWith( const LIB_SYMBOL& aOtherPart, bool aTestNums, bool aTestNames, bool aTestType,
                                    bool aTestOrientation, bool aTestLength ) const
 {
@@ -2021,54 +2039,55 @@ int LIB_SYMBOL::GetUnitCount() const
 
 void LIB_SYMBOL::SetBodyStyleCount( int aCount, bool aDuplicateDrawItems, bool aDuplicatePins )
 {
+    wxCHECK_RET( aCount >= 1,
+                 wxString::Format( wxT( "Invalid body style count %d, ignoring." ), aCount ) );
+
     int prevCount = GetBodyStyleCount();
 
-    if( prevCount == aCount )
-        return;
-
-    // Duplicate items to create the converted shape
-    if( prevCount < aCount )
+    // Populate the new body styles from the standard one
+    if( prevCount < aCount && ( aDuplicateDrawItems || aDuplicatePins ) )
     {
-        if( aDuplicateDrawItems || aDuplicatePins )
+        std::vector<SCH_ITEM*> tmp; // Adding to m_drawings while iterating it invalidates the iterator
+
+        for( SCH_ITEM& item : m_drawings )
         {
-            std::vector<SCH_ITEM*> tmp; // Temporarily store the duplicated pins here.
+            if( item.Type() != SCH_PIN_T && !aDuplicateDrawItems )
+                continue;
 
-            for( SCH_ITEM& item : m_drawings )
+            if( item.m_bodyStyle == BODY_STYLE::BASE )
             {
-                if( item.Type() != SCH_PIN_T && !aDuplicateDrawItems )
-                    continue;
-
-                if( item.m_bodyStyle == 1 )
+                for( int j = prevCount + 1; j <= aCount; j++ )
                 {
-                    for( int j = prevCount + 1; j <= aCount; j++ )
-                    {
-                        SCH_ITEM* newItem = item.Duplicate( IGNORE_PARENT_GROUP );
-                        newItem->m_bodyStyle = j;
-                        tmp.push_back( newItem );
-                    }
+                    SCH_ITEM* newItem = item.Duplicate( IGNORE_PARENT_GROUP );
+                    newItem->m_bodyStyle = j;
+                    tmp.push_back( newItem );
                 }
             }
-
-            // Transfer the new pins to the LIB_SYMBOL.
-            for( SCH_ITEM* item : tmp )
-                m_drawings.push_back( item );
         }
+
+        for( SCH_ITEM* item : tmp )
+            m_drawings.push_back( item );
+
+        m_drawings.sort();
     }
-    else
+
+    // A caller that already cleared the De Morgan flag or the body style names reports a
+    // previous count of 1, so the deletion cannot be conditional on the count dropping
+    PruneBodyStyleDrawItems( aCount );
+}
+
+
+void LIB_SYMBOL::PruneBodyStyleDrawItems( int aBodyStyleCount )
+{
+    LIB_ITEMS_CONTAINER::ITERATOR i = m_drawings.begin();
+
+    while( i != m_drawings.end() )
     {
-        // Delete converted shape items because the converted shape does not exist
-        LIB_ITEMS_CONTAINER::ITERATOR i = m_drawings.begin();
-
-        while( i != m_drawings.end() )
-        {
-            if( i->m_bodyStyle > aCount )
-                i = m_drawings.erase( i );
-            else
-                ++i;
-        }
+        if( i->m_bodyStyle > aBodyStyleCount )
+            i = m_drawings.erase( i );
+        else
+            ++i;
     }
-
-    m_drawings.sort();
 }
 
 
@@ -2096,6 +2115,18 @@ std::vector<LIB_SYMBOL_UNIT> LIB_SYMBOL::GetUnitDrawItems()
 {
     std::vector<LIB_SYMBOL_UNIT> units;
 
+    // Enforce writing out of all defined unit/body-style combinations
+    for( int unit = 1; unit <= GetUnitCount(); unit++ )
+    {
+        for( int bodyStyle = 1; bodyStyle <= GetBodyStyleCount(); bodyStyle++ )
+        {
+            LIB_SYMBOL_UNIT record;
+            record.m_unit = unit;
+            record.m_bodyStyle = bodyStyle;
+            units.push_back( std::move( record ) );
+        }
+    }
+
     for( SCH_ITEM& item : m_drawings )
     {
         if( item.Type() == SCH_FIELD_T )
@@ -2112,17 +2143,23 @@ std::vector<LIB_SYMBOL_UNIT> LIB_SYMBOL::GetUnitDrawItems()
 
         if( it == units.end() )
         {
-            LIB_SYMBOL_UNIT newUnit;
-            newUnit.m_unit = item.GetUnit();
-            newUnit.m_bodyStyle = item.GetBodyStyle();
-            newUnit.m_items.push_back( &item );
-            units.emplace_back( newUnit );
+            LIB_SYMBOL_UNIT record;
+            record.m_unit = unit;
+            record.m_bodyStyle = bodyStyle;
+            it = units.insert( units.end(), std::move( record ) );
         }
-        else
-        {
-            it->m_items.push_back( &item );
-        }
+
+        it->m_items.push_back( &item );
     }
+
+    std::sort( units.begin(), units.end(),
+               []( const LIB_SYMBOL_UNIT& a, const LIB_SYMBOL_UNIT& b )
+               {
+                   if( a.m_unit == b.m_unit )
+                       return a.m_bodyStyle < b.m_bodyStyle;
+
+                   return a.m_unit < b.m_unit;
+               } );
 
     return units;
 }
@@ -2142,22 +2179,41 @@ int LIB_SYMBOL::Compare( const LIB_SYMBOL& aRhs, int aCompareFlags, REPORTER* aR
     if( m_me == aRhs.m_me )
         return 0;
 
-    if( !aReporter && ( aCompareFlags & SCH_ITEM::COMPARE_FLAGS::ERC ) == 0 )
+    int retv = 0;
+
+    if( aCompareFlags & COMPARE_FLAGS::IDENTITY )
     {
         if( int tmp = m_name.Cmp( aRhs.m_name ) )
-            return tmp;
+        {
+            retv = tmp;
+            REPORT( _( "Name differs." ) );
+
+            if( !aReporter )
+                return retv;
+        }
 
         if( int tmp = m_libId.compare( aRhs.m_libId ) )
-            return tmp;
+        {
+            retv = tmp;
+            REPORT( _( "Library ID differs." ) );
+
+            if( !aReporter )
+                return retv;
+        }
 
         if( m_parent.lock() < aRhs.m_parent.lock() )
-            return -1;
+            retv = -1;
+        else if( m_parent.lock() > aRhs.m_parent.lock() )
+            retv = 1;
 
-        if( m_parent.lock() > aRhs.m_parent.lock() )
-            return 1;
+        if( retv )
+        {
+            REPORT( _( "Symbol parent differs." ) );
+
+            if( !aReporter )
+                return retv;
+        }
     }
-
-    int retv = 0;
 
     if( m_options != aRhs.m_options )
     {
@@ -2222,7 +2278,8 @@ int LIB_SYMBOL::Compare( const LIB_SYMBOL& aRhs, int aCompareFlags, REPORTER* aR
             if( int tmp2 = ( *aIt )->compare( *( *bIt ), aCompareFlags ) )
             {
                 retv = tmp2;
-                REPORT( wxString::Format( _( "Graphic item differs: %s; %s." ), ITEM_DESC( *aIt ),
+                REPORT( wxString::Format( _( "Graphic item differs: %s; %s." ),
+                                          ITEM_DESC( *aIt ),
                                           ITEM_DESC( *bIt ) ) );
 
                 if( !aReporter )
@@ -2246,7 +2303,9 @@ int LIB_SYMBOL::Compare( const LIB_SYMBOL& aRhs, int aCompareFlags, REPORTER* aR
         else if( int tmp = aPin->SCH_ITEM::compare( *bPin, aCompareFlags ) )
         {
             retv = tmp;
-            REPORT( wxString::Format( _( "Pin %s differs: %s; %s" ), aPin->GetNumber(), ITEM_DESC( aPin ),
+            REPORT( wxString::Format( _( "Pin %s differs: %s; %s" ),
+                                      aPin->GetNumber(),
+                                      ITEM_DESC( aPin ),
                                       ITEM_DESC( bPin ) ) );
 
             if( !aReporter )
@@ -2279,65 +2338,134 @@ int LIB_SYMBOL::Compare( const LIB_SYMBOL& aRhs, int aCompareFlags, REPORTER* aR
 
         if( !bField )
         {
-            retv = 1;
-            REPORT( wxString::Format( _( "Extra field in schematic symbol: %s." ), ITEM_DESC( aField ) ) );
-
-            if( !aReporter )
-                return retv;
-        }
-        else
-        {
-            int tmp = 0;
-
-            // For EQUALITY comparison, we need to compare field content directly
-            // since SCH_ITEM::compare() returns 0 for EQUALITY flag
-            if( aCompareFlags & SCH_ITEM::COMPARE_FLAGS::EQUALITY )
+            if( aCompareFlags & COMPARE_FLAGS::EXTRA_FIELDS )
             {
-                // Compare field text content
-                tmp = aField->GetText().compare( bField->GetText() );
-            }
-
-            if( tmp == 0 )
-            {
-                int fieldCompareFlags = aCompareFlags;
-
-                // SCH_FIELD::compare() injects SKIP_TST_POS for ERC, but it is bypassed
-                // by the base-class call below, so mirror it here (issue 24657).
-                if( aCompareFlags & SCH_ITEM::COMPARE_FLAGS::ERC )
-                    fieldCompareFlags |= SCH_ITEM::COMPARE_FLAGS::SKIP_TST_POS;
-
-                // Fall back to base class comparison for other properties
-                tmp = aField->SCH_ITEM::compare( *bField, fieldCompareFlags );
-            }
-
-            if( tmp != 0 )
-            {
-                retv = tmp;
-                REPORT( wxString::Format( _( "Field '%s' differs: %s; %s." ), aField->GetName( false ),
-                                          ITEM_DESC( aField ), ITEM_DESC( bField ) ) );
+                retv = 1;
+                REPORT( wxString::Format( _( "Extra field in schematic symbol: %s." ), aField->GetName( false ) ) );
 
                 if( !aReporter )
                     return retv;
             }
         }
+        else
+        {
+            if( ( aCompareFlags & COMPARE_FLAGS::FIELD_TEXT ) && aField->GetId() != FIELD_T::REFERENCE )
+            {
+                if( int tmp = aField->GetText().compare( bField->GetText() ) )
+                {
+                    retv = tmp;
+                    REPORT( wxString::Format( _( "Field '%s' differs: %s; %s." ),
+                                              aField->GetName( false ),
+                                              aField->GetText(),
+                                              bField->GetText() ) );
+
+                    if( !aReporter )
+                        return retv;
+                }
+            }
+
+            if( aCompareFlags & COMPARE_FLAGS::FIELD_SIZE_AND_STYLE )
+            {
+                if( aField->GetFont() != bField->GetFont() )
+                {
+                    retv = static_cast<int>( aField->GetFont() - bField->GetFont() );
+                    REPORT( wxString::Format( _( "Field '%s' fonts differ." ), aField->GetName( false ) ) );
+
+                    if( !aReporter )
+                        return retv;
+                }
+
+                if( aField->GetTextSize() != bField->GetTextSize() )
+                {
+                    if( aField->GetTextSize().x != bField->GetTextSize().x )
+                        retv = aField->GetTextSize().x - bField->GetTextSize().x;
+                    else
+                        retv = aField->GetTextSize().y - bField->GetTextSize().y;
+
+                    REPORT( wxString::Format( _( "Field '%s' text sizes differ." ), aField->GetName( false ) ) );
+
+                    if( !aReporter )
+                        return retv;
+                }
+
+                if( int tmp = aField->GetAttributes().Compare( bField->GetAttributes() ) )
+                {
+                    retv = tmp;
+                    REPORT( wxString::Format( _( "Field '%s' text styles differ." ), aField->GetName( false ) ) );
+
+                    if( !aReporter )
+                        return retv;
+                }
+            }
+
+            if( aCompareFlags & COMPARE_FLAGS::FIELD_VISIBILITY )
+            {
+                if( aField->IsVisible() != bField->IsVisible() )
+                {
+                    retv = aField->IsVisible() ? 1 : -1;
+                    REPORT( wxString::Format( _( "Field '%s' visibility flags differ." ), aField->GetName( false ) ) );
+
+                    if( !aReporter )
+                        return retv;
+                }
+
+                if( aField->IsNameShown() != bField->IsNameShown() )
+                {
+                    retv = aField->IsNameShown() ? 1 : -1;
+                    REPORT( wxString::Format( _( "Field '%s' name shown flags differ." ), aField->GetName( false ) ) );
+
+                    if( !aReporter )
+                        return retv;
+                }
+            }
+
+            if( aField->IsPrivate() != bField->IsPrivate() )
+            {
+                retv = aField->IsPrivate() ? 1 : -1;
+                REPORT( wxString::Format( _( "Field '%s' privacy flags differ." ), aField->GetName( false ) ) );
+
+                if( !aReporter )
+                    return retv;
+            }
+
+            if( aCompareFlags & COMPARE_FLAGS::FIELD_POSITIONS )
+            {
+                if( aField->GetPosition().x != bField->GetPosition().x )
+                    retv = aField->GetPosition().x - bField->GetPosition().x;
+
+                if( aField->GetPosition().y != bField->GetPosition().y )
+                    retv = aField->GetPosition().y - bField->GetPosition().y;
+
+                if( retv )
+                {
+                    REPORT( wxString::Format( _( "Field '%s' positions differ." ), aField->GetName( false ) ) );
+
+                    if( !aReporter )
+                        return retv;
+                }
+            }
+        }
     }
 
-    for( const SCH_FIELD* bField : bFields )
+    if( aCompareFlags & COMPARE_FLAGS::MISSING_FIELDS )
     {
-        const SCH_FIELD* aField = nullptr;
-
-        if( bField->IsMandatory() )
-            aField = aRhs.GetField( bField->GetId() );
-        else
-            aField = aRhs.GetField( bField->GetName() );
-
-        if( !aField )
+        for( const SCH_FIELD* bField : bFields )
         {
-            retv = 1;
-            REPORT( wxString::Format( _( "Missing field in schematic symbol: %s." ), ITEM_DESC( bField ) ) );
+            const SCH_FIELD* aField = nullptr;
 
-            if( !aReporter )
-                return retv;
+            if( bField->IsMandatory() )
+                aField = aRhs.GetField( bField->GetId() );
+            else
+                aField = aRhs.GetField( bField->GetName() );
+
+            if( !aField )
+            {
+                retv = 1;
+                REPORT( wxString::Format( _( "Missing field in schematic symbol: %s." ), bField->GetName( false ) ) );
+
+                if( !aReporter )
+                    return retv;
+            }
         }
     }
 
@@ -2416,7 +2544,7 @@ int LIB_SYMBOL::Compare( const LIB_SYMBOL& aRhs, int aCompareFlags, REPORTER* aR
             return retv;
     }
 
-    if( ( aCompareFlags & SCH_ITEM::COMPARE_FLAGS::ERC ) == 0 )
+    if( aCompareFlags & COMPARE_FLAGS::PIN_VISIBILITIES )
     {
         if( m_showPinNames != aRhs.m_showPinNames )
         {
@@ -2435,7 +2563,10 @@ int LIB_SYMBOL::Compare( const LIB_SYMBOL& aRhs, int aCompareFlags, REPORTER* aR
             if( !aReporter )
                 return retv;
         }
+    }
 
+    if( aCompareFlags & COMPARE_FLAGS::EXCLUDE_FROM_SIM )
+    {
         if( m_excludedFromSim != aRhs.m_excludedFromSim )
         {
             retv = ( m_excludedFromSim ) ? -1 : 1;
@@ -2444,7 +2575,10 @@ int LIB_SYMBOL::Compare( const LIB_SYMBOL& aRhs, int aCompareFlags, REPORTER* aR
             if( !aReporter )
                 return retv;
         }
+    }
 
+    if( aCompareFlags & COMPARE_FLAGS::EXCLUDE_FROM_BOM )
+    {
         if( m_excludedFromBOM != aRhs.m_excludedFromBOM )
         {
             retv = ( m_excludedFromBOM ) ? -1 : 1;
@@ -2453,7 +2587,10 @@ int LIB_SYMBOL::Compare( const LIB_SYMBOL& aRhs, int aCompareFlags, REPORTER* aR
             if( !aReporter )
                 return retv;
         }
+    }
 
+    if( aCompareFlags & COMPARE_FLAGS::EXCLUDE_FROM_BOARD )
+    {
         if( m_excludedFromBoard != aRhs.m_excludedFromBoard )
         {
             retv = ( m_excludedFromBoard ) ? -1 : 1;
@@ -2462,7 +2599,22 @@ int LIB_SYMBOL::Compare( const LIB_SYMBOL& aRhs, int aCompareFlags, REPORTER* aR
             if( !aReporter )
                 return retv;
         }
+    }
 
+    if( aCompareFlags & COMPARE_FLAGS::DNP )
+    {
+        if( m_DNP != aRhs.m_DNP )
+        {
+            retv = ( m_DNP ) ? -1 : 1;
+            REPORT( _( "Do not populate settings differ." ) );
+
+            if( !aReporter )
+                return retv;
+        }
+    }
+
+    if( aCompareFlags & COMPARE_FLAGS::EXCLUDE_FROM_POS_FILES )
+    {
         if( m_excludedFromPosFiles != aRhs.m_excludedFromPosFiles )
         {
             retv = ( m_excludedFromPosFiles ) ? -1 : 1;
@@ -2642,15 +2794,13 @@ std::set<KIFONT::OUTLINE_FONT*> LIB_SYMBOL::GetFonts() const
         {
             const SCH_TEXT& text = static_cast<const SCH_TEXT&>( item );
 
-            if( auto* font = text.GetFont(); font && !font->IsStroke() )
+            if( KIFONT::FONT* font = text.GetFont(); font && !font->IsStroke() )
             {
-                auto* outline = static_cast<KIFONT::OUTLINE_FONT*>( font );
-                auto  permission = outline->GetEmbeddingPermission();
+                KIFONT::OUTLINE_FONT*                      outline = static_cast<KIFONT::OUTLINE_FONT*>( font );
+                KIFONT::OUTLINE_FONT::EMBEDDING_PERMISSION permission = outline->GetEmbeddingPermission();
 
                 if( permission == EMBEDDING_PERMISSION::EDITABLE || permission == EMBEDDING_PERMISSION::INSTALLABLE )
-                {
                     fonts.insert( outline );
-                }
             }
         }
     }

@@ -30,6 +30,7 @@
 #include <kiway.h>
 #include <erc/erc.h>
 #include <richio.h>
+#include <wx/utils.h>
 
 #include <netlist.h>
 #include <netlist_exporter_base.h>
@@ -141,10 +142,18 @@ bool SCH_EDIT_FRAME::WriteNetListFile( int aFormat, const wxString& aFullFileNam
                                                                        fileName, aFullFileName,
                                                                        prj_dir );
 
+        // Clear AppImage / embedded Python env so system interpreters used by BOM
+        // generators (e.g. /usr/bin/python3) do not inherit PYTHONHOME/PYTHONPATH
+        // that point into the AppImage and fail with ModuleNotFoundError: encodings.
+        wxExecuteEnv env;
+        wxGetEnvMap( &env.env );
+        env.env.erase( wxS( "PYTHONHOME" ) );
+        env.env.erase( wxS( "PYTHONPATH" ) );
+
         if( aReporter )
         {
             wxArrayString output, errors;
-            int           diag = wxExecute( commandLine, output, errors, m_exec_flags );
+            int           diag = wxExecute( commandLine, output, errors, m_exec_flags, &env );
             wxString      msg;
 
             aReporter->ReportHead( commandLine, RPT_SEVERITY_ACTION );
@@ -174,7 +183,7 @@ bool SCH_EDIT_FRAME::WriteNetListFile( int aFormat, const wxString& aFullFileNam
         }
         else
         {
-            int diag = wxExecute( commandLine, m_exec_flags );
+            int diag = wxExecute( commandLine, m_exec_flags, nullptr, &env );
             if( diag != 0 )
                 res = false;
         }
@@ -186,8 +195,11 @@ bool SCH_EDIT_FRAME::WriteNetListFile( int aFormat, const wxString& aFullFileNam
 }
 
 
-bool SCH_EDIT_FRAME::ReadyToNetlist( const wxString& aAnnotateMessage )
+bool SCH_EDIT_FRAME::ReadyToNetlist( const wxString& aAnnotateMessage, bool* aUserCancelled )
 {
+    if( aUserCancelled )
+        *aUserCancelled = false;
+
     // Ensure all power symbols have a valid reference
     Schematic().Hierarchy().AnnotatePowerSymbols();
 
@@ -209,7 +221,12 @@ bool SCH_EDIT_FRAME::ReadyToNetlist( const wxString& aAnnotateMessage )
     if( erc.TestDuplicateSheetNames( false ) > 0 )
     {
         if( !IsOK( this, _( "Error: duplicate sheet names. Continue?" ) ) )
+        {
+            if( aUserCancelled )
+                *aUserCancelled = true;
+
             return false;
+        }
     }
 
     return true;

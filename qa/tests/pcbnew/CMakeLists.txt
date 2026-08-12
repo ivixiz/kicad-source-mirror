@@ -70,6 +70,8 @@ set( QA_PCBNEW_SRCS
     test_issue24735.cpp
     test_issue24901.cpp
     test_issue24967.cpp
+    test_issue25010.cpp
+    test_issue25110_bezier_line_style.cpp
     test_fp_lib_load_save.cpp
     test_io_mgr.cpp
     test_ellipse_roundtrip.cpp
@@ -79,6 +81,7 @@ set( QA_PCBNEW_SRCS
     test_meander_corner_radius.cpp
     test_odb_dimension_export.cpp
     test_odb_soldermask_shape_export.cpp
+    test_issue25074_odb_knockout_textbox.cpp
     test_pcb_control_rehatch.cpp
     test_pns_basics.cpp
     test_pad_flashing.cpp
@@ -136,6 +139,7 @@ set( QA_PCBNEW_SRCS
     net_chains/test_net_chain_terminal_pad_assignment.cpp
     net_chains/test_net_chain_terminal_pad_stale.cpp
     net_chains/test_apply_chain_assignments_dry_run.cpp
+    net_chains/test_net_chain_netclass_persistence.cpp
     net_chains/test_update_pcb_legacy_fpid_dnp.cpp
     # Net chain aggregation / skew / total length tests
     net_chains/test_net_chain_skew_tuning.cpp
@@ -145,6 +149,8 @@ set( QA_PCBNEW_SRCS
     net_chains/test_net_chain_partition.cpp
     net_chains/test_net_chain_trunk_delay.cpp
     net_chains/test_tuning_bridging_clamp.cpp
+    # Tuning profile integration
+    net_chains/test_net_chain_bridging_delay_tuning_profiles.cpp
 
     drc/test_custom_rule_severities.cpp
     drc/test_drc_backdrill_postmachining.cpp
@@ -202,6 +208,7 @@ set( QA_PCBNEW_SRCS
     drc/test_drc_creepage_issue24544.cpp
     drc/test_drc_creepage_issue24524.cpp
     drc/test_drc_creepage_issue24597.cpp
+    drc/test_drc_creepage_issue24853.cpp
     drc/test_drc_creepage_issue24875.cpp
     drc/test_drc_creepage_issue24885.cpp
     drc/test_creepage_engine_parity.cpp
@@ -218,8 +225,8 @@ set( QA_PCBNEW_SRCS
     drc/test_drc_issue24211.cpp
     drc/test_drc_physical_clearance.cpp
     drc/test_drc_rule_editor.cpp
-    drc/test_drc_bitmap_overlay_panel.cpp
     drc/test_drc_violation_layers_issue24941.cpp
+    drc/test_drc_net_chain_tuning_profiles.cpp
 
     pcb_io/altium/test_altium_rule_transformer.cpp
     pcb_io/altium/test_altium_pcblib_import.cpp
@@ -233,7 +240,6 @@ set( QA_PCBNEW_SRCS
     pcb_io/pads/test_pads_layer_mapper.cpp
     pcb_io/pads/test_pads_arc_structures.cpp
     pcb_io/pads/test_pads_part_structures.cpp
-    pcb_io/pads/test_pads_keepout.cpp
     pcb_io/geda/test_geda_pcb_import.cpp
     pcb_io/sprint_layout/test_sprint_layout_import.cpp
 
@@ -265,6 +271,10 @@ set( QA_PCBNEW_SRCS
 
     # Geometric constraint solver (planegcs adapter)
     constraints/test_planegcs_smoke.cpp
+    constraints/test_constraint_system_2d.cpp
+    constraints/test_snap_resolver.cpp
+    constraints/test_snap_inference.cpp
+    constraints/test_pcb_snap_pipeline.cpp
     constraints/test_pcb_constraint.cpp
     constraints/test_constraint_ownership.cpp
     constraints/test_constraint_commit.cpp

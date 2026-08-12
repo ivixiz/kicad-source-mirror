@@ -100,15 +100,16 @@ enum PCB_DRC_CODE
     DRCE_TEXT_THICKNESS,
 
     DRCE_LENGTH_OUT_OF_RANGE,
-    DRCE_NET_CHAIN_STUB_TOO_LONG,   // Routed stub on a net chain exceeds the (stub_length max) constraint
-    DRCE_NET_CHAIN_RETURN_PATH_BREAK,  // Net chain routed without copper on the required reference layer
+    DRCE_NET_CHAIN_STUB_TOO_LONG,     // Routed stub on a net chain exceeds the (stub_length max) constraint
+    DRCE_NET_CHAIN_RETURN_PATH_BREAK, // Net chain routed without copper on the required reference layer
+    DRCE_NET_CHAIN_TUNING_PROFILES,   // All nets in a net chain must have the same tuning profile (or none)
     DRCE_SKEW_OUT_OF_RANGE,
     DRCE_VIA_COUNT_OUT_OF_RANGE,
-    DRCE_DIFF_PAIR_GAP_OUT_OF_RANGE,
-    DRCE_DIFF_PAIR_UNCOUPLED_LENGTH_TOO_LONG,
+    DRCE_DP_GAP_OUT_OF_RANGE,
+    DRCE_DP_UNCOUPLED_LENGTH_TOO_LONG,
 
     DRCE_MIRRORED_TEXT_ON_FRONT_LAYER,
-    DRCE_NONMIRRORED_TEXT_ON_BACK_LAYER,
+    DRCE_UNMIRRORED_TEXT_ON_BACK_LAYER,
 
     DRCE_MISSING_TUNING_PROFILE,        // Tuning profile used in net class is not defined
     DRCE_TUNING_PROFILE_IMPLICIT_RULES, // Pseudo-code for setting severities
@@ -252,6 +253,7 @@ private:
     static DRC_ITEM lengthOutOfRange;
     static DRC_ITEM netChainStubTooLong;
     static DRC_ITEM netChainReturnPathBreak;
+    static DRC_ITEM netChainTuningProfiles;
     static DRC_ITEM skewOutOfRange;
     static DRC_ITEM viaCountOutOfRange;
     static DRC_ITEM diffPairGapOutOfRange;
@@ -261,7 +263,7 @@ private:
     static DRC_ITEM footprintTHPadhasNoHole;
     static DRC_ITEM footprintScaledWithPads;
     static DRC_ITEM mirroredTextOnFrontLayer;
-    static DRC_ITEM nonMirroredTextOnBackLayer;
+    static DRC_ITEM unMirroredTextOnBackLayer;
     static DRC_ITEM missingTuningProfile;
     static DRC_ITEM tuningProfileImplicitRules;
     static DRC_ITEM trackOnPostMachinedLayer;

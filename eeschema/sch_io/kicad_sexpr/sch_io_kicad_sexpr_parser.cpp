@@ -535,9 +535,6 @@ LIB_SYMBOL* SCH_IO_KICAD_SEXPR_PARSER::parseLibSymbol( LIB_SYMBOL_MAP& aSymbolLi
 
             m_bodyStyle = static_cast<int>( tmp );
 
-            if( m_bodyStyle > symbol->GetBodyStyleCount() )
-                symbol->SetBodyStyleCount( m_bodyStyle, false, false );
-
             if( m_unit > symbol->GetUnitCount() )
                 symbol->SetUnitCount( m_unit, false );
 
@@ -663,9 +660,14 @@ LIB_SYMBOL* SCH_IO_KICAD_SEXPR_PARSER::parseLibSymbol( LIB_SYMBOL_MAP& aSymbolLi
             RECURSE_MODE::NO_RECURSE );
 
     // Before V10 we didn't store the number of body styles in a symbol, we just looked at all its
-    // drawings each time we wanted to know.
-    if( m_requiredVersion < 20250827 )
+    // drawings each time we wanted to know.  Symbol libraries kept their old version for a while
+    // after custom body styles landed, so only infer De Morgan when nothing was declared.
+    if( m_requiredVersion < 20250827 && !symbol->IsMultiBodyStyle() )
         symbol->SetHasDeMorganBodyStyles( symbol->HasLegacyAlternateBodyStyle() );
+
+    // The declaration wins over the drawings, which lets libraries written by a version that
+    // failed to delete a body style load without its leftovers
+    symbol->PruneBodyStyleDrawItems( symbol->GetBodyStyleCount() );
 
     symbol->RefreshLibraryTreeCaches();
 
@@ -2180,6 +2182,16 @@ SCH_SHAPE* SCH_IO_KICAD_SEXPR_PARSER::parseSymbolPolyLine()
 
         default:
             Expecting( "pts, stroke, or fill" );
+        }
+    }
+
+    if( poly->GetFillMode() != FILL_T::NO_FILL && poly->GetPolyShape().OutlineCount() > 0 )
+    {
+        SHAPE_LINE_CHAIN& outline = poly->GetPolyShape().Outline( 0 );
+
+        if( outline.PointCount() >= 3 && outline.CLastPoint() == outline.CPoint( outline.PointCount() - 2 ) )
+        {
+            outline.SetPoint( outline.PointCount() - 1, outline.CPoint( 0 ) );
         }
     }
 
@@ -3898,6 +3910,25 @@ SCH_SYMBOL* SCH_IO_KICAD_SEXPR_PARSER::parseSchematicSymbol()
             else
                 existing = symbol->GetField( field->GetName() );
 
+            if( existing && !field->IsMandatory() )
+            {
+                // If there are other fields with the same name, for whatever reason,
+                // try renameing instead of silently discarding them right away.
+                wxString base_name = field->GetName();
+
+                // Arbitrary number of attempts to find a new name (oldname_x)
+                for( int ii = 1; ii < 10 && existing; ii++ )
+                {
+                    wxString newname = base_name;
+                    newname << '_' << ii;
+
+                    existing = symbol->GetField( newname );
+
+                    if( !existing )
+                        field->SetName( newname );
+                }
+            }
+
             if( existing )
                 *existing = *field;
             else
@@ -4621,6 +4652,16 @@ SCH_SHAPE* SCH_IO_KICAD_SEXPR_PARSER::parseSchPolyLine()
 
         default:
             Expecting( "pts, uuid, stroke, fill or locked" );
+        }
+    }
+
+    if( polyline->GetFillMode() != FILL_T::NO_FILL && polyline->GetPolyShape().OutlineCount() > 0 )
+    {
+        SHAPE_LINE_CHAIN& outline = polyline->GetPolyShape().Outline( 0 );
+
+        if( outline.PointCount() >= 3 && outline.CLastPoint() == outline.CPoint( outline.PointCount() - 2 ) )
+        {
+            outline.SetPoint( outline.PointCount() - 1, outline.CPoint( 0 ) );
         }
     }
 

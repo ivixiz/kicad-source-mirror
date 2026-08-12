@@ -37,7 +37,6 @@
 PCB_IO_SOLIDWORKS::PCB_IO_SOLIDWORKS() :
         PCB_IO( wxS( "Solidworks PCB" ) )
 {
-    m_reporter = &WXLOG_REPORTER::GetInstance();
     RegisterCallback( PCB_IO_ALTIUM_DESIGNER::DefaultLayerMappingCallback );
 }
 
@@ -146,8 +145,7 @@ BOARD* PCB_IO_SOLIDWORKS::LoadBoard( const wxString& aFileName, BOARD* aAppendTo
         if( !variants.empty() )
             ApplyAltiumProjectVariantsToBoard( m_board, variants );
 
-        ApplyAltiumProjectParametersToProject( aProject,
-                                               ParseAltiumProjectParameters( projectFile ) );
+        ApplyAltiumProjectParametersToProject( aProject, ParseAltiumProjectParameters( projectFile ) );
     }
 
     return m_board;

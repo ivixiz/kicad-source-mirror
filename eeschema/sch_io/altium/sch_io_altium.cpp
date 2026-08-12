@@ -5606,6 +5606,9 @@ SCH_IO_ALTIUM::ParseLibFile( const ALTIUM_COMPOUND_FILE& aAltiumLibFile )
 
     for( auto& [name, entry] : syms )
     {
+        if( m_reporter )
+            m_reporter->Report( wxString::Format( _( "Converting symbol '%s'" ), name ), RPT_SEVERITY_ACTION );
+
         std::map<int, SYMBOL_PIN_FRAC> pinFracs;
 
         if( entry.m_pinsFrac )
@@ -5766,10 +5769,10 @@ SCH_IO_ALTIUM::ParseLibFile( const ALTIUM_COMPOUND_FILE& aAltiumLibFile )
         }
 
         if( reader.HasParsingError() )
-            THROW_IO_ERROR( "stream was not parsed correctly!" );
+            THROW_IO_ERROR( wxT( "stream was not parsed correctly!" ) );
 
         if( reader.GetRemainingBytes() != 0 )
-            THROW_IO_ERROR( "stream is not fully parsed" );
+            THROW_IO_ERROR( wxT( "stream is not fully parsed" ) );
 
         LIB_SYMBOL* symbol = symbols[0];
         symbol->FixupDrawItems();
@@ -5783,6 +5786,14 @@ SCH_IO_ALTIUM::ParseLibFile( const ALTIUM_COMPOUND_FILE& aAltiumLibFile )
         symbol->SetName( name );
         ret[name] = symbol;
     }
+
+    if( m_reporter )
+    {
+        for( const auto& [msg, severity] : m_errorMessages )
+            m_reporter->Report( msg, severity );
+    }
+
+    m_errorMessages.clear();
 
     return ret;
 }
@@ -5859,7 +5870,7 @@ void SCH_IO_ALTIUM::ensureLoadedLibrary( const wxString& aLibraryPath,
     }
     catch( const std::exception& exc )
     {
-        THROW_IO_ERROR( wxString::Format( _( "Error parsing Altium library: %s" ), exc.what() ) );
+        THROW_IO_ERRORF( _( "Error parsing Altium library: %s" ), exc.what() );
     }
 }
 
@@ -5870,12 +5881,12 @@ void SCH_IO_ALTIUM::ParseLibHeader( const ALTIUM_COMPOUND_FILE& aAltiumSchFile,
     const CFB::COMPOUND_FILE_ENTRY* file = aAltiumSchFile.FindStream( { "FileHeader" } );
 
     if( file == nullptr )
-        THROW_IO_ERROR( "FileHeader not found" );
+        THROW_IO_ERROR( wxT( "FileHeader not found" ) );
 
     ALTIUM_BINARY_PARSER reader( aAltiumSchFile, file );
 
     if( reader.GetRemainingBytes() <= 0 )
-        THROW_IO_ERROR( "FileHeader does not contain any data" );
+        THROW_IO_ERROR( wxT( "FileHeader does not contain any data" ) );
 
     std::map<wxString, wxString> properties = reader.ReadProperties();
 

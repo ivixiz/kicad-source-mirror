@@ -28,6 +28,7 @@
 #include <api/board/board.pb.h>
 #include <api/common/types/enums.pb.h>
 #include <eda_shape.h>
+#include <core/mirror.h>
 #include <core/typeinfo.h>
 #include <font/text_attributes.h>
 #include <layer_ids.h>
@@ -215,9 +216,24 @@ BOOST_AUTO_TEST_CASE( RatsnestDisplayMode )
     testEnums<RATSNEST_MODE, kiapi::board::commands::RatsnestDisplayMode>();
 }
 
+BOOST_AUTO_TEST_CASE( BoardFlipDirection )
+{
+    testEnums<FLIP_DIRECTION, kiapi::board::commands::BoardFlipDirection>();
+}
+
 BOOST_AUTO_TEST_CASE( BoardStackupLayerType )
 {
     testEnums<BOARD_STACKUP_ITEM_TYPE, kiapi::board::BoardStackupLayerType>();
+}
+
+BOOST_AUTO_TEST_CASE( DielectricModel )
+{
+    testEnums<DIELECTRIC_MODEL, kiapi::board::DielectricModel>();
+}
+
+BOOST_AUTO_TEST_CASE( BoardEdgeConnectorType )
+{
+    testEnums<BS_EDGE_CONNECTOR_CONSTRAINTS, kiapi::board::BoardEdgeConnectorType>();
 }
 
 BOOST_AUTO_TEST_CASE( DrcSeverity )
@@ -253,7 +269,6 @@ BOOST_AUTO_TEST_CASE( DesignRuleType )
                                 DRCE_CREEPAGE,
                                 DRCE_TRACKS_CROSSING,
                                 DRCE_EDGE_CLEARANCE,
-                                DRCE_ZONES_INTERSECT,
                                 DRCE_ISOLATED_COPPER,
                                 DRCE_STARVED_THERMAL,
                                 DRCE_DANGLING_VIA,
@@ -301,13 +316,13 @@ BOOST_AUTO_TEST_CASE( DesignRuleType )
                                 DRCE_LENGTH_OUT_OF_RANGE,
                                 DRCE_SKEW_OUT_OF_RANGE,
                                 DRCE_VIA_COUNT_OUT_OF_RANGE,
-                                DRCE_DIFF_PAIR_GAP_OUT_OF_RANGE,
-                                DRCE_DIFF_PAIR_UNCOUPLED_LENGTH_TOO_LONG,
+                                DRCE_DP_GAP_OUT_OF_RANGE,
+                                DRCE_DP_UNCOUPLED_LENGTH_TOO_LONG,
                                 DRCE_FOOTPRINT,
                                 DRCE_FOOTPRINT_TYPE_MISMATCH,
                                 DRCE_PAD_TH_WITH_NO_HOLE,
                                 DRCE_MIRRORED_TEXT_ON_FRONT_LAYER,
-                                DRCE_NONMIRRORED_TEXT_ON_BACK_LAYER,
+                                DRCE_UNMIRRORED_TEXT_ON_BACK_LAYER,
                                 DRCE_MISSING_TUNING_PROFILE,
                                 DRCE_TRACK_ON_POST_MACHINED_LAYER,
                                 DRCE_TRACK_NOT_CENTERED_ON_VIA } )

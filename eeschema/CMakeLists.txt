@@ -189,7 +189,6 @@ set( EESCHEMA_DLGS
     dialogs/dialog_scope_waveforms.cpp
     dialogs/dialog_symbol_chooser.cpp
     dialogs/dialog_symbol_fields_table.cpp
-    dialogs/dialog_symbol_fields_table_base.cpp
     dialogs/dialog_symbol_properties.cpp
     dialogs/dialog_symbol_properties_base.cpp
     dialogs/dialog_symbol_remap.cpp
@@ -226,6 +225,8 @@ set( EESCHEMA_DLGS
     dialogs/panel_setup_formatting_base.cpp
     dialogs/panel_setup_pinmap.cpp
     dialogs/panel_setup_pinmap_base.cpp
+    dialogs/panel_setup_symbol_parity.cpp
+    dialogs/panel_setup_symbol_parity_base.cpp
     dialogs/panel_symbol_pin_map.cpp
     dialogs/panel_symbol_pin_map_base.cpp
     dialogs/panel_simulator_preferences.cpp
@@ -421,7 +422,7 @@ set( EESCHEMA_SRCS
     eeschema_helpers.cpp
     eeschema_jobs_handler.cpp
     eeschema_settings.cpp
-    fields_data_model.cpp
+    symbol_fields_data_model.cpp
     fields_grid_table.cpp
     files-io.cpp
     generate_alias_info.cpp
@@ -486,6 +487,7 @@ set( EESCHEMA_SRCS
     symbol_chooser_frame.cpp
     variant_symbol_utils.cpp
     symbol_import_manager.cpp
+    symbol_import_reconciler.cpp
 
     symbol_library_manager.cpp
     symbol_tree_model_adapter.cpp

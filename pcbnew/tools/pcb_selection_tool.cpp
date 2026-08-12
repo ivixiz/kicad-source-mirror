@@ -242,6 +242,7 @@ PCB_SELECTION_TOOL::PCB_SELECTION_TOOL() :
     m_filter.keepouts    = true;
     m_filter.dimensions  = true;
     m_filter.points      = true;
+    m_filter.gridItems   = true;
     m_filter.otherItems  = true;
 }
 
@@ -3485,6 +3486,9 @@ static bool itemIsIncludedByFilter( const BOARD_ITEM& aItem, const BOARD& aBoard
         else
             return aFilterOptions.includeItemsOnTechLayers;
 
+    case PCB_GRIDITEM_T:
+        return aFilterOptions.includeItemsOnTechLayers;
+
     case PCB_FIELD_T:
     case PCB_TEXT_T:
     case PCB_TEXTBOX_T:
@@ -3739,6 +3743,17 @@ bool PCB_SELECTION_TOOL::itemPassesFilter( BOARD_ITEM* aItem, bool aMultiSelect,
         {
             if( aRejected )
                 aRejected->points = true;
+
+            return false;
+        }
+
+        break;
+
+    case PCB_GRIDITEM_T:
+        if( !m_filter.gridItems )
+        {
+            if( aRejected )
+                aRejected->gridItems = true;
 
             return false;
         }
@@ -4137,6 +4152,12 @@ bool PCB_SELECTION_TOOL::Selectable( const BOARD_ITEM* aItem, bool checkVisibili
             return false;
 
         if( !board()->IsElementVisible( LAYER_POINTS ) )
+            return false;
+
+        break;
+
+    case PCB_GRIDITEM_T:
+        if( !board()->IsElementVisible( LAYER_GRIDITEMS ) )
             return false;
 
         break;

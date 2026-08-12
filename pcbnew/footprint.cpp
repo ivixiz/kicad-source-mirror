@@ -328,6 +328,9 @@ void FOOTPRINT::Serialize( google::protobuf::Any &aContainer ) const
     footprint.set_locked( IsLocked() ? kiapi::common::types::LockedState::LS_LOCKED
                                      : kiapi::common::types::LockedState::LS_UNLOCKED );
 
+    if( const BOARD* board = GetBoard() )
+        footprint.mutable_parent()->set_value( board->m_Uuid.AsStdString() );
+
     google::protobuf::Any buf;
     GetField( FIELD_T::REFERENCE )->Serialize( buf );
     buf.UnpackTo( footprint.mutable_reference_field() );
@@ -787,6 +790,7 @@ void FOOTPRINT::ApplyDefaultSettings( const BOARD& board, bool aStyleFields, boo
         case PCB_BARCODE_T:
             if( aStyleBarcodes )
                 item->StyleFromSettings( board.GetDesignSettings(), true );
+
             break;
 
         default:
@@ -2717,29 +2721,20 @@ INSPECT_RESULT FOOTPRINT::Visit( INSPECTOR inspector, void* testData,
             break;
 
         case PCB_PAD_T:
-            if( IterateForward<PAD*>( m_pads, inspector, testData, { scanType } )
-                    == INSPECT_RESULT::QUIT )
-            {
+            if( IterateForward<PAD*>( m_pads, inspector, testData, { scanType } ) == INSPECT_RESULT::QUIT )
                 return INSPECT_RESULT::QUIT;
-            }
 
             break;
 
         case PCB_ZONE_T:
-            if( IterateForward<ZONE*>( m_zones, inspector, testData, { scanType } )
-                    == INSPECT_RESULT::QUIT )
-            {
+            if( IterateForward<ZONE*>( m_zones, inspector, testData, { scanType } ) == INSPECT_RESULT::QUIT )
                 return INSPECT_RESULT::QUIT;
-            }
 
             break;
 
         case PCB_FIELD_T:
-            if( IterateForward<PCB_FIELD*>( m_fields, inspector, testData, { scanType } )
-                == INSPECT_RESULT::QUIT )
-            {
+            if( IterateForward<PCB_FIELD*>( m_fields, inspector, testData, { scanType } ) == INSPECT_RESULT::QUIT )
                 return INSPECT_RESULT::QUIT;
-            }
 
             break;
 
@@ -2756,11 +2751,8 @@ INSPECT_RESULT FOOTPRINT::Visit( INSPECTOR inspector, void* testData,
         case PCB_TABLECELL_T:
             if( !drawingsScanned )
             {
-                if( IterateForward<BOARD_ITEM*>( m_drawings, inspector, testData, aScanTypes )
-                        == INSPECT_RESULT::QUIT )
-                {
+                if( IterateForward<BOARD_ITEM*>( m_drawings, inspector, testData, aScanTypes ) == INSPECT_RESULT::QUIT )
                     return INSPECT_RESULT::QUIT;
-                }
 
                 drawingsScanned = true;
             }
@@ -2768,11 +2760,8 @@ INSPECT_RESULT FOOTPRINT::Visit( INSPECTOR inspector, void* testData,
             break;
 
         case PCB_GROUP_T:
-            if( IterateForward<PCB_GROUP*>( m_groups, inspector, testData, { scanType } )
-                    == INSPECT_RESULT::QUIT )
-            {
+            if( IterateForward<PCB_GROUP*>( m_groups, inspector, testData, { scanType } ) == INSPECT_RESULT::QUIT )
                 return INSPECT_RESULT::QUIT;
-            }
 
             break;
 
@@ -2786,11 +2775,8 @@ INSPECT_RESULT FOOTPRINT::Visit( INSPECTOR inspector, void* testData,
             break;
 
         case PCB_POINT_T:
-            if( IterateForward<PCB_POINT*>( m_points, inspector, testData, { scanType } )
-                    == INSPECT_RESULT::QUIT )
-            {
+            if( IterateForward<PCB_POINT*>( m_points, inspector, testData, { scanType } ) == INSPECT_RESULT::QUIT )
                 return INSPECT_RESULT::QUIT;
-            }
 
             break;
 
@@ -3826,7 +3812,8 @@ double FOOTPRINT::CoverageRatio( const GENERAL_COLLECTOR& aCollector ) const
 }
 
 
-std::shared_ptr<SHAPE> FOOTPRINT::GetEffectiveShape( PCB_LAYER_ID aLayer, FLASHING aFlash ) const
+std::shared_ptr<SHAPE> FOOTPRINT::GetEffectiveShape( PCB_LAYER_ID aLayer, FLASHING aFlash,
+                                                     DRC_CONSTRAINT_T aUsage ) const
 {
     std::shared_ptr<SHAPE_COMPOUND> shape = std::make_shared<SHAPE_COMPOUND>();
 
@@ -3849,14 +3836,14 @@ std::shared_ptr<SHAPE> FOOTPRINT::GetEffectiveShape( PCB_LAYER_ID aLayer, FLASHI
     else
     {
         for( PAD* pad : Pads() )
-            shape->AddShape( pad->GetEffectiveShape( aLayer, aFlash )->Clone() );
+            shape->AddShape( pad->GetEffectiveShape( aLayer, aFlash, aUsage )->Clone() );
 
         for( BOARD_ITEM* item : GraphicalItems() )
         {
             if( item->Type() == PCB_SHAPE_T )
-                shape->AddShape( item->GetEffectiveShape( aLayer, aFlash )->Clone() );
+                shape->AddShape( item->GetEffectiveShape( aLayer, aFlash, aUsage )->Clone() );
             else if( item->Type() == PCB_BARCODE_T )
-                shape->AddShape( item->GetEffectiveShape( aLayer, aFlash )->Clone() );
+                shape->AddShape( item->GetEffectiveShape( aLayer, aFlash, aUsage )->Clone() );
         }
     }
 
@@ -4195,8 +4182,7 @@ void FOOTPRINT::CheckPads( UNITS_PROVIDER* aUnitsProvider,
 }
 
 
-void FOOTPRINT::CheckShortingPads( const std::function<void( const PAD*, const PAD*,
-                                                             int aErrorCode,
+void FOOTPRINT::CheckShortingPads( const std::function<void( const PAD*, const PAD*, int aErrorCode,
                                                              const VECTOR2I& )>& aErrorHandler )
 {
     std::unordered_map<PTR_PTR_CACHE_KEY, int> checkedPairs;
@@ -4231,8 +4217,10 @@ void FOOTPRINT::CheckShortingPads( const std::function<void( const PAD*, const P
                     }
                     else
                     {
-                        std::shared_ptr<SHAPE_SEGMENT> holeA = pad->GetEffectiveHoleShape();
-                        std::shared_ptr<SHAPE_SEGMENT> holeB = other->GetEffectiveHoleShape();
+                        std::shared_ptr<SHAPE_SEGMENT> holeA = pad->GetEffectiveHoleShape( UNDEFINED_LAYER,
+                                                                                           HOLE_TO_HOLE_CONSTRAINT );
+                        std::shared_ptr<SHAPE_SEGMENT> holeB = other->GetEffectiveHoleShape( UNDEFINED_LAYER,
+                                                                                             HOLE_TO_HOLE_CONSTRAINT );
 
                         if( holeA->Collide( holeB->GetSeg(), 0 ) )
                             aErrorHandler( pad, other, DRCE_DRILLED_HOLES_TOO_CLOSE, pos );

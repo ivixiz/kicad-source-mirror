@@ -33,6 +33,7 @@
 #include <stroke_params.h>
 #include <geometry/eda_angle.h>
 #include "macros.h"
+#include "drc/drc_rule.h"
 
 class BOARD;
 class BOARD_DESIGN_SETTINGS;
@@ -219,11 +220,16 @@ public:
      * @param aFlash optional parameter allowing a caller to force the pad to be flashed (or not
      *               flashed) on the current layer (default is to honour the pad's setting and
      *               the current connections for the given layer).
+     * @param aUsage optional parameter specifying the query type.  This can, for instance, allow
+     *               backdrilling, countersinking, etc. to affect the shape used for resolving the
+     *               physical_clearance.
      */
     virtual std::shared_ptr<SHAPE> GetEffectiveShape( PCB_LAYER_ID aLayer = UNDEFINED_LAYER,
-                                                      FLASHING aFlash = FLASHING::DEFAULT ) const;
+                                                      FLASHING aFlash = FLASHING::DEFAULT,
+                                                      DRC_CONSTRAINT_T aUsage = NULL_CONSTRAINT ) const;
 
-    virtual std::shared_ptr<SHAPE_SEGMENT> GetEffectiveHoleShape() const;
+    virtual std::shared_ptr<SHAPE_SEGMENT> GetEffectiveHoleShape( PCB_LAYER_ID aLayer = UNDEFINED_LAYER,
+                                                                  DRC_CONSTRAINT_T aUsage = NULL_CONSTRAINT ) const;
 
     /**
      * Invoke a function on all children.
@@ -264,6 +270,25 @@ public:
      * @see #STROKE_PARAMS
      */
     virtual bool HasLineStroke() const { return false; }
+
+    /**
+     * Check if this item's layer set must not be confined to a board's enabled layers.
+     *
+     * A container's layer set is its members', and those are confined individually; a footprint's
+     * children come from a library that knows no board's layers and must survive those layers being
+     * re-enabled; a geometric constraint has no layer at all.  Masking any of them would corrupt
+     * the item.  Whether the board accepts it at all is #FitsEnabledLayers.
+     */
+    virtual bool IsLayerAgnostic() const { return false; }
+
+    /**
+     * Check if a board offering \a aEnabledLayers can hold this item.
+     *
+     * A layer-agnostic item always fits; anything else needs at least one of its own layers
+     * enabled.  \a aCopperLayerCount is passed rather than read from the item because the item may
+     * still belong to the board it is being copied from.
+     */
+    virtual bool FitsEnabledLayers( const LSET& aEnabledLayers, int aCopperLayerCount ) const;
 
     virtual STROKE_PARAMS GetStroke() const;
     virtual void SetStroke( const STROKE_PARAMS& aStroke );

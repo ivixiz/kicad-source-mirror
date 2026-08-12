@@ -60,6 +60,7 @@ class BOARD_NETLIST_UPDATER;
 class ACTION_MENU;
 class TOOL_ACTION;
 class DIALOG_BOARD_SETUP;
+class DIALOG_FOOTPRINT_FIELDS_TABLE;
 class PCB_DESIGN_BLOCK_PANE;
 class PANEL_CONSTRAINTS;
 class WX_INFOBAR;
@@ -71,6 +72,8 @@ class API_HANDLER_COMMON;
 enum LAST_PATH_TYPE : unsigned int;
 
 namespace PCB { struct IFACE; }     // KIFACE is in pcbnew.cpp
+
+wxDECLARE_EVENT( EDA_EVT_PCB_LAST_SCH_SHEET_CHANGED, wxCommandEvent );
 
 /**
  * The main frame for Pcbnew.
@@ -110,6 +113,9 @@ public:
     void ExecuteRemoteCommand( const char* cmdline ) override;
 
     void KiwayMailIn( KIWAY_MAIL_EVENT& aEvent ) override;
+
+    void      SetLastSchematicSheetPath( const KIID_PATH& aPath );
+    KIID_PATH GetLastSchematicSheetPath() const { return m_lastSchematicSheetPath; }
 
     /**
      * Used to find items by selection synchronization spec string.
@@ -665,6 +671,9 @@ public:
 
     DIALOG_BOOK_REPORTER* GetFootprintDiffDialog();
 
+    DIALOG_FOOTPRINT_FIELDS_TABLE* GetFootprintFieldsTableDialog();
+    bool                           CloseFootprintFieldsTableDialog();
+
     /**
      * Perform auto save when the board has been modified and not saved within the
      * auto save interval.
@@ -785,6 +794,7 @@ protected:
     void saveProjectSettings() override;
 
     void onCloseModelessBookReporterDialogs( wxCommandEvent& aEvent );
+    void onCloseFootprintFieldsTableDialog( wxCommandEvent& aEvent );
 
     void onPluginAvailabilityChanged( wxCommandEvent& aEvt );
 
@@ -840,6 +850,7 @@ private:
     DIALOG_BOOK_REPORTER*      m_inspectConstraintsDlg;
     DIALOG_BOOK_REPORTER*      m_footprintDiffDlg;
     DIALOG_BOARD_SETUP*        m_boardSetupDlg;
+    DIALOG_FOOTPRINT_FIELDS_TABLE* m_footprintFieldsTableDialog;
 
     std::vector<LIB_ID>    m_designBlockHistoryList;
     PCB_DESIGN_BLOCK_PANE* m_designBlocksPane;
@@ -866,6 +877,10 @@ private:
     int               m_crossProbeFlashPhase = 0;      ///< Phase counter
     std::vector<KIID> m_crossProbeFlashItems;          ///< Items to flash (by UUID)
     bool              m_crossProbeFlashing = false;    ///< Currently flashing guard
+
+    // Most recent schematic path (default to root), used in the footprint fields
+    // table to enable the same schematic scope limiting as the symbol fields table
+    KIID_PATH         m_lastSchematicSheetPath;
 
     std::unique_ptr<API_HANDLER_PCB>    m_apiHandler;
     std::unique_ptr<API_HANDLER_COMMON> m_apiHandlerCommon;

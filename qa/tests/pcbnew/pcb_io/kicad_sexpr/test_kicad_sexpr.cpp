@@ -146,6 +146,40 @@ BOOST_AUTO_TEST_CASE( Issue23125_EmptyZoneDiscarded )
  * Even though the KiCad file writter doesn't write using scientific notation anymore, at one
  * point it did, so the parser must still support reading it.
  */
+BOOST_AUTO_TEST_CASE( CoincidentDrawingsSurviveSave )
+{
+    // The writer sorts drawings into a std::set, so a cmp_drawings that reports equality for
+    // two coincident shapes silently drops one of them
+    BOARD board;
+
+    for( int ii = 0; ii < 2; ++ii )
+    {
+        PCB_SHAPE* line = new PCB_SHAPE( &board, SHAPE_T::SEGMENT );
+
+        line->SetLayer( F_SilkS );
+        line->SetStart( VECTOR2I( 0, 0 ) );
+        line->SetEnd( VECTOR2I( pcbIUScale.mmToIU( 5.0 ), 0 ) );
+        line->SetWidth( pcbIUScale.mmToIU( 0.1 ) );
+
+        board.Add( line, ADD_MODE::APPEND );
+    }
+
+    BOOST_REQUIRE_EQUAL( board.Drawings().size(), 2u );
+
+    const wxString path =
+            ( std::filesystem::temp_directory_path() / "qa_coincident_drawings.kicad_pcb" ).string();
+
+    kicadPlugin.SaveBoard( path, &board );
+
+    BOARD reloaded;
+    kicadPlugin.LoadBoard( path, &reloaded );
+
+    BOOST_CHECK_EQUAL( reloaded.Drawings().size(), 2u );
+
+    std::filesystem::remove( path.ToStdString() );
+}
+
+
 BOOST_AUTO_TEST_CASE( ScientificNotationLoading )
 {
     std::string dataPath = KI_TEST::GetPcbnewTestDataDir()
@@ -540,6 +574,10 @@ BOOST_AUTO_TEST_CASE( FootprintSave_OmitsNetsOnAllBoardConnectedItems )
     std::stringstream ss;
     ss << in.rdbuf();
     BOOST_REQUIRE( !in.bad() );
+
+    // Windows refuses to unlink a file that still has an open handle, so release it before the
+    // remove_all() below.
+    in.close();
 
     const std::string contents = ss.str();
     BOOST_REQUIRE( !contents.empty() );
@@ -968,6 +1006,24 @@ BOOST_AUTO_TEST_CASE( Issue24911_CancelledAppendLeavesBoardUntouched )
 
     BOOST_CHECK_EQUAL( dest->Tracks().size(), tracksBefore );
     BOOST_CHECK_EQUAL( dest->GetNetInfo().GetNetCount(), netsBefore );
+}
+
+
+// Enumerating a footprint library that is not on disk must fail every time. The failed
+// load leaves a cache bound to the missing path carrying a zero timestamp, which is also
+// what a missing directory reports, so the cache looks current and the next enumerate
+// answers with an empty library instead of the error.
+BOOST_AUTO_TEST_CASE( MissingLibraryThrowsOnEveryEnumerate )
+{
+    std::filesystem::path libPath = std::filesystem::temp_directory_path() / "kicad_qa_no_such_library.pretty";
+
+    BOOST_REQUIRE( !std::filesystem::exists( libPath ) );
+
+    wxArrayString names;
+
+    BOOST_CHECK_THROW( kicadPlugin.FootprintEnumerate( names, libPath.string(), false ), IO_ERROR );
+
+    BOOST_CHECK_THROW( kicadPlugin.FootprintEnumerate( names, libPath.string(), false ), IO_ERROR );
 }
 
 

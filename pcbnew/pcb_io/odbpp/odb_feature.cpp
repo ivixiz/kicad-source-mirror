@@ -47,6 +47,7 @@
 #include "pcb_io_odbpp.h"
 #include <callback_gal.h>
 #include <string_utils.h>
+#include <trace_helpers.h>
 
 
 void FEATURES_MANAGER::AddFeatureLine( const VECTOR2I& aStart, const VECTOR2I& aEnd,
@@ -98,15 +99,26 @@ void FEATURES_MANAGER::AddShape( const PCB_SHAPE& aShape, PCB_LAYER_ID aLayer )
     {
     case SHAPE_T::CIRCLE:
     {
-        int      diameter = aShape.GetRadius() * 2;
+        // GetRadius() can reach INT_MAX / 2 rounded up, which overflows a signed int when doubled
+        int64_t  diameter = static_cast<int64_t>( aShape.GetRadius() ) * 2;
         VECTOR2I center = ODB::GetShapePosition( aShape );
-        wxString innerDim = ODB::SymDouble2String( ( diameter - stroke_width / 2 ) );
-        wxString outerDim = ODB::SymDouble2String( ( stroke_width + diameter ) );
 
-        if( aShape.IsSolidFill() )
+        // The stroke straddles the radius, so in diameter terms the whole width comes off the
+        // inner edge and goes onto the outer
+        int64_t  innerDiameter = diameter - stroke_width;
+        wxString outerDim = ODB::SymDouble2String( diameter + stroke_width );
+
+        // donut_r has no spelling for a hole closed by its own stroke
+        if( aShape.IsSolidFill() || innerDiameter <= 0 )
+        {
             AddFeature<ODB_PAD>( ODB::AddXY( center ), AddCircleSymbol( outerDim ) );
+        }
         else
-            AddFeature<ODB_PAD>( ODB::AddXY( center ), AddRoundDonutSymbol( outerDim, innerDim ) );
+        {
+            AddFeature<ODB_PAD>( ODB::AddXY( center ),
+                                 AddRoundDonutSymbol( outerDim,
+                                                      ODB::SymDouble2String( innerDiameter ) ) );
+        }
 
         break;
     }
@@ -278,7 +290,7 @@ void FEATURES_MANAGER::AddShape( const PCB_SHAPE& aShape, PCB_LAYER_ID aLayer )
     }
 
     default:
-        wxLogError( wxT( "Unknown shape when adding ODB++ layer feature" ) );
+        wxLogTrace( traceOdbppIo, wxT( "Unknown shape when adding ODB++ layer feature" ) );
         break;
     }
 
@@ -426,7 +438,7 @@ void FEATURES_MANAGER::AddPadShape( const PAD& aPad, PCB_LAYER_ID aLayer )
 
         break;
     }
-    default: wxLogError( wxT( "Unknown pad type" ) ); break;
+    default: wxLogTrace( traceOdbppIo, wxT( "Unknown pad type" ) ); break;
     }
 }
 
@@ -439,7 +451,7 @@ void FEATURES_MANAGER::InitFeatureList( PCB_LAYER_ID aLayer, std::vector<BOARD_I
 
         if( iter == GetODBPlugin()->GetViaTraceSubnetMap().end() )
         {
-            wxLogError( wxT( "Failed to get subnet track data" ) );
+            wxLogTrace( traceOdbppIo, wxT( "Failed to get subnet track data" ) );
             return;
         }
 
@@ -532,7 +544,7 @@ void FEATURES_MANAGER::InitFeatureList( PCB_LAYER_ID aLayer, std::vector<BOARD_I
 
             if( iter == GetODBPlugin()->GetPlaneSubnetMap().end() )
             {
-                wxLogError( wxT( "Failed to get subnet plane data" ) );
+                wxLogTrace( traceOdbppIo, wxT( "Failed to get subnet plane data" ) );
                 return;
             }
 
@@ -672,12 +684,20 @@ void FEATURES_MANAGER::InitFeatureList( PCB_LAYER_ID aLayer, std::vector<BOARD_I
                 push_pts();
         };
 
-        bool isKnockout = false;
+        PCB_TEXT*    text = nullptr;
+        PCB_TEXTBOX* textbox = nullptr;
+        bool         isKnockout = false;
 
         if( item->Type() == PCB_TEXT_T || item->Type() == PCB_FIELD_T )
-            isKnockout = static_cast<PCB_TEXT*>( item )->IsKnockout();
+        {
+            text = static_cast<PCB_TEXT*>( item );
+            isKnockout = text->IsKnockout();
+        }
         else if( item->Type() == PCB_TEXTBOX_T )
-            isKnockout = static_cast<PCB_TEXTBOX*>( item )->IsKnockout();
+        {
+            textbox = static_cast<PCB_TEXTBOX*>( item );
+            isKnockout = textbox->IsKnockout();
+        }
 
         const KIFONT::METRICS& fontMetrics = item->GetFontMetrics();
         KIFONT::FONT*          font = text_item->GetDrawFont( nullptr );
@@ -695,11 +715,14 @@ void FEATURES_MANAGER::InitFeatureList( PCB_LAYER_ID aLayer, std::vector<BOARD_I
 
         if( isKnockout )
         {
-            PCB_TEXT*      text = static_cast<PCB_TEXT*>( item );
             SHAPE_POLY_SET finalpolyset;
+            int            maxError = m_board->GetDesignSettings().m_MaxError;
 
-            text->TransformTextToPolySet( finalpolyset, 0, m_board->GetDesignSettings().m_MaxError,
-                                          ERROR_INSIDE );
+            if( text )
+                text->TransformTextToPolySet( finalpolyset, 0, maxError, ERROR_INSIDE );
+            else if( textbox )
+                textbox->TransformTextToPolySet( finalpolyset, 0, maxError, ERROR_INSIDE );
+
             finalpolyset.Fracture();
 
             for( int ii = 0; ii < finalpolyset.OutlineCount(); ++ii )
@@ -793,7 +816,7 @@ void FEATURES_MANAGER::InitFeatureList( PCB_LAYER_ID aLayer, std::vector<BOARD_I
 
         if( iter == GetODBPlugin()->GetPadSubnetMap().end() )
         {
-            wxLogError( wxT( "Failed to get subnet top data" ) );
+            wxLogTrace( traceOdbppIo, wxT( "Failed to get subnet top data" ) );
             return;
         }
 

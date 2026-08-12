@@ -66,6 +66,7 @@ KICOMMON_API std::optional<KICAD_T> TypeNameFromAny( const google::protobuf::Any
         { "type.googleapis.com/kiapi.board.types.Zone", PCB_ZONE_T },
         { "type.googleapis.com/kiapi.board.types.Dimension", PCB_DIMENSION_T },
         { "type.googleapis.com/kiapi.board.types.ReferenceImage", PCB_REFERENCE_IMAGE_T },
+        { "type.googleapis.com/kiapi.board.types.GridItem", PCB_GRIDITEM_T },
         { "type.googleapis.com/kiapi.board.types.Group", PCB_GROUP_T },
         { "type.googleapis.com/kiapi.board.types.Field", PCB_FIELD_T },
         { "type.googleapis.com/kiapi.board.types.FootprintInstance", PCB_FOOTPRINT_T },
@@ -167,11 +168,8 @@ KICOMMON_API int UnpackDistance( const types::Distance& aInput, const EDA_IU_SCA
 
 KICOMMON_API void PackPolyLine( types::PolyLine& aOutput, const SHAPE_LINE_CHAIN& aSlc, const EDA_IU_SCALE& aScale )
 {
-    for( int vertex = 0; vertex < aSlc.PointCount(); vertex = aSlc.NextShape( vertex ) )
+    for( int vertex = 0; vertex < aSlc.PointCount(); ++vertex )
     {
-        if( vertex < 0 )
-            break;
-
         if( aSlc.IsArcStart( vertex ) )
         {
             types::PolyLineNode* node = aOutput.mutable_nodes()->Add();

@@ -37,13 +37,16 @@
 #include <pcb_text.h>
 #include <pcb_track.h>
 #include <zone.h>
+#include <board_connected_item.h>
 #include <netinfo.h>
 #include <netclass.h>
 #include <board_design_settings.h>
 #include <project/net_settings.h>
 #include <reporter.h>
 
+#include <algorithm>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <map>
 #include <set>
@@ -542,6 +545,114 @@ BOOST_AUTO_TEST_CASE( CopperText )
 
     BOOST_CHECK_MESSAGE( foundTestingText, "Board should contain 'TESTING' text on F.Cu" );
     BOOST_CHECK_EQUAL( copperTextCount, 1 );
+}
+
+
+BOOST_AUTO_TEST_CASE( CoincidentGraphicsAreDropped )
+{
+    // Allegro stacks graphics that land on top of each other, on some designs a third of all
+    // items. They draw the same picture, so the importer keeps only the first of each
+    std::unique_ptr<BOARD> board = LoadAllegroBoard( "TRS80_POWER/TRS80_POWER.brd" );
+
+    const auto netOf = []( const BOARD_ITEM* aItem )
+    {
+        const BOARD_CONNECTED_ITEM* connected = dynamic_cast<const BOARD_CONNECTED_ITEM*>( aItem );
+        return connected ? connected->GetNetCode() : NETINFO_LIST::UNCONNECTED;
+    };
+
+    const auto coincident = [&]( const BOARD_ITEM* aFirst, const BOARD_ITEM* aSecond )
+    {
+        if( aFirst->Type() != aSecond->Type() || aFirst->GetLayer() != aSecond->GetLayer()
+            || netOf( aFirst ) != netOf( aSecond ) )
+        {
+            return false;
+        }
+
+        if( aFirst->Type() == PCB_SHAPE_T )
+        {
+            return static_cast<const PCB_SHAPE*>( aFirst )->Compare(
+                           static_cast<const PCB_SHAPE*>( aSecond ) ) == 0;
+        }
+
+        if( aFirst->Type() == PCB_TEXT_T )
+        {
+            return static_cast<const PCB_TEXT*>( aFirst )->Compare(
+                           static_cast<const PCB_TEXT*>( aSecond ) ) == 0;
+        }
+
+        return false;
+    };
+
+    const auto countCoincident = [&]( const DRAWINGS& aItems )
+    {
+        int count = 0;
+
+        for( size_t ii = 0; ii < aItems.size(); ++ii )
+        {
+            for( size_t jj = ii + 1; jj < aItems.size(); ++jj )
+            {
+                if( coincident( aItems[ii], aItems[jj] ) )
+                    count++;
+            }
+        }
+
+        return count;
+    };
+
+    BOOST_REQUIRE( !board->Drawings().empty() );
+    BOOST_CHECK_EQUAL( countCoincident( board->Drawings() ), 0 );
+
+    BOOST_REQUIRE( !board->Footprints().empty() );
+
+    for( FOOTPRINT* footprint : board->Footprints() )
+        BOOST_CHECK_EQUAL( countCoincident( footprint->GraphicalItems() ), 0 );
+}
+
+
+BOOST_AUTO_TEST_CASE( ImportIsRepeatable )
+{
+    // Item ids are derived from the Allegro block keys, so importing a design twice has to
+    // produce the same ids. Random ids reshuffle the whole saved file on every import, because
+    // the s-expr writer orders items by uuid
+    const auto collectIds = []( const BOARD& aBoard )
+    {
+        std::vector<wxString> ids;
+
+        std::function<void( const BOARD_ITEM* )> walk =
+                [&]( const BOARD_ITEM* aItem )
+                {
+                    ids.push_back( aItem->m_Uuid.AsString() );
+
+                    // Group members are collected where they live on the board
+                    if( aItem->Type() == PCB_GROUP_T )
+                        return;
+
+                    aItem->RunOnChildren(
+                            [&]( BOARD_ITEM* aChild )
+                            {
+                                walk( aChild );
+                            },
+                            RECURSE_MODE::NO_RECURSE );
+                };
+
+        for( const BOARD_ITEM* item : const_cast<BOARD&>( aBoard ).GetItemSet() )
+            walk( item );
+
+        std::sort( ids.begin(), ids.end() );
+        return ids;
+    };
+
+    std::unique_ptr<BOARD> first = LoadAllegroBoard( "ProiectBoard/ProiectBoard.brd" );
+    std::unique_ptr<BOARD> second = LoadAllegroBoard( "ProiectBoard/ProiectBoard.brd" );
+
+    const std::vector<wxString> firstIds = collectIds( *first );
+    const std::vector<wxString> secondIds = collectIds( *second );
+
+    BOOST_REQUIRE( !firstIds.empty() );
+    BOOST_CHECK_EQUAL( firstIds.size(), secondIds.size() );
+    BOOST_CHECK( firstIds == secondIds );
+
+    BOOST_CHECK( std::adjacent_find( firstIds.begin(), firstIds.end() ) == firstIds.end() );
 }
 
 

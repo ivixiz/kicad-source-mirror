@@ -130,6 +130,11 @@ void PCB_TEXT::Serialize( google::protobuf::Any& aContainer ) const
 
     PackVector2( *text->mutable_position(), GetPosition() );
 
+    if( FOOTPRINT* parent = GetParentFootprint() )
+        boardText.mutable_parent()->set_value( parent->m_Uuid.AsStdString() );
+    else if( const BOARD* board = GetBoard() )
+        boardText.mutable_parent()->set_value( board->m_Uuid.AsStdString() );
+
     aContainer.PackFrom( boardText );
 }
 
@@ -689,7 +694,7 @@ void PCB_TEXT::swapData( BOARD_ITEM* aImage )
 }
 
 
-std::shared_ptr<SHAPE> PCB_TEXT::GetEffectiveShape( PCB_LAYER_ID aLayer, FLASHING aFlash ) const
+std::shared_ptr<SHAPE> PCB_TEXT::GetEffectiveShape( PCB_LAYER_ID aLayer, FLASHING, DRC_CONSTRAINT_T ) const
 {
     if( IsKnockout() )
     {

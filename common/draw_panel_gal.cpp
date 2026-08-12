@@ -122,10 +122,8 @@ EDA_DRAW_PANEL_GAL::EDA_DRAW_PANEL_GAL( wxWindow* aParentWindow, wxWindowID aWin
     KIPLATFORM::UI::ImmControl( this, false ); // Ensure our panel can't suck in IME events
 
     Connect( wxEVT_SIZE, wxSizeEventHandler( EDA_DRAW_PANEL_GAL::onSize ), nullptr, this );
-    Connect( wxEVT_ENTER_WINDOW, wxMouseEventHandler( EDA_DRAW_PANEL_GAL::onEnter ), nullptr,
-             this );
-    Connect( wxEVT_KILL_FOCUS, wxFocusEventHandler( EDA_DRAW_PANEL_GAL::onLostFocus ), nullptr,
-             this );
+    Connect( wxEVT_ENTER_WINDOW, wxMouseEventHandler( EDA_DRAW_PANEL_GAL::onEnter ), nullptr, this );
+    Connect( wxEVT_KILL_FOCUS, wxFocusEventHandler( EDA_DRAW_PANEL_GAL::onLostFocus ), nullptr, this );
 
     const wxEventType events[] = {
         // Binding both EVT_CHAR and EVT_CHAR_HOOK ensures that all key events,
@@ -156,13 +154,12 @@ EDA_DRAW_PANEL_GAL::EDA_DRAW_PANEL_GAL( wxWindow* aParentWindow, wxWindowID aWin
     };
 
     for( wxEventType eventType : events )
-        Connect( eventType, wxEventHandler( EDA_DRAW_PANEL_GAL::OnEvent ), nullptr,
-                 m_eventDispatcher );
+        Connect( eventType, wxEventHandler( EDA_DRAW_PANEL_GAL::OnEvent ), nullptr, m_eventDispatcher );
 
     // Set up timer to detect when drawing starts
     m_refreshTimer.SetOwner( this );
-    Connect( m_refreshTimer.GetId(), wxEVT_TIMER,
-             wxTimerEventHandler( EDA_DRAW_PANEL_GAL::onRefreshTimer ), nullptr, this );
+    Connect( m_refreshTimer.GetId(), wxEVT_TIMER, wxTimerEventHandler( EDA_DRAW_PANEL_GAL::onRefreshTimer ),
+             nullptr, this );
 
     Connect( wxEVT_SHOW, wxShowEventHandler( EDA_DRAW_PANEL_GAL::onShowEvent ), nullptr, this );
 }
@@ -390,7 +387,10 @@ bool EDA_DRAW_PANEL_GAL::DoRePaint( bool aAllowSkip )
 
                 // Grid has to be redrawn only when the NONCACHED target is redrawn
                 if( m_view->IsTargetDirty( KIGFX::TARGET_NONCACHED ) )
+                {
+                    prepareGridSources();
                     m_gal->DrawGrid();
+                }
 
                 cntRedraw.Start();
                 m_view->Redraw();
@@ -460,6 +460,12 @@ bool EDA_DRAW_PANEL_GAL::DoRePaint( bool aAllowSkip )
 
 void EDA_DRAW_PANEL_GAL::onSize( wxSizeEvent& aEvent )
 {
+    ResizeGal();
+}
+
+
+void EDA_DRAW_PANEL_GAL::ResizeGal( bool aForce )
+{
     // If we get a second wx update call before the first finishes, don't crash
     if( m_gal->IsContextLocked() )
         return;
@@ -468,7 +474,7 @@ void EDA_DRAW_PANEL_GAL::onSize( wxSizeEvent& aEvent )
     wxSize                    clientSize = GetClientSize();
     WX_INFOBAR* infobar = GetParentEDAFrame() ? GetParentEDAFrame()->GetInfoBar() : nullptr;
 
-    if( ToVECTOR2I( clientSize ) == m_gal->GetScreenPixelSize() )
+    if( !aForce && ToVECTOR2I( clientSize ) == m_gal->GetScreenPixelSize() )
         return;
 
     // Note: ( +1, +1 ) prevents an ugly black line on right and bottom on Mac
@@ -490,8 +496,8 @@ void EDA_DRAW_PANEL_GAL::onSize( wxSizeEvent& aEvent )
             m_view->SetCenter( bottom - m_view->ToWorld( halfScreen, false ) );
         }
 
-        m_view->MarkTargetDirty( KIGFX::TARGET_CACHED );
-        m_view->MarkTargetDirty( KIGFX::TARGET_NONCACHED );
+        // ResizeScreen reallocates every compositor buffer, so nothing survives the resize
+        m_view->MarkDirty();
     }
 }
 
@@ -551,9 +557,7 @@ void EDA_DRAW_PANEL_GAL::ForceRefresh()
     {
         if( m_gal && m_gal->IsInitialized() )
         {
-            Connect( wxEVT_PAINT, wxPaintEventHandler( EDA_DRAW_PANEL_GAL::onPaint ), nullptr,
-                     this );
-
+            Connect( wxEVT_PAINT, wxPaintEventHandler( EDA_DRAW_PANEL_GAL::onPaint ), nullptr, this );
             Connect( wxEVT_IDLE, wxIdleEventHandler( EDA_DRAW_PANEL_GAL::onIdle ), nullptr, this );
 
             m_drawingEnabled = true;
@@ -600,7 +604,6 @@ void EDA_DRAW_PANEL_GAL::StopDrawing()
     m_drawingEnabled = false;
 
     Disconnect( wxEVT_PAINT, wxPaintEventHandler( EDA_DRAW_PANEL_GAL::onPaint ), nullptr, this );
-
     Disconnect( wxEVT_IDLE, wxIdleEventHandler( EDA_DRAW_PANEL_GAL::onIdle ), nullptr, this );
 }
 
@@ -659,10 +662,8 @@ bool EDA_DRAW_PANEL_GAL::SwitchBackend( GAL_TYPE aGalType )
                 if( GAL_FALLBACK != aGalType )
                 {
                     aGalType = GAL_FALLBACK;
-                    DisplayInfoMessage(
-                            m_parent,
-                            _( "Could not use OpenGL, falling back to software rendering" ),
-                            errormsg );
+                    DisplayInfoMessage( m_parent, _( "Could not use OpenGL, falling back to software rendering" ),
+                                        errormsg );
                     new_gal = new KIGFX::CAIRO_GAL( m_options, this, this, this );
                 }
                 else

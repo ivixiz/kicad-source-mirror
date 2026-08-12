@@ -47,6 +47,7 @@
 #include <symbol_viewer_frame.h>
 #include <symbol_chooser_frame.h>
 #include <dialogs/panel_grid_settings.h>
+#include <dialogs/panel_snapping.h>
 #include <dialogs/panel_simulator_preferences.h>
 #include <dialogs/panel_design_block_lib_table.h>
 #include <dialogs/panel_sym_lib_table.h>
@@ -294,6 +295,10 @@ static struct IFACE : public KIFACE_BASE, public UNITS_PROVIDER
             return new PANEL_GRID_SETTINGS( aParent, this, frame, cfg, FRAME_SCH_SYMBOL_EDITOR );
         }
 
+        case PANEL_SYM_SNAPPING:
+            return CreateSnappingPanel( aParent, GetAppSettings<SYMBOL_EDITOR_SETTINGS>( "symbol_editor" ),
+                                        FRAME_SCH_SYMBOL_EDITOR, &SYMBOL_EDITOR_SETTINGS::m_SnapInference );
+
         case PANEL_SYM_EDIT_OPTIONS:
         {
             EDA_BASE_FRAME* frame = aKiway->Player( FRAME_SCH_SYMBOL_EDITOR, false );
@@ -349,6 +354,10 @@ static struct IFACE : public KIFACE_BASE, public UNITS_PROVIDER
 
             return new PANEL_GRID_SETTINGS( aParent, this, frame, cfg, FRAME_SCH );
         }
+
+        case PANEL_SCH_SNAPPING:
+            return CreateSnappingPanel( aParent, GetAppSettings<EESCHEMA_SETTINGS>( "eeschema" ), FRAME_SCH,
+                                        &EESCHEMA_SETTINGS::m_SnapInference );
 
         case PANEL_SCH_EDIT_OPTIONS:
         {
@@ -909,19 +918,22 @@ bool IFACE::HandleApiOpenDocument( const wxString& aPath, KICAD_API_SERVER* aSer
 
     projectPath.MakeAbsolute();
 
-    // Close any existing document before loading a new project. LoadProject with
-    // aSetActive=true destroys the old PROJECT, which would leave the old schematic
-    // and context holding dangling project pointers.
+    // We currently only support one document per type (and each needs to come from
+    // the same project).  This will need evolution once we support MDI and multi-project.
     closeCurrentDocument( aServer );
 
     SETTINGS_MANAGER& settingsManager = Pgm().GetSettingsManager();
 
-    if( !settingsManager.LoadProject( projectPath.GetFullPath(), true ) )
-    {
-        wxLogTrace( traceApi, "Warning: no project file found for %s", aPath );
-    }
-
+    // Reuse an already-loaded project if one exists for this path.
     PROJECT* project = settingsManager.GetProject( projectPath.GetFullPath() );
+
+    if( !project )
+    {
+        if( !settingsManager.LoadProject( projectPath.GetFullPath(), true ) )
+            wxLogTrace( traceApi, "Warning: no project file found for %s", aPath );
+
+        project = settingsManager.GetProject( projectPath.GetFullPath() );
+    }
 
     if( !project )
     {

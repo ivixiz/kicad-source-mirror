@@ -146,6 +146,8 @@ void ZONE::InitDataFromSrcInCopyCtor( const ZONE& aZone, PCB_LAYER_ID aLayer )
     m_placementAreaSourceType = aZone.m_placementAreaSourceType;
     m_placementAreaSource     = aZone.m_placementAreaSource;
 
+    m_fillMode = aZone.m_fillMode; // solid vs. hatched
+
     if( aLayer == UNDEFINED_LAYER )
         SetLayerSet( aZone.GetLayerSet() );
     else
@@ -171,7 +173,6 @@ void ZONE::InitDataFromSrcInCopyCtor( const ZONE& aZone, PCB_LAYER_ID aLayer )
     m_thermalReliefGap        = aZone.m_thermalReliefGap;
     m_thermalReliefSpokeWidth = aZone.m_thermalReliefSpokeWidth;
 
-    m_fillMode                = aZone.m_fillMode;         // solid vs. hatched
     m_hatchThickness          = aZone.m_hatchThickness;
     m_hatchGap                = aZone.m_hatchGap;
     m_hatchOrientation        = aZone.m_hatchOrientation;
@@ -269,6 +270,11 @@ void ZONE::Serialize( google::protobuf::Any& aContainer ) const
     zone.set_name( m_zoneName.ToUTF8() );
     zone.set_priority( m_priority );
     zone.set_filled( m_isFilled );
+
+    if( FOOTPRINT* parent = GetParentFootprint() )
+        zone.mutable_parent()->set_value( parent->m_Uuid.AsStdString() );
+    else if( const BOARD* board = GetBoard() )
+        zone.mutable_parent()->set_value( board->m_Uuid.AsStdString() );
 
     if( m_isRuleArea )
     {
@@ -1432,28 +1438,31 @@ wxString ZONE::GetItemDescription( UNITS_PROVIDER* aUnitsProvider, bool aFull ) 
     LSEQ     layers = m_layerSet.Seq();
     wxString layerDesc;
 
+    auto layerName =
+        [this]( PCB_LAYER_ID aLayer ) -> wxString
+        {
+            if( const BOARD* board = GetBoard() )
+                return board->GetLayerName( aLayer );
+
+            return BOARD::GetStandardLayerName( aLayer );
+        };
+
     if( layers.size() == 1 )
     {
-        layerDesc.Printf( _( "on %s" ), GetBoard()->GetLayerName( layers[0] ) );
+        layerDesc.Printf( _( "on %s" ), layerName( layers[0] ) );
     }
     else if (layers.size() == 2 )
     {
-        layerDesc.Printf( _( "on %s and %s" ),
-                          GetBoard()->GetLayerName( layers[0] ),
-                          GetBoard()->GetLayerName( layers[1] ) );
+        layerDesc.Printf( _( "on %s and %s" ), layerName( layers[0] ), layerName( layers[1] ) );
     }
     else if (layers.size() == 3 )
     {
-        layerDesc.Printf( _( "on %s, %s and %s" ),
-                          GetBoard()->GetLayerName( layers[0] ),
-                          GetBoard()->GetLayerName( layers[1] ),
-                          GetBoard()->GetLayerName( layers[2] ) );
+        layerDesc.Printf( _( "on %s, %s and %s" ), layerName( layers[0] ), layerName( layers[1] ),
+                          layerName( layers[2] ) );
     }
     else if( layers.size() > 3 )
     {
-        layerDesc.Printf( _( "on %s, %s and %zu more" ),
-                          GetBoard()->GetLayerName( layers[0] ),
-                          GetBoard()->GetLayerName( layers[1] ),
+        layerDesc.Printf( _( "on %s, %s and %zu more" ), layerName( layers[0] ), layerName( layers[1] ),
                           layers.size() - 2 );
     }
 
@@ -1881,7 +1890,7 @@ void ZONE::TransformSmoothedOutlineToPolygon( SHAPE_POLY_SET& aBuffer, int aClea
 }
 
 
-std::shared_ptr<SHAPE> ZONE::GetEffectiveShape( PCB_LAYER_ID aLayer, FLASHING aFlash ) const
+std::shared_ptr<SHAPE> ZONE::GetEffectiveShape( PCB_LAYER_ID aLayer, FLASHING, DRC_CONSTRAINT_T ) const
 {
     // Rule areas are never filled, so fall back to the outline.  DRC relies on this
     // to collide tracks, vias and pads against keepout areas.

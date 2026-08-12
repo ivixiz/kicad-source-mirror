@@ -435,6 +435,8 @@ public:
     static TOOL_ACTION importSpecctraSession;
     static TOOL_ACTION exportSpecctraDSN;
 
+    static TOOL_ACTION editFootprintFields;
+
     static TOOL_ACTION generateGerbers;
     static TOOL_ACTION generateDrillFiles;
     static TOOL_ACTION generatePosFile;
@@ -443,6 +445,7 @@ public:
     static TOOL_ACTION generateODBPPFile;
     static TOOL_ACTION generateD356File;
     static TOOL_ACTION generateBOM;
+    static TOOL_ACTION generateBOMLegacy;
 
     static TOOL_ACTION exportGenCAD;
     static TOOL_ACTION exportVRML;
@@ -652,6 +655,7 @@ public:
     static TOOL_ACTION addConstraintPointOnLine;
     static TOOL_ACTION addConstraintMidpoint;
     static TOOL_ACTION addConstraintSymmetric;
+    static TOOL_ACTION addConstraintFixedPosition;   ///< Ground a point, and the cluster holding it.
     static TOOL_ACTION removeConstraints;
     static TOOL_ACTION showConstraints;     ///< Toggle the constraint diagnostics overlay.
     static TOOL_ACTION hideConstraints;     ///< Same toggle, shown while the overlay is visible.
@@ -678,6 +682,9 @@ public:
 
     /// Display of phase skew between differential pair tracks
     static TOOL_ACTION showDiffPhaseSkew;
+
+    /// Grid Item
+    static TOOL_ACTION placeGridItem;
 };
 
 class PCB_EVENTS

@@ -160,7 +160,8 @@ public:
 
     // @copydoc BOARD_ITEM::GetEffectiveShape
     std::shared_ptr<SHAPE> GetEffectiveShape( PCB_LAYER_ID aLayer = UNDEFINED_LAYER,
-                                              FLASHING aFlash = FLASHING::DEFAULT ) const override;
+                                              FLASHING aFlash = FLASHING::DEFAULT,
+                                              DRC_CONSTRAINT_T aUsage = NULL_CONSTRAINT ) const override;
 
     /**
      * Return STARTPOINT if point if near (dist = min_dist) start point, ENDPOINT if
@@ -310,7 +311,8 @@ public:
 
     // @copydoc BOARD_ITEM::GetEffectiveShape
     std::shared_ptr<SHAPE> GetEffectiveShape( PCB_LAYER_ID aLayer = UNDEFINED_LAYER,
-                                              FLASHING aFlash = FLASHING::DEFAULT ) const override;
+                                              FLASHING aFlash = FLASHING::DEFAULT,
+                                              DRC_CONSTRAINT_T aUsage = NULL_CONSTRAINT ) const override;
 
     /**
      * Return the length of the arc track.
@@ -389,7 +391,15 @@ public:
     /**
      * @return true if top and bottom layers are valid, depending on the copper layer count
      */
-    bool HasValidLayerPair( int aCopperLayerCount );
+    bool HasValidLayerPair( int aCopperLayerCount ) const;
+
+    /// @copydoc BOARD_ITEM::FitsEnabledLayers
+    /// A via spans from one end layer to the other, so one enabled layer is not enough.
+    bool FitsEnabledLayers( const LSET& aEnabledLayers, int aCopperLayerCount ) const override
+    {
+        return BOARD_ITEM::FitsEnabledLayers( aEnabledLayers, aCopperLayerCount )
+               && HasValidLayerPair( aCopperLayerCount );
+    }
 
     VIATYPE GetViaType() const { return m_viaType; }
     void    SetViaType( VIATYPE aViaType )
@@ -479,7 +489,8 @@ public:
         return m_viaType == VIATYPE::THROUGH || m_viaType == VIATYPE::BLIND || m_viaType == VIATYPE::BURIED;
     }
 
-    std::shared_ptr<SHAPE_SEGMENT> GetEffectiveHoleShape() const override;
+    std::shared_ptr<SHAPE_SEGMENT> GetEffectiveHoleShape( PCB_LAYER_ID aLayer = UNDEFINED_LAYER,
+                                                          DRC_CONSTRAINT_T aUsage = NULL_CONSTRAINT ) const override;
 
     MINOPTMAX<int> GetWidthConstraint( wxString* aSource = nullptr ) const override;
     MINOPTMAX<int> GetDrillConstraint( wxString* aSource = nullptr ) const;
@@ -808,7 +819,8 @@ public:
 
     // @copydoc BOARD_ITEM::GetEffectiveShape
     std::shared_ptr<SHAPE> GetEffectiveShape( PCB_LAYER_ID aLayer = UNDEFINED_LAYER,
-                                              FLASHING aFlash = FLASHING::DEFAULT ) const override;
+                                              FLASHING aFlash = FLASHING::DEFAULT,
+                                              DRC_CONSTRAINT_T aUsage = NULL_CONSTRAINT ) const override;
 
     void ClearZoneLayerOverrides();
 

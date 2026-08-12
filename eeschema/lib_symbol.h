@@ -737,6 +737,13 @@ public:
     std::vector<SCH_PIN*> GetPinsByNumber( const wxString& aNumber, int aUnit = 0, int aBodyStyle = 0 );
 
     /**
+     * Return true if \a aNumber names a pin of this symbol, in any unit or body style.
+     *
+     * @param aNumber - Pin number to look for.
+     */
+    bool HasPinNumber( const wxString& aNumber ) const;
+
+    /**
      * Return true if this symbol's pins do not match another symbol's pins. This is used to
      * detect whether the project cache is out of sync with the system libs.
      *
@@ -885,17 +892,24 @@ public:
     void SetBodyStyleNames( const std::vector<wxString>& aBodyStyleNames ) { m_bodyStyleNames = aBodyStyleNames; }
 
     /**
-     * Set or clear the alternate body style (DeMorgan) for the symbol.
+     * Set the number of body styles for the symbol.
      *
-     * If the symbol already has an alternate body style set and aHasAlternate is false, all
-     * of the existing draw items for the alternate body style are remove.  If the alternate
-     * body style is not set and aHasAlternate is true, than the base draw items are duplicated
-     * and added to the symbol.
+     * Draw items belonging to body styles beyond \a aCount are always deleted.  Draw items for
+     * the new body styles are duplicated from the standard body style when the symbol gains
+     * body styles and the caller asks for it.
      *
-     * @param aHasAlternate - Set or clear the symbol alternate body style.
-     * @param aDuplicatePins - Duplicate all pins from original body style if true.
+     * @param aCount - Number of body styles, at least 1.
+     * @param aDuplicateDrawItems - Duplicate all graphics from the standard body style if true.
+     * @param aDuplicatePins - Duplicate all pins from the standard body style if true.
      */
     void SetBodyStyleCount( int aCount, bool aDuplicateDrawItems, bool aDuplicatePins );
+
+    /**
+     * Delete the draw items belonging to a body style beyond \a aBodyStyleCount.
+     *
+     * @param aBodyStyleCount - Number of body styles to keep.
+     */
+    void PruneBodyStyleDrawItems( int aBodyStyleCount );
 
     /**
      * Comparison test that can be used for operators.
@@ -906,7 +920,8 @@ public:
      *         1 if this symbol is greater than \a aRhs
      *         0 if this symbol is the same as \a aRhs
      */
-    int Compare( const LIB_SYMBOL& aRhs, int aCompareFlags = 0, REPORTER* aReporter = nullptr ) const;
+    int Compare( const LIB_SYMBOL& aRhs, int aCompareFlags = ~COMPARE_FLAGS::UNIT,
+                 REPORTER* aReporter = nullptr ) const;
 
     const LIB_SYMBOL& operator=( const LIB_SYMBOL& aSymbol );
 
@@ -921,6 +936,10 @@ public:
 
     /**
      * Return a list of SCH_ITEM objects separated by unit and convert number.
+     *
+     * Every unit and body style of the symbol is reported, whether or not it owns any draw
+     * items.  Items that belong to no numbered unit or body style (0 meaning "common to all")
+     * get a record of their own.
      *
      * @note This does not include SCH_FIELD objects since they are not associated with
      *       unit and/or convert numbers.
@@ -956,16 +975,26 @@ public:
     void Show( int nestLevel, std::ostream& os ) const override { ShowDummy( os ); }
 #endif
 
-private:
-    // We create a different set parent function for this class, so we hide the inherited one.
-    using EDA_ITEM::SetParent;
-
+protected:
     /**
      * The library symbol specific sort order is as follows:
      *
-     *   - The result of #SCH_ITEM::compare()
+     *   - Symbol name
+     *   - Symbol lib_id
+     *   - Symbol parent (if inherited)
+     *   - Power flag
+     *   - Unit count
+     *   - Drawings
+     *   - Pins
+     *   - Fields
+     *   - Attributes
      */
-    int compare( const SCH_ITEM& aOther, int aCompareFlags = SCH_ITEM::COMPARE_FLAGS::EQUALITY ) const override;
+    int compare( const SCH_ITEM& aOther,
+                 int aCompareFlags = ~( COMPARE_FLAGS::UUID | COMPARE_FLAGS::UNIT ) ) const override;
+
+private:
+    // We create a different set parent function for this class, so we hide the inherited one.
+    using EDA_ITEM::SetParent;
 
     void deleteAllFields();
 

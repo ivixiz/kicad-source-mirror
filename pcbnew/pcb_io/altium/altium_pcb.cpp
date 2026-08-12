@@ -85,9 +85,8 @@ FOOTPRINT* ALTIUM_PCB::HelperGetFootprint( uint16_t aComponent ) const
 {
     if( aComponent == ALTIUM_COMPONENT_NONE || m_components.size() <= aComponent )
     {
-        THROW_IO_ERROR( wxString::Format( wxT( "Component creator tries to access component id %u "
-                                               "of %u existing components" ),
-                                          (unsigned)aComponent, (unsigned)m_components.size() ) );
+        THROW_IO_ERRORF( wxT( "Component creator tries to access component id %u of %u existing components" ),
+                         (unsigned)aComponent, (unsigned)m_components.size() );
     }
 
     return m_components.at( aComponent );
@@ -520,10 +519,8 @@ void ALTIUM_PCB::Parse( const ALTIUM_PCB_COMPOUND_FILE&                  altiumP
 
         if( !file )
         {
-            THROW_IO_ERROR( _(
-                    "This file does not appear to be in a valid PCB Binary Version 6.0 format. In "
-                    "Altium Designer, "
-                    "make sure to save as \"PCB Binary Files (*.PcbDoc)\"." ) );
+            THROW_IO_ERROR( _( "This file does not appear to be in a valid PCB Binary Version 6.0 format. In "
+                               "Altium Designer, make sure to save as \"PCB Binary Files (*.PcbDoc)\"." ) );
         }
     }
 
@@ -699,9 +696,7 @@ FOOTPRINT* ALTIUM_PCB::ParseFootprint( ALTIUM_PCB_COMPOUND_FILE& altiumLibFile,
     const CFB::COMPOUND_FILE_ENTRY* libStream = altiumLibFile.FindStream( libStreamName );
 
     if( libStream == nullptr )
-    {
-        THROW_IO_ERROR( wxString::Format( _( "File not found: '%s'." ), FormatPath( libStreamName ) ) );
-    }
+        THROW_IO_ERRORF( _( "File not found: '%s'." ), FormatPath( libStreamName ) );
 
     ALTIUM_BINARY_PARSER libParser( altiumLibFile, libStream );
     ALIBRARY      libData( libParser );
@@ -723,19 +718,13 @@ FOOTPRINT* ALTIUM_PCB::ParseFootprint( ALTIUM_PCB_COMPOUND_FILE& altiumLibFile,
     const CFB::COMPOUND_FILE_ENTRY* footprintStream = std::get<1>( ret );
 
     if( fpDirName.IsEmpty() )
-    {
-        THROW_IO_ERROR(
-                wxString::Format( _( "Footprint directory not found: '%s'." ), aFootprintName ) );
-    }
+        THROW_IO_ERRORF( _( "Footprint directory not found: '%s'." ), aFootprintName );
 
     const std::vector<std::string>  streamName{ fpDirName.ToStdString(), "Data" };
     const CFB::COMPOUND_FILE_ENTRY* footprintData = altiumLibFile.FindStream( footprintStream, { "Data" } );
 
-    if( footprintData == nullptr )
-    {
-        THROW_IO_ERROR( wxString::Format( _( "File not found: '%s'." ),
-                                          FormatPath( streamName ) ) );
-    }
+    if( !footprintData )
+        THROW_IO_ERRORF( _( "File not found: '%s'." ), FormatPath( streamName ) );
 
     ALTIUM_BINARY_PARSER parser( altiumLibFile, footprintData );
 
@@ -746,25 +735,21 @@ FOOTPRINT* ALTIUM_PCB::ParseFootprint( ALTIUM_PCB_COMPOUND_FILE& altiumLibFile,
     LIB_ID fpID = AltiumToKiCadLibID( "", aFootprintName ); // TODO: library name
     footprint->SetFPID( fpID );
 
-    const std::vector<std::string>  parametersStreamName{ fpDirName.ToStdString(),
-                                                         "Parameters" };
-    const CFB::COMPOUND_FILE_ENTRY* parametersData =
-            altiumLibFile.FindStream( footprintStream, { "Parameters" } );
+    const std::vector<std::string>  parametersStreamName{ fpDirName.ToStdString(), "Parameters" };
+    const CFB::COMPOUND_FILE_ENTRY* parametersData = altiumLibFile.FindStream( footprintStream, { "Parameters" } );
 
     if( parametersData != nullptr )
     {
         ALTIUM_BINARY_PARSER         parametersReader( altiumLibFile, parametersData );
         std::map<wxString, wxString> parameterProperties = parametersReader.ReadProperties();
-        wxString description = ALTIUM_PROPS_UTILS::ReadString( parameterProperties,
-                                                               wxT( "DESCRIPTION" ), wxT( "" ) );
+        wxString description = ALTIUM_PROPS_UTILS::ReadString( parameterProperties, wxT( "DESCRIPTION" ), wxT( "" ) );
         footprint->SetLibDescription( description );
     }
     else
     {
         if( m_reporter )
         {
-            m_reporter->Report( wxString::Format( _( "File not found: '%s'." ),
-                                                  FormatPath( parametersStreamName ) ),
+            m_reporter->Report( wxString::Format( _( "File not found: '%s'." ), FormatPath( parametersStreamName ) ),
                                 RPT_SEVERITY_ERROR );
         }
 
@@ -849,7 +834,7 @@ FOOTPRINT* ALTIUM_PCB::ParseFootprint( ALTIUM_PCB_COMPOUND_FILE& altiumLibFile,
             break;
         }
         default:
-            THROW_IO_ERROR( wxString::Format( _( "Record of unknown type: '%d'." ), recordtype ) );
+            THROW_IO_ERRORF( _( "Record of unknown type: '%d'." ), recordtype );
         }
     }
 
@@ -887,16 +872,10 @@ FOOTPRINT* ALTIUM_PCB::ParseFootprint( ALTIUM_PCB_COMPOUND_FILE& altiumLibFile,
     footprint->AutoPositionFields();
 
     if( parser.HasParsingError() )
-    {
-        THROW_IO_ERROR( wxString::Format( wxT( "%s stream was not parsed correctly" ),
-                                          FormatPath( streamName ) ) );
-    }
+        THROW_IO_ERRORF( wxT( "%s stream was not parsed correctly" ), FormatPath( streamName ) );
 
     if( parser.GetRemainingBytes() != 0 )
-    {
-        THROW_IO_ERROR( wxString::Format( wxT( "%s stream is not fully parsed" ),
-                                          FormatPath( streamName ) ) );
-    }
+        THROW_IO_ERRORF( wxT( "%s stream is not fully parsed" ), FormatPath( streamName ) );
 
     return footprint.release();
 }
@@ -909,9 +888,8 @@ int ALTIUM_PCB::GetNetCode( uint16_t aId ) const
     }
     else if( m_altiumToKicadNetcodes.size() < aId )
     {
-        THROW_IO_ERROR( wxString::Format( wxT( "Netcode with id %d does not exist. Only %d nets "
-                                               "are known" ),
-                                          aId, m_altiumToKicadNetcodes.size() ) );
+        THROW_IO_ERRORF( wxT( "Netcode with id %d does not exist. Only %d nets are known" ),
+                         aId, m_altiumToKicadNetcodes.size() );
     }
     else
     {
@@ -1733,10 +1711,10 @@ void ALTIUM_PCB::ParseComponentsBodies6Data( const ALTIUM_PCB_COMPOUND_FILE&    
 
         if( m_components.size() <= elem.component )
         {
-            THROW_IO_ERROR( wxString::Format( wxT( "ComponentsBodies6 stream tries to access "
-                                                   "component id %d of %zu existing components" ),
-                                              elem.component,
-                                              m_components.size() ) );
+            THROW_IO_ERRORF( wxT( "ComponentsBodies6 stream tries to access component id %d of %zu existing "
+                                  "components" ),
+                             elem.component,
+                             m_components.size() );
         }
 
         if( !elem.modelIsEmbedded )
@@ -2651,7 +2629,7 @@ void ALTIUM_PCB::ParseShapeBasedRegions6Data( const ALTIUM_PCB_COMPOUND_FILE&   
             || elem.kind == ALTIUM_REGION_KIND::BOARD_CUTOUT )
         {
             // TODO: implement all different types for footprints
-            ConvertShapeBasedRegions6ToBoardItem( elem );
+            ConvertShapeBasedRegions6ToBoardItem( elem, primitiveIndex );
         }
         else
         {
@@ -2661,11 +2639,11 @@ void ALTIUM_PCB::ParseShapeBasedRegions6Data( const ALTIUM_PCB_COMPOUND_FILE&   
     }
 
     if( reader.GetRemainingBytes() != 0 )
-        THROW_IO_ERROR( "ShapeBasedRegions6 stream is not fully parsed" );
+        THROW_IO_ERROR( wxT( "ShapeBasedRegions6 stream is not fully parsed" ) );
 }
 
 
-void ALTIUM_PCB::ConvertShapeBasedRegions6ToBoardItem( const AREGION6& aElem )
+void ALTIUM_PCB::ConvertShapeBasedRegions6ToBoardItem( const AREGION6& aElem, const int aPrimitiveIndex )
 {
     if( aElem.kind == ALTIUM_REGION_KIND::BOARD_CUTOUT )
     {
@@ -2788,7 +2766,7 @@ void ALTIUM_PCB::ConvertShapeBasedRegions6ToBoardItem( const AREGION6& aElem )
         if( aElem.polygon == ALTIUM_POLYGON_NONE )
         {
             for( PCB_LAYER_ID klayer : GetKicadLayersToIterate( aElem.layer ) )
-                ConvertShapeBasedRegions6ToBoardItemOnLayer( aElem, klayer );
+                ConvertShapeBasedRegions6ToBoardItemOnLayer( aElem, klayer, aPrimitiveIndex );
         }
     }
     else
@@ -2955,8 +2933,8 @@ void ALTIUM_PCB::ConvertShapeBasedRegions6ToFootprintItem( FOOTPRINT*      aFoot
 }
 
 
-void ALTIUM_PCB::ConvertShapeBasedRegions6ToBoardItemOnLayer( const AREGION6& aElem,
-                                                              PCB_LAYER_ID    aLayer )
+void ALTIUM_PCB::ConvertShapeBasedRegions6ToBoardItemOnLayer( const AREGION6& aElem, PCB_LAYER_ID aLayer,
+                                                              const int aPrimitiveIndex )
 {
     SHAPE_LINE_CHAIN linechain;
     HelperShapeLineChainFromAltiumVertices( linechain, aElem.outline );
@@ -2997,6 +2975,36 @@ void ALTIUM_PCB::ConvertShapeBasedRegions6ToBoardItemOnLayer( const AREGION6& aE
     }
 
     m_board->Add( shape.release(), ADD_MODE::APPEND );
+
+    // Guard skips dup mask shapes when a MULTI_LAYER region iterates every copper layer
+    if( aLayer == F_Cu || aLayer == B_Cu )
+    {
+        for( const auto& layerExpansionMask :
+             HelperGetSolderAndPasteMaskExpansions( ALTIUM_RECORD::REGION, aPrimitiveIndex, aElem.layer ) )
+        {
+            const PCB_LAYER_ID maskLayer = layerExpansionMask.first;
+
+            if( ( ( maskLayer == F_Mask || maskLayer == F_Paste ) && aLayer != F_Cu )
+                || ( ( maskLayer == B_Mask || maskLayer == B_Paste ) && aLayer != B_Cu ) )
+            {
+                continue;
+            }
+
+            int expansion = layerExpansionMask.second;
+
+            SHAPE_POLY_SET expandedPolySet = polySet;
+            expandedPolySet.Inflate( expansion, CORNER_STRATEGY::ROUND_ALL_CORNERS, ARC_HIGH_DEF );
+
+            std::unique_ptr<PCB_SHAPE> maskShape = std::make_unique<PCB_SHAPE>( m_board, SHAPE_T::POLY );
+
+            maskShape->SetPolyShape( expandedPolySet );
+            maskShape->SetFilled( true );
+            maskShape->SetLayer( maskLayer );
+            maskShape->SetStroke( STROKE_PARAMS( 0 ) );
+
+            m_board->Add( maskShape.release(), ADD_MODE::APPEND );
+        }
+    }
 }
 
 
@@ -3113,19 +3121,14 @@ void ALTIUM_PCB::ParseRegions6Data( const ALTIUM_PCB_COMPOUND_FILE&     aAltiumP
         {
             if( m_polygons.size() <= elem.polygon )
             {
-                THROW_IO_ERROR(  wxString::Format( "Region stream tries to access polygon id %d "
-                                                   "of %d existing polygons.",
-                                                  elem.polygon,
-                                                   m_polygons.size() ) );
+                THROW_IO_ERRORF( wxT( "Region stream tries to access polygon id %d of %d existing polygons." ),
+                                 elem.polygon, m_polygons.size() );
             }
 
             ZONE* zone = m_polygons.at( elem.polygon );
 
             if( zone == nullptr )
-            {
-                continue; // we know the zone id, but because we do not know the layer we did not
-                          // add it!
-            }
+                continue; // we know the zone id, but because we do not know the layer we did not add it!
 
             PCB_LAYER_ID klayer = GetKicadLayer( elem.layer );
 
@@ -3196,7 +3199,7 @@ void ALTIUM_PCB::ParseArcs6Data( const ALTIUM_PCB_COMPOUND_FILE&     aAltiumPcbF
     }
 
     if( reader.GetRemainingBytes() != 0 )
-        THROW_IO_ERROR( "Arcs6 stream is not fully parsed" );
+        THROW_IO_ERROR( wxT( "Arcs6 stream is not fully parsed" ) );
 }
 
 
@@ -3233,9 +3236,8 @@ void ALTIUM_PCB::ConvertArcs6ToBoardItem( const AARC6& aElem, const int aPrimiti
     {
         if( m_polygons.size() <= aElem.polygon )
         {
-            THROW_IO_ERROR( wxString::Format( "Tracks stream tries to access polygon id %u "
-                                              "of %zu existing polygons.",
-                                              aElem.polygon, m_polygons.size() ) );
+            THROW_IO_ERRORF( wxT( "Tracks stream tries to access polygon id %u of %zu existing polygons." ),
+                             aElem.polygon, m_polygons.size() );
         }
 
         ZONE* zone = m_polygons.at( aElem.polygon );
@@ -4313,7 +4315,7 @@ void ALTIUM_PCB::ParseTracks6Data( const ALTIUM_PCB_COMPOUND_FILE&     aAltiumPc
     }
 
     if( reader.GetRemainingBytes() != 0 )
-        THROW_IO_ERROR( "Tracks6 stream is not fully parsed" );
+        THROW_IO_ERROR( wxT( "Tracks6 stream is not fully parsed" ) );
 }
 
 
@@ -5118,7 +5120,7 @@ void ALTIUM_PCB::ParseFills6Data( const ALTIUM_PCB_COMPOUND_FILE&     aAltiumPcb
     }
 
     if( reader.GetRemainingBytes() != 0 )
-        THROW_IO_ERROR( "Fills6 stream is not fully parsed" );
+        THROW_IO_ERROR( wxT( "Fills6 stream is not fully parsed" ) );
 }
 
 
@@ -5391,8 +5393,7 @@ std::vector<std::pair<PCB_LAYER_ID, int>> ALTIUM_PCB::HelperGetSolderAndPasteMas
     if( m_extendedPrimitiveInformationMaps.count( aType ) == 0 )
         return {}; // there is nothing to parse
 
-    auto elems =
-            m_extendedPrimitiveInformationMaps[ALTIUM_RECORD::TRACK].equal_range( aPrimitiveIndex );
+    auto elems = m_extendedPrimitiveInformationMaps[aType].equal_range( aPrimitiveIndex );
 
     if( elems.first == elems.second )
         return {}; // there is nothing to parse

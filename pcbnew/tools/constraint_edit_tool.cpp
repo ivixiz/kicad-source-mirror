@@ -675,8 +675,10 @@ void CONSTRAINT_EDIT_TOOL::finishConstraintCommit( BOARD_COMMIT& aCommit,
 
     // A locked shape is a fixed reference the solver may not move.  If every referenced item is
     // locked there is nothing it can adjust, so the relation is recorded but the geometry cannot
-    // snap; tell the user rather than appearing to silently do nothing.
-    if( allMembersLocked( aAdded.front() ) )
+    // snap; tell the user rather than appearing to silently do nothing.  A fix asks for exactly
+    // that outcome, so on a locked item it is redundant, not thwarted.
+    if( aAdded.front()->GetConstraintType() != PCB_CONSTRAINT_TYPE::FIXED_POSITION
+        && allMembersLocked( aAdded.front() ) )
     {
         frame()->ShowInfoBarWarning( _( "All items referenced by this constraint are locked, so the constraint cannot "
                                         "move any geometry." ),
@@ -754,14 +756,25 @@ bool CONSTRAINT_EDIT_TOOL::TryEditSelectedConstraint()
 
 void CONSTRAINT_EDIT_TOOL::solveAddedConstraint( PCB_CONSTRAINT* aConstraint )
 {
+    // A fix contributes no equation -- it is enforced by dropping its point from the unknowns -- so
+    // there is nothing to snap to.  Re-solving anyway would only expose the pinned shape to the
+    // cluster's other constraints with its own stay-put pin lifted, which can drift it.
+    if( aConstraint->GetConstraintType() == PCB_CONSTRAINT_TYPE::FIXED_POSITION )
+        return;
+
     // This solve runs after the add was pushed because SolveCluster gathers the cluster from
     // board->Constraints(), and BOARD_COMMIT only makes the constraint live at Push time.
     // APPEND_UNDO folds the snap into the add so creating a constraint is a single undoable action.
     BOARD_COMMIT            commit( this );
     std::vector<PCB_SHAPE*> modified;
 
-    ApplyConstraintImmediately( board(), aConstraint, &modified,
-                                [&]( BOARD_ITEM* aItem ) { commit.Modify( aItem ); } );
+    ApplyConstraintImmediately(
+            board(), aConstraint, &modified,
+            [&]( BOARD_ITEM* aItem )
+            {
+                commit.Modify( aItem );
+            },
+            ConstraintReferenceShapes( board(), aConstraint ) );
 
     // Push if the snap moved a shape or re-measured a reference value in this cluster.
     if( !commit.Empty() )
@@ -1106,6 +1119,14 @@ int CONSTRAINT_EDIT_TOOL::AddConstraint( const TOOL_EVENT& aEvent )
     // so the toolbar and hotkeys can author a constraint by clicking the items on the canvas.
     if( !constraint )
     {
+        // Switching to click-to-pick silently reads as the tool ignoring the selection, so say what
+        // the type wanted.  Only when something was selected: an empty one is the normal toolbar path.
+        if( !items.empty() && frame() )
+        {
+            if( wxString hint = ConstraintSelectionHint( type ); !hint.IsEmpty() )
+                frame()->ShowInfoBarWarning( hint );
+        }
+
         // Horizontal and vertical also accept two point anchors so levelling a corner needs no segment
         // The linear picker offers both paths
         if( type == PCB_CONSTRAINT_TYPE::HORIZONTAL || type == PCB_CONSTRAINT_TYPE::VERTICAL )
@@ -1434,6 +1455,7 @@ int CONSTRAINT_EDIT_TOOL::AddPointConstraint( const TOOL_EVENT& aEvent )
 
     switch( type )
     {
+    case PCB_CONSTRAINT_TYPE::FIXED_POSITION: plan = { true }; break;
     case PCB_CONSTRAINT_TYPE::COINCIDENT:    plan = { true, true }; break;
     case PCB_CONSTRAINT_TYPE::POINT_ON_LINE:
     case PCB_CONSTRAINT_TYPE::MIDPOINT:      plan = { true, false }; break;
@@ -1643,6 +1665,7 @@ void CONSTRAINT_EDIT_TOOL::setTransitions()
     Go( &CONSTRAINT_EDIT_TOOL::AddPointConstraint, PCB_ACTIONS::addConstraintPointOnLine.MakeEvent() );
     Go( &CONSTRAINT_EDIT_TOOL::AddPointConstraint, PCB_ACTIONS::addConstraintMidpoint.MakeEvent() );
     Go( &CONSTRAINT_EDIT_TOOL::AddPointConstraint, PCB_ACTIONS::addConstraintSymmetric.MakeEvent() );
+    Go( &CONSTRAINT_EDIT_TOOL::AddPointConstraint, PCB_ACTIONS::addConstraintFixedPosition.MakeEvent() );
 
     Go( &CONSTRAINT_EDIT_TOOL::RemoveConstraints, PCB_ACTIONS::removeConstraints.MakeEvent() );
     Go( &CONSTRAINT_EDIT_TOOL::ShowConstraints,   PCB_ACTIONS::showConstraints.MakeEvent() );

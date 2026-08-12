@@ -63,6 +63,7 @@
 #include <schematic.h>
 #include <settings/settings_manager.h>
 #include <sim/simulator_frame.h>
+#include <symbol_import_reconciler.h>
 #include <tool/actions.h>
 #include <tool/tool_manager.h>
 #include <tools/sch_editor_control.h>
@@ -1519,13 +1520,10 @@ bool SCH_EDIT_FRAME::SaveProject( bool aSaveAs )
         Kiway().LocalHistory().RemoveAutosaveFiles( Prj().GetProjectPath(), savedSheetPaths );
     }
 
-    if( !Kiface().IsSingle() )
-    {
-        WX_STRING_REPORTER backupReporter;
+    WX_STRING_REPORTER backupReporter;
 
-        if( !GetSettingsManager()->TriggerBackupIfNeeded( backupReporter ) )
-            SetStatusText( backupReporter.GetMessages(), 0 );
-    }
+    if( !Kiface().IsSingle() )
+        GetSettingsManager()->TriggerBackupIfNeeded( backupReporter );
 
     // Restore the virtual page numbers that were modified during save. When saving, screens are
     // assigned page number 1 (single use) or 0 (multiple uses) for serialization purposes.
@@ -1546,6 +1544,12 @@ bool SCH_EDIT_FRAME::SaveProject( bool aSaveAs )
 
     if( m_infoBar->GetMessageType() == WX_INFOBAR::MESSAGE_TYPE::OUTDATED_SAVE )
         m_infoBar->Dismiss();
+
+    if( backupReporter.HasMessage() )
+    {
+        wxString backupMsg = backupReporter.GetMessages();
+        m_infoBar->ShowMessageFor( backupMsg.Trim(), 10000, wxICON_WARNING );
+    }
 
     return success;
 }
@@ -1625,6 +1629,10 @@ bool SCH_EDIT_FRAME::importFile( const wxString& aFileName, int aFileType,
                 // that back to the returned sheet.
                 if( !loadedIsTopLevel && !loadedIsVirtualRoot )
                     Schematic().SetTopLevelSheets( { loadedSheet } );
+
+                // extract a project symbol library and re-link LIB_IDs so every symbol resolves
+                ReconcileImportedSymbols( *pi, Schematic(), Prj(), aFileName, aProperties,
+                                          loadReporter );
 
                 // re-link footprint fields to the project lib so update-from-schematic works
                 {

@@ -18,12 +18,12 @@
  */
 
 #include <api/api_enums.h>
-
+#include <core/mirror.h>
 #include "pad.h"
 
 #include <import_export.h>
 #include <api/common/types/base_types.pb.h>
-#include <api/common/types/enums.pb.h>
+#include <api/board/board_commands.pb.h>
 #include <api/board/board.pb.h>
 #include <api/board/board_types.pb.h>
 #include <api/schematic/schematic_jobs.pb.h>
@@ -53,6 +53,7 @@ KICAD_T FromProtoEnum( types::KiCadObjectType aValue )
     case types::KiCadObjectType::KOT_PCB_SHAPE:             return PCB_SHAPE_T;
     case types::KiCadObjectType::KOT_PCB_BARCODE:           return PCB_BARCODE_T;
     case types::KiCadObjectType::KOT_PCB_REFERENCE_IMAGE:   return PCB_REFERENCE_IMAGE_T;
+    case types::KiCadObjectType::KOT_PCB_GRIDITEM:          return PCB_GRIDITEM_T;
     case types::KiCadObjectType::KOT_PCB_FIELD:             return PCB_FIELD_T;
     case types::KiCadObjectType::KOT_PCB_GENERATOR:         return PCB_GENERATOR_T;
     case types::KiCadObjectType::KOT_PCB_TEXT:              return PCB_TEXT_T;
@@ -115,6 +116,7 @@ types::KiCadObjectType ToProtoEnum( KICAD_T aValue )
     case PCB_SHAPE_T:            return types::KiCadObjectType::KOT_PCB_SHAPE;
     case PCB_BARCODE_T:          return types::KiCadObjectType::KOT_PCB_BARCODE;
     case PCB_REFERENCE_IMAGE_T:  return types::KiCadObjectType::KOT_PCB_REFERENCE_IMAGE;
+    case PCB_GRIDITEM_T:         return types::KiCadObjectType::KOT_PCB_GRIDITEM;
     case PCB_FIELD_T:            return types::KiCadObjectType::KOT_PCB_FIELD;
     case PCB_GENERATOR_T:        return types::KiCadObjectType::KOT_PCB_GENERATOR;
     case PCB_TEXT_T:             return types::KiCadObjectType::KOT_PCB_TEXT;
@@ -797,4 +799,32 @@ types::PageSize ToProtoEnum( PAGE_SIZE_TYPE aValue )
         wxCHECK_MSG( false, types::PageSize::PS_UNKNOWN,
                      "Unhandled case in ToProtoEnum<PAGE_SIZE_TYPE>" );
     }
+}
+
+
+template<>
+FLIP_DIRECTION FromProtoEnum( board::commands::BoardFlipDirection aValue )
+{
+    switch( aValue )
+    {
+    case board::commands::BoardFlipDirection::BFD_LEFT_RIGHT: return FLIP_DIRECTION::LEFT_RIGHT;
+
+    default:
+    case board::commands::BoardFlipDirection::BFD_UNKNOWN:
+    case board::commands::BoardFlipDirection::BFD_TOP_BOTTOM: return FLIP_DIRECTION::TOP_BOTTOM;
+    }
+}
+
+
+template<>
+board::commands::BoardFlipDirection ToProtoEnum( FLIP_DIRECTION aValue )
+{
+    switch( aValue )
+    {
+    case FLIP_DIRECTION::LEFT_RIGHT: return board::commands::BoardFlipDirection::BFD_LEFT_RIGHT;
+    case FLIP_DIRECTION::TOP_BOTTOM: return board::commands::BoardFlipDirection::BFD_TOP_BOTTOM;
+    }
+
+    wxCHECK_MSG( false, board::commands::BoardFlipDirection::BFD_UNKNOWN,
+                 "Unhandled case in ToProtoEnum<FLIP_DIRECTION>" );
 }

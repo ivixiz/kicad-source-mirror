@@ -155,7 +155,10 @@ bool DRC_TEST_PROVIDER_PHYSICAL_CLEARANCE::Run()
                 }
 
                 for( PCB_LAYER_ID layer : layers )
-                    m_itemTree.Insert( item, layer, m_board->m_DRCMaxPhysicalClearance, ATOMIC_TABLES );
+                {
+                    m_itemTree.Insert( item, layer, PHYSICAL_CLEARANCE_CONSTRAINT, m_board->m_DRCMaxPhysicalClearance,
+                                       ATOMIC_TABLES );
+                }
 
                 return true;
             } );
@@ -224,8 +227,7 @@ bool DRC_TEST_PROVIDER_PHYSICAL_CLEARANCE::Run()
                                 // Visitor:
                                 [&]( BOARD_ITEM* other ) -> bool
                                 {
-                                    if( testItemAgainstItem( item, itemShape.get(), layer,
-                                                                other ) > 0 )
+                                    if( testItemAgainstItem( item, itemShape.get(), layer, other ) > 0 )
                                     {
                                         BOARD_ITEM* a = item;
                                         BOARD_ITEM* b = other;
@@ -654,11 +656,11 @@ int DRC_TEST_PROVIDER_PHYSICAL_CLEARANCE::testItemAgainstItem( BOARD_ITEM* aItem
             wxCHECK_MSG( layers.Contains( aLayer ), violations,
                          wxT( "Bug!  Vias should only be checked for layers on which they exist" ) );
 
-            itemHoleShape = aItem->GetEffectiveHoleShape();
+            itemHoleShape = aItem->GetEffectiveHoleShape( aLayer, PHYSICAL_CLEARANCE_CONSTRAINT );
         }
         else if( aItem->HasHole() )
         {
-            itemHoleShape = aItem->GetEffectiveHoleShape();
+            itemHoleShape = aItem->GetEffectiveHoleShape( aLayer, PHYSICAL_CLEARANCE_CONSTRAINT );
         }
 
         if( aOther->Type() == PCB_VIA_T )
@@ -677,11 +679,11 @@ int DRC_TEST_PROVIDER_PHYSICAL_CLEARANCE::testItemAgainstItem( BOARD_ITEM* aItem
             wxCHECK_MSG( layers.Contains( aLayer ), violations,
                          wxT( "Bug!  Vias should only be checked for layers on which they exist" ) );
 
-            otherHoleShape = aOther->GetEffectiveHoleShape();
+            otherHoleShape = aOther->GetEffectiveHoleShape( aLayer, PHYSICAL_CLEARANCE_CONSTRAINT );
         }
         else if( aOther->HasHole() )
         {
-            otherHoleShape = aOther->GetEffectiveHoleShape();
+            otherHoleShape = aOther->GetEffectiveHoleShape( aLayer, PHYSICAL_CLEARANCE_CONSTRAINT );
         }
 
         if( itemHoleShape || otherHoleShape )
@@ -772,7 +774,8 @@ void DRC_TEST_PROVIDER_PHYSICAL_CLEARANCE::testItemAgainstZones( BOARD_ITEM* aIt
                     if( pad->GetDrillSize().x == 0 && pad->GetDrillSize().y == 0 )
                         continue;
 
-                    std::shared_ptr<SHAPE_SEGMENT> hole = pad->GetEffectiveHoleShape();
+                    std::shared_ptr<SHAPE_SEGMENT> hole = pad->GetEffectiveHoleShape( aLayer,
+                                                                                      PHYSICAL_CLEARANCE_CONSTRAINT );
                     int                            size = hole->GetWidth();
 
                     itemShape = std::make_shared<SHAPE_SEGMENT>( hole->GetSeg(), size );
@@ -781,8 +784,7 @@ void DRC_TEST_PROVIDER_PHYSICAL_CLEARANCE::testItemAgainstZones( BOARD_ITEM* aIt
 
             if( IsCopperLayer( aLayer ) && zoneRTree )
             {
-                colliding = zoneRTree->QueryColliding( itemBBox, itemShape.get(), aLayer, clearance,
-                                                       &actual, &pos );
+                colliding = zoneRTree->QueryColliding( itemBBox, itemShape.get(), aLayer, clearance, &actual, &pos );
             }
             else
             {
@@ -810,11 +812,11 @@ void DRC_TEST_PROVIDER_PHYSICAL_CLEARANCE::testItemAgainstZones( BOARD_ITEM* aIt
             if( aItem->Type() == PCB_VIA_T )
             {
                 if( aItem->GetLayerSet().Contains( aLayer ) )
-                    holeShape = aItem->GetEffectiveHoleShape();
+                    holeShape = aItem->GetEffectiveHoleShape( aLayer, PHYSICAL_CLEARANCE_CONSTRAINT );
             }
             else if( aItem->HasHole() )
             {
-                holeShape = aItem->GetEffectiveHoleShape();
+                holeShape = aItem->GetEffectiveHoleShape( aLayer, PHYSICAL_CLEARANCE_CONSTRAINT );
             }
 
             if( holeShape )
@@ -826,8 +828,8 @@ void DRC_TEST_PROVIDER_PHYSICAL_CLEARANCE::testItemAgainstZones( BOARD_ITEM* aIt
                 {
                     if( IsCopperLayer( aLayer ) && zoneRTree )
                     {
-                        colliding = zoneRTree->QueryColliding( itemBBox, holeShape.get(), aLayer,
-                                                               clearance, &actual, &pos );
+                        colliding = zoneRTree->QueryColliding( itemBBox, holeShape.get(), aLayer, clearance,
+                                                               &actual, &pos );
                     }
                     else
                     {

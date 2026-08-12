@@ -677,6 +677,9 @@ void DRC_ENGINE::loadRules( const wxFileName& aPath )
             std::function<bool( wxString* )> resolver =
                     [&]( wxString* token ) -> bool
                     {
+                        if( IsComponentClassSelector( *token ) )
+                            return false;
+
                         return m_board->ResolveTextVar( token, 0 );
                     };
 
@@ -2293,6 +2296,14 @@ bool DRC_ENGINE::IsErrorLimitExceeded( int error_code )
 }
 
 
+int DRC_ENGINE::GetErrorLimit( int error_code )
+{
+    assert( error_code >= 0 && error_code <= DRCE_LAST );
+    std::lock_guard<std::mutex> lock( m_errorLimitsMutex );
+    return std::max( 0, m_errorLimits[ error_code ] );
+}
+
+
 void DRC_ENGINE::ReportViolation( const std::shared_ptr<DRC_ITEM>& aItem, const VECTOR2I& aPos,
                                   int aMarkerLayer, const std::function<void( PCB_MARKER* )>& aPathGenerator )
 {
@@ -2426,25 +2437,28 @@ bool DRC_ENGINE::QueryWorstConstraint( DRC_CONSTRAINT_T aConstraintId, DRC_CONST
 }
 
 
-bool DRC_ENGINE::HasUserDefinedPhysicalConstraint()
+bool DRC_ENGINE::HasConditionalConstraint( DRC_CONSTRAINT_T aConstraintId )
 {
     std::shared_lock<std::shared_mutex> ruleDataReadLock( m_ruleDataMutex );
+    auto it = m_constraintMap.find( aConstraintId );
 
-    for( DRC_CONSTRAINT_T type : { PHYSICAL_CLEARANCE_CONSTRAINT, PHYSICAL_HOLE_CLEARANCE_CONSTRAINT } )
+    if( it != m_constraintMap.end() )
     {
-        auto it = m_constraintMap.find( type );
-
-        if( it != m_constraintMap.end() )
+        for( DRC_ENGINE_CONSTRAINT* c : *it->second )
         {
-            for( DRC_ENGINE_CONSTRAINT* c : *it->second )
-            {
-                if( c->condition && c->parentRule && !c->parentRule->IsImplicit() )
-                    return true;
-            }
+            if( c->condition && c->parentRule && !c->parentRule->IsImplicit() )
+                return true;
         }
     }
 
     return false;
+}
+
+
+bool DRC_ENGINE::HasUserDefinedPhysicalConstraint()
+{
+    return HasConditionalConstraint( PHYSICAL_CLEARANCE_CONSTRAINT )
+           || HasConditionalConstraint( PHYSICAL_HOLE_CLEARANCE_CONSTRAINT );
 }
 
 

@@ -32,6 +32,7 @@
 #include "altium_parser_pcb.h"
 #include "io/altium/altium_binary_parser.h"
 #include "io/altium/altium_props_utils.h"
+#include <trace_helpers.h>
 
 
 /**
@@ -212,7 +213,7 @@ ALTIUM_LAYER altium_layer_from_name( const wxString& aName )
             return static_cast<ALTIUM_LAYER>( static_cast<int>( ALTIUM_LAYER::V7_MECHANICAL_BASE ) + val );
     }
 
-    wxLogError( _( "Unknown mapping of the Altium layer '%s'." ), aName );
+    wxLogTrace( traceAltiumIo, wxT( "Unknown mapping of the Altium layer '%s'." ), aName );
     return ALTIUM_LAYER::UNKNOWN;
 }
 
@@ -274,7 +275,7 @@ ALTIUM_MECHKIND altium_mechkind_from_name( const wxString& aName )
     }
     else
     {
-        wxLogError( _( "Unknown mapping of the Altium layer kind '%s'." ), aName );
+        wxLogTrace( traceAltiumIo, wxT( "Unknown mapping of the Altium layer kind '%s'." ), aName );
         return ALTIUM_MECHKIND::UNKNOWN;
     }
 }
@@ -319,7 +320,7 @@ static ALTIUM_MODE ReadAltiumModeFromProperties( const std::map<wxString, wxStri
     else if( mode == wxT( "Manual" ) )
         return ALTIUM_MODE::MANUAL;
 
-    wxLogError( _( "Unknown Mode string: '%s'." ), mode );
+    wxLogTrace( traceAltiumIo, wxT( "Unknown Mode string: '%s'." ), mode );
     return ALTIUM_MODE::UNKNOWN;
 }
 
@@ -346,7 +347,7 @@ static ALTIUM_RECORD ReadAltiumRecordFromProperties( const std::map<wxString, wx
     else if( record == wxT( "Model" ) )
         return ALTIUM_RECORD::MODEL;
 
-    wxLogError( _( "Unknown Record name string: '%s'." ), record );
+    wxLogTrace( traceAltiumIo, wxT( "Unknown Record name string: '%s'." ), record );
     return ALTIUM_RECORD::UNKNOWN;
 }
 
@@ -360,7 +361,7 @@ ReadAltiumExtendedPrimitiveInformationTypeFromProperties(
     if( parsedType == wxT( "Mask" ) )
         return AEXTENDED_PRIMITIVE_INFORMATION_TYPE::MASK;
 
-    wxLogError( _( "Unknown Extended Primitive Information type: '%s'." ), parsedType );
+    wxLogTrace( traceAltiumIo, wxT( "Unknown Extended Primitive Information type: '%s'." ), parsedType );
     return AEXTENDED_PRIMITIVE_INFORMATION_TYPE::UNKNOWN;
 }
 
@@ -379,10 +380,11 @@ static void ExpectSubrecordLengthAtLeast( const std::string& aStreamType,
 {
     if( aActualLength < aExpectedLength )
     {
-        THROW_IO_ERROR( wxString::Format( "%s stream %s has length %d, "
-                                          "which is unexpected (expected at least %d)",
-                                          aStreamType, aSubrecordName, aActualLength,
-                                          aExpectedLength ) );
+        THROW_IO_ERRORF( wxT( "%s stream %s has length %d, which is unexpected (expected at least %d)" ),
+                         aStreamType,
+                         aSubrecordName,
+                         aActualLength,
+                         aExpectedLength );
     }
 }
 
@@ -399,12 +401,11 @@ AEXTENDED_PRIMITIVE_INFORMATION::AEXTENDED_PRIMITIVE_INFORMATION( ALTIUM_BINARY_
     type = ReadAltiumExtendedPrimitiveInformationTypeFromProperties( props, wxT( "TYPE" ) );
 
     pastemaskexpansionmode = ReadAltiumModeFromProperties( props, wxT( "PASTEMASKEXPANSIONMODE" ) );
-    pastemaskexpansionmanual = ALTIUM_PROPS_UTILS::ReadKicadUnit(
-            props, wxT( "PASTEMASKEXPANSION_MANUAL" ), wxT( "0mil" ) );
-    soldermaskexpansionmode =
-            ReadAltiumModeFromProperties( props, wxT( "SOLDERMASKEXPANSIONMODE" ) );
-    soldermaskexpansionmanual = ALTIUM_PROPS_UTILS::ReadKicadUnit(
-            props, wxT( "SOLDERMASKEXPANSION_MANUAL" ), wxT( "0mil" ) );
+    pastemaskexpansionmanual = ALTIUM_PROPS_UTILS::ReadKicadUnit( props, wxT( "PASTEMASKEXPANSION_MANUAL" ),
+                                                                  wxT( "0mil" ) );
+    soldermaskexpansionmode = ReadAltiumModeFromProperties( props, wxT( "SOLDERMASKEXPANSIONMODE" ) );
+    soldermaskexpansionmanual = ALTIUM_PROPS_UTILS::ReadKicadUnit( props, wxT( "SOLDERMASKEXPANSION_MANUAL" ),
+                                                                   wxT( "0mil" ) );
 }
 
 
@@ -1122,10 +1123,8 @@ APAD6::APAD6( ALTIUM_BINARY_PARSER& aReader )
         const uint32_t unknown = aReader.ReadKicadUnit(); // to 110
 
         if( unknown != 0 )
-        {
-            THROW_IO_ERROR( wxString::Format( "Pads6 stream subrecord5 + 106 has value %d, which is unexpected",
-                                              unknown ) );
-        }
+            THROW_IO_ERRORF( wxT( "Pads6 stream subrecord5 + 106 has value %d, which is unexpected" ), unknown );
+
         holerotation = 0;
     }
     else
@@ -1195,7 +1194,7 @@ APAD6::APAD6( ALTIUM_BINARY_PARSER& aReader )
     }
     else if( subrecord6 != 0 )
     {
-        wxLogError( _( "Pads6 stream has unexpected length for subrecord 6: %d." ), subrecord6 );
+        wxLogTrace( traceAltiumIo, wxT( "Pads6 stream has unexpected length for subrecord 6: %d." ), subrecord6 );
     }
 
     layer = altium_versioned_layer( layer_v6, layer_v7 );

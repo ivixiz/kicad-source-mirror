@@ -517,8 +517,8 @@ LIBEVAL::VALUE* PCBEXPR_VAR_REF::GetValue( LIBEVAL::CONTEXT* aCtx )
         {
             std::optional<int> val = item->Get<std::optional<int>>( it->second.property );
 
-            if( val.has_value() )
-                return new LIBEVAL::VALUE( static_cast<double>( val.value() ) );
+            if( val )
+                return new LIBEVAL::VALUE( static_cast<double>( *val ) );
 
             return LIBEVAL::VALUE::MakeNullValue();
         }
@@ -535,8 +535,8 @@ LIBEVAL::VALUE* PCBEXPR_VAR_REF::GetValue( LIBEVAL::CONTEXT* aCtx )
         {
             std::optional<double> val = item->Get<std::optional<double>>( it->second.property );
 
-            if( val.has_value() )
-                return new LIBEVAL::VALUE( val.value() );
+            if( val )
+                return new LIBEVAL::VALUE( *val );
 
             return LIBEVAL::VALUE::MakeNullValue();
         }
@@ -775,6 +775,12 @@ std::unique_ptr<LIBEVAL::VAR_REF> PCBEXPR_UCODE::CreateVarRef( const wxString& a
 
     wxString field( aField );
     field.Replace( wxT( "_" ),  wxT( " " ) );
+
+    // Alias renamed properties so that older custom rules keep working.
+    if( !field.CmpNoCase( wxT( "Origin X" ) ) )
+        field = wxT( "Start X" );
+    else if( !field.CmpNoCase( wxT( "Origin Y" ) ) )
+        field = wxT( "Start Y" );
 
     for( const PROPERTY_MANAGER::CLASS_INFO& cls : propMgr.GetAllClasses() )
     {

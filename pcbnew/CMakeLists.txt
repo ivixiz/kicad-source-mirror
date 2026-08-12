@@ -88,6 +88,7 @@ set( PCBNEW_DIALOGS
     dialogs/dialog_find_base.cpp
     dialogs/dialog_find_by_properties.cpp
     dialogs/dialog_find_by_properties_base.cpp
+    dialogs/dialog_footprint_fields_table.cpp
     dialogs/dialog_footprint_wizard_list.cpp
     dialogs/dialog_footprint_wizard_list_base.cpp
     dialogs/dialog_gen_footprint_position.cpp
@@ -107,6 +108,9 @@ set( PCBNEW_DIALOGS
     dialogs/dialog_global_edit_teardrops_base.cpp
     dialogs/dialog_global_edit_text_and_graphics.cpp
     dialogs/dialog_global_edit_text_and_graphics_base.cpp
+    dialogs/dialog_griditem_properties.cpp
+    dialogs/dialog_griditem_properties_base.cpp
+    dialogs/geom_field_helpers.cpp
     dialogs/dialog_push_pad_properties.cpp
     dialogs/dialog_push_pad_properties_base.cpp
     dialogs/dialog_shape_properties.cpp
@@ -315,6 +319,7 @@ set( PCBNEW_DRC_SRCS
     drc/drc_test_provider_library_parity.cpp
     drc/drc_test_provider_schematic_parity.cpp
     drc/drc_test_provider_misc.cpp
+    drc/drc_test_provider_net_chain_tuning_profiles.cpp
     drc/drc_test_provider_text_dims.cpp
     drc/drc_test_provider_track_angle.cpp
     drc/drc_test_provider_track_width.cpp
@@ -394,6 +399,7 @@ set( PCBNEW_CLASS_SRCS
     array_pad_number_provider.cpp
     board_loader.cpp
     constraints/board_constraint_adapter.cpp
+    constraints/constraint_system_2d.cpp
     tools/constraint_edit_tool.cpp
     tools/constraint_overlay.cpp
     tools/view_overlay_holder.cpp
@@ -419,6 +425,7 @@ set( PCBNEW_CLASS_SRCS
     footprint_libraries_utils.cpp
     footprint_viewer_frame.cpp
     fp_tree_model_adapter.cpp
+    footprint_fields_data_model.cpp
     generate_footprint_info.cpp
     graphics_cleaner.cpp
     grid_layer_box_helpers.cpp

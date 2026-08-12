@@ -934,6 +934,20 @@ void CONNECTION_GRAPH::Recalculate( const SCH_SHEET_LIST& aSheetList, bool aUnco
                         }
                     }
                 }
+                // updateItemConnectivity() rebuilds the sheet's pins too, so clear their dirty
+                // flags or the painter keeps ignoring their connections
+                else if( item->Type() == SCH_SHEET_T )
+                {
+                    SCH_SHEET* sheetItem = static_cast<SCH_SHEET*>( item );
+
+                    for( SCH_SHEET_PIN* pin : sheetItem->GetPins() )
+                    {
+                        if( pin->IsConnectivityDirty() )
+                        {
+                            dirty_items.insert( pin );
+                        }
+                    }
+                }
             }
             // If the symbol isn't dirty, look at the pins
             // TODO: remove symbols from connectivity graph and only use pins
@@ -1381,8 +1395,24 @@ void CONNECTION_GRAPH::updateSymbolConnectivity( const SCH_SHEET_PATH& aSheet, S
 
             for( const wxString& pinNumber : group )
             {
-                if( SCH_PIN* pin = aSymbol->GetPin( pinNumber ) )
-                    pins.emplace_back( pin );
+                SCH_PIN* found = aSymbol->GetPin( pinNumber );
+
+                if( !found )
+                {
+                    // A group member can name one contact of a stacked pin like [A1,A12].
+                    for( SCH_PIN* pin : aSymbol->GetPins( &aSheet ) )
+                    {
+                        if( alg::contains( pin->GetStackedPinNumbers(), pinNumber ) )
+                        {
+                            found = pin;
+                            break;
+                        }
+                    }
+                }
+
+                // Several members can name contacts of the same pin, which must be linked once.
+                if( found && !alg::contains( pins, found ) )
+                    pins.emplace_back( found );
             }
 
             linkPinsInVec( pins );
@@ -4189,10 +4219,10 @@ void CONNECTION_GRAPH::ApplyNetChainNetclasses()
 
     // The common no-chain path must not wipe the effective-netclass cache on every connectivity
     // rebuild.  Only rebuild when a chain carries an override or a prior pass left stale entries.
-    if( !anyOverride && !netSettings->HasChainPatternAssignments() )
+    if( !anyOverride && !netSettings->HasChainPatternAssignments( NET_CHAIN_SOURCE::SCHEMATIC ) )
         return;
 
-    netSettings->ClearChainPatternAssignments();
+    netSettings->ClearChainPatternAssignments( NET_CHAIN_SOURCE::SCHEMATIC );
 
     for( const std::unique_ptr<SCH_NETCHAIN>& chain : m_committedNetChains )
     {
@@ -4210,7 +4240,7 @@ void CONNECTION_GRAPH::ApplyNetChainNetclasses()
             if( net.StartsWith( SCH_NETCHAIN::SYNTHETIC_NET_PREFIX ) )
                 continue;
 
-            netSettings->SetChainPatternAssignment( net, netclass );
+            netSettings->SetChainPatternAssignment( NET_CHAIN_SOURCE::SCHEMATIC, net, netclass );
         }
     }
 }

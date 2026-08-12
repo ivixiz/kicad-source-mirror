@@ -101,6 +101,9 @@ public:
     /// @copydoc BOARD_ITEM::GetLayerSet
     LSET GetLayerSet() const override;
 
+    /// @copydoc BOARD_ITEM::IsLayerAgnostic
+    bool IsLayerAgnostic() const override { return true; }
+
     /// @copydoc BOARD_ITEM::SetLayer
     void SetLayer( PCB_LAYER_ID aLayer ) override
     {
@@ -152,7 +155,8 @@ public:
 
     // @copydoc BOARD_ITEM::GetEffectiveShape
     std::shared_ptr<SHAPE> GetEffectiveShape( PCB_LAYER_ID aLayer = UNDEFINED_LAYER,
-                                              FLASHING aFlash = FLASHING::DEFAULT ) const override;
+                                              FLASHING aFlash = FLASHING::DEFAULT,
+                                              DRC_CONSTRAINT_T aUsage = NULL_CONSTRAINT ) const override;
 
     /// @copydoc EDA_ITEM::Visit
     INSPECT_RESULT Visit( INSPECTOR aInspector, void* aTestData,

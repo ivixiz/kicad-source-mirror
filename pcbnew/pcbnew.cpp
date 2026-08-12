@@ -60,6 +60,7 @@
 #include <dialogs/panel_grid_settings.h>
 #include <panel_display_options.h>
 #include <panel_edit_options.h>
+#include <dialogs/panel_snapping.h>
 #include <panel_fp_editor_field_defaults.h>
 #include <panel_fp_editor_graphics_defaults.h>
 #include <panel_fp_user_layer_names.h>
@@ -334,6 +335,11 @@ static struct IFACE : public KIFACE_BASE, public UNITS_PROVIDER
             return new PANEL_GRID_SETTINGS( aParent, this, frame, cfg, FRAME_FOOTPRINT_EDITOR );
         }
 
+        case PANEL_FP_SNAPPING:
+            return CreateSnappingPanel( aParent, GetAppSettings<FOOTPRINT_EDITOR_SETTINGS>( "fpedit" ),
+                                        FRAME_FOOTPRINT_EDITOR, &FOOTPRINT_EDITOR_SETTINGS::m_SnapInference,
+                                        &FOOTPRINT_EDITOR_SETTINGS::m_MagneticItems );
+
         case PANEL_FP_ORIGINS_AXES:
             return new PANEL_PCBNEW_DISPLAY_ORIGIN( aParent, GetAppSettings<FOOTPRINT_EDITOR_SETTINGS>( "fpedit" ),
                                                     FRAME_FOOTPRINT_EDITOR );
@@ -428,6 +434,10 @@ static struct IFACE : public KIFACE_BASE, public UNITS_PROVIDER
 
             return new PANEL_GRID_SETTINGS( aParent, this, frame, cfg, FRAME_PCB_EDITOR );
         }
+
+        case PANEL_PCB_SNAPPING:
+            return CreateSnappingPanel( aParent, GetAppSettings<PCBNEW_SETTINGS>( "pcbnew" ), FRAME_PCB_EDITOR,
+                                        &PCBNEW_SETTINGS::m_SnapInference, &PCBNEW_SETTINGS::m_MagneticItems );
 
         case PANEL_PCB_ORIGINS_AXES:
             return new PANEL_PCBNEW_DISPLAY_ORIGIN( aParent, GetAppSettings<PCBNEW_SETTINGS>( "pcbnew" ),
@@ -967,19 +977,22 @@ bool IFACE::handleOpenPcb( const wxString& aPath, KICAD_API_SERVER* aServer, wxS
 
     projectPath.MakeAbsolute();
 
-    // Close any existing document before loading a new project. LoadProject with
-    // aSetActive=true destroys the old PROJECT, which would leave the old board and
-    // context holding dangling m_project pointers.
+    // We currently only support one document per type (and each needs to come from
+    // the same project).  This will need evolution once we support MDI and multi-project.
     closeCurrentDocument( aServer );
 
     SETTINGS_MANAGER& settingsManager = Pgm().GetSettingsManager();
 
-    if( !settingsManager.LoadProject( projectPath.GetFullPath(), true ) )
-    {
-        wxLogTrace( traceApi, "Warning: no project file found for %s", aPath );
-    }
-
+    // Reuse an already-loaded project if one exists for this path.
     PROJECT* project = settingsManager.GetProject( projectPath.GetFullPath() );
+
+    if( !project )
+    {
+        if( !settingsManager.LoadProject( projectPath.GetFullPath(), true ) )
+            wxLogTrace( traceApi, "Warning: no project file found for %s", aPath );
+
+        project = settingsManager.GetProject( projectPath.GetFullPath() );
+    }
 
     if( !project )
     {

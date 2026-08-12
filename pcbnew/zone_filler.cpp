@@ -447,6 +447,7 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
     // below).
     m_refillResultCache.clear();
     m_preHatchSolidFillCache.clear();
+    m_sameNetApronCache.clear();
 
     // The fill evaluates thermal-relief and clearance rules through the board's DRC engine on
     // worker threads.  Interactive callers always supply an initialized engine, but headless
@@ -658,10 +659,11 @@ bool ZONE_FILLER::Fill( const std::vector<ZONE*>& aZones, bool aCheck, wxWindow*
             LSET     layers = via->GetLayerSet() & boardCuMask;
 
             // Checking if the via hole touches the zone outline
-            auto viaTestFn = [&]( const ZONE* aZone ) -> bool
-            {
-                return aZone->GetBoardOutline().Contains( center, -1, holeRadius );
-            };
+            auto viaTestFn =
+                    [&]( const ZONE* aZone ) -> bool
+                    {
+                        return aZone->GetBoardOutline().Contains( center, -1, holeRadius );
+                    };
 
             for( PCB_LAYER_ID layer : layers )
             {
@@ -2188,26 +2190,26 @@ void ZONE_FILLER::buildCopperItemClearances( const ZONE* aZone, PCB_LAYER_ID aLa
                 int  init_gap = evalRulesForItems( PHYSICAL_CLEARANCE_CONSTRAINT, aZone, aPad, aLayer );
                 int  gap = init_gap;
                 bool hasHole = aPad->GetDrillSize().x > 0;
+                int  holeGap = 0;
                 bool flashLayer = aPad->FlashLayer( aLayer );
                 bool platedHole = hasHole && aPad->GetAttribute() == PAD_ATTRIB::PTH;
 
                 if( flashLayer || platedHole )
-                {
                     gap = std::max( gap, evalRulesForItems( CLEARANCE_CONSTRAINT, aZone, aPad, aLayer ) );
-                }
 
                 if( flashLayer && gap >= 0 )
                     addKnockout( aPad, aLayer, gap + extra_margin, aHoles );
 
                 if( hasHole )
                 {
+                    holeGap = evalRulesForItems( PHYSICAL_HOLE_CLEARANCE_CONSTRAINT, aZone, aPad, aLayer );
+                    holeGap = std::max( holeGap, evalRulesForItems( HOLE_CLEARANCE_CONSTRAINT, aZone, aPad, aLayer ) );
+
                     // NPTH do not need copper clearance gaps to their holes
                     if( aPad->GetAttribute() == PAD_ATTRIB::NPTH )
                         gap = init_gap;
 
-                    gap = std::max( gap, evalRulesForItems( PHYSICAL_HOLE_CLEARANCE_CONSTRAINT, aZone, aPad, aLayer ) );
-
-                    gap = std::max( gap, evalRulesForItems( HOLE_CLEARANCE_CONSTRAINT, aZone, aPad, aLayer ) );
+                    gap = std::max( gap, holeGap );
 
                     if( gap >= 0 )
                         addHoleKnockout( aPad, gap + extra_margin, aHoles );
@@ -2216,34 +2218,11 @@ void ZONE_FILLER::buildCopperItemClearances( const ZONE* aZone, PCB_LAYER_ID aLa
                 // Handle backdrill and post-machining knockouts
                 if( aPad->IsBackdrilledOrPostMachined( aLayer ) )
                 {
-                    int pmSize = 0;
-                    int bdSize = 0;
-
-                    const PADSTACK::POST_MACHINING_PROPS& frontPM = aPad->Padstack().FrontPostMachining();
-                    const PADSTACK::POST_MACHINING_PROPS& backPM = aPad->Padstack().BackPostMachining();
-
-                    if( frontPM.mode != PAD_DRILL_POST_MACHINING_MODE::NOT_POST_MACHINED
-                        && frontPM.mode != PAD_DRILL_POST_MACHINING_MODE::UNKNOWN )
-                    {
-                        pmSize = std::max( pmSize, frontPM.size );
-                    }
-
-                    if( backPM.mode != PAD_DRILL_POST_MACHINING_MODE::NOT_POST_MACHINED
-                        && backPM.mode != PAD_DRILL_POST_MACHINING_MODE::UNKNOWN )
-                    {
-                        pmSize = std::max( pmSize, backPM.size );
-                    }
-
-                    const PADSTACK::DRILL_PROPS& secDrill = aPad->Padstack().SecondaryDrill();
-
-                    if( secDrill.start != UNDEFINED_LAYER && secDrill.end != UNDEFINED_LAYER )
-                        bdSize = secDrill.size.x;
-
-                    int knockoutSize = std::max( pmSize, bdSize );
+                    int knockoutSize = aPad->Padstack().GetMaxHoleSize();
 
                     if( knockoutSize > 0 )
                     {
-                        int clearance = std::max( gap, 0 ) + extra_margin;
+                        int clearance = std::max( holeGap, 0 ) + extra_margin;
 
                         TransformCircleToPolygon( aHoles, aPad->GetPosition(), knockoutSize / 2 + clearance,
                                                   m_maxError, ERROR_OUTSIDE );
@@ -2276,9 +2255,8 @@ void ZONE_FILLER::buildCopperItemClearances( const ZONE* aZone, PCB_LAYER_ID aLa
                 effectiveSize = padSize;
             }
 
-            PAD_KNOCKOUT_KEY padKey{ pad->GetPosition(), effectiveSize,
-                                     static_cast<int>( padShape ), pad->GetOrientation(),
-                                     pad->GetNetCode() };
+            PAD_KNOCKOUT_KEY padKey{ pad->GetPosition(), effectiveSize, static_cast<int>( padShape ),
+                                     pad->GetOrientation(), pad->GetNetCode() };
 
             if( !processedPads.insert( padKey ).second )
                 continue;
@@ -2322,11 +2300,15 @@ void ZONE_FILLER::buildCopperItemClearances( const ZONE* aZone, PCB_LAYER_ID aLa
                                                           ERROR_OUTSIDE );
                         }
 
-                        gap = std::max( gap, evalRulesForItems( PHYSICAL_HOLE_CLEARANCE_CONSTRAINT, aZone, via,
-                                                                aLayer ) );
+                        int holeGap = evalRulesForItems( PHYSICAL_HOLE_CLEARANCE_CONSTRAINT, aZone, via, aLayer );
 
                         if( !sameNet )
-                            gap = std::max( gap, evalRulesForItems( HOLE_CLEARANCE_CONSTRAINT, aZone, via, aLayer ) );
+                        {
+                            holeGap = std::max( holeGap, evalRulesForItems( HOLE_CLEARANCE_CONSTRAINT, aZone, via,
+                                                                            aLayer ) );
+                        }
+
+                        gap = std::max( gap, holeGap );
 
                         if( gap >= 0 )
                         {
@@ -2339,34 +2321,11 @@ void ZONE_FILLER::buildCopperItemClearances( const ZONE* aZone, PCB_LAYER_ID aLa
                         // Handle backdrill and post-machining knockouts
                         if( via->IsBackdrilledOrPostMachined( aLayer ) )
                         {
-                            int pmSize = 0;
-                            int bdSize = 0;
-
-                            const PADSTACK::POST_MACHINING_PROPS& frontPM = via->Padstack().FrontPostMachining();
-                            const PADSTACK::POST_MACHINING_PROPS& backPM = via->Padstack().BackPostMachining();
-
-                            if( frontPM.mode != PAD_DRILL_POST_MACHINING_MODE::NOT_POST_MACHINED
-                                && frontPM.mode != PAD_DRILL_POST_MACHINING_MODE::UNKNOWN )
-                            {
-                                pmSize = std::max( pmSize, frontPM.size );
-                            }
-
-                            if( backPM.mode != PAD_DRILL_POST_MACHINING_MODE::NOT_POST_MACHINED
-                                && backPM.mode != PAD_DRILL_POST_MACHINING_MODE::UNKNOWN )
-                            {
-                                pmSize = std::max( pmSize, backPM.size );
-                            }
-
-                            const PADSTACK::DRILL_PROPS& secDrill = via->Padstack().SecondaryDrill();
-
-                            if( secDrill.start != UNDEFINED_LAYER && secDrill.end != UNDEFINED_LAYER )
-                                bdSize = secDrill.size.x;
-
-                            int knockoutSize = std::max( pmSize, bdSize );
+                            int knockoutSize = via->Padstack().GetMaxHoleSize();
 
                             if( knockoutSize > 0 )
                             {
-                                int clearance = std::max( gap, 0 ) + extra_margin;
+                                int clearance = std::max( holeGap, 0 ) + extra_margin;
 
                                 TransformCircleToPolygon( aHoles, via->GetPosition(), knockoutSize / 2 + clearance,
                                                           m_maxError, ERROR_OUTSIDE );
@@ -2574,16 +2533,13 @@ void ZONE_FILLER::buildCopperItemClearances( const ZONE* aZone, PCB_LAYER_ID aLa
                             && aKnockout->GetDoNotAllowZoneFills() && !aZone->IsTeardropArea() )
                     {
                         // Keepouts use outline with no clearance
-                        aKnockout->TransformSmoothedOutlineToPolygon( aHoles, 0, m_maxError, ERROR_OUTSIDE,
-                                                                      nullptr );
+                        aKnockout->TransformSmoothedOutlineToPolygon( aHoles, 0, m_maxError, ERROR_OUTSIDE, nullptr );
                     }
                 }
                 else if( aKnockout->HigherPriority( aZone ) && !aKnockout->SameNet( aZone )
                          && zoneKnockoutMayInteract( aZone, aKnockout ) )
                 {
-                    int gap = std::max( 0, evalRulesForItems( PHYSICAL_CLEARANCE_CONSTRAINT, aZone, aKnockout,
-                                                              aLayer ) );
-
+                    int gap = evalRulesForItems( PHYSICAL_CLEARANCE_CONSTRAINT, aZone, aKnockout, aLayer );
                     gap = std::max( gap, evalRulesForItems( CLEARANCE_CONSTRAINT, aZone, aKnockout, aLayer ) );
 
                     // Negative clearance permits zones to short
@@ -2591,8 +2547,7 @@ void ZONE_FILLER::buildCopperItemClearances( const ZONE* aZone, PCB_LAYER_ID aLa
                         return;
 
                     SHAPE_POLY_SET poly;
-                    aKnockout->TransformShapeToPolygon( poly, aLayer, gap + extra_margin, m_maxError,
-                                                        ERROR_OUTSIDE );
+                    aKnockout->TransformShapeToPolygon( poly, aLayer, gap + extra_margin, m_maxError, ERROR_OUTSIDE );
                     aHoles.Append( poly );
                 }
             };
@@ -2657,21 +2612,18 @@ void ZONE_FILLER::buildDifferentNetZoneClearances( const ZONE* aZone, PCB_LAYER_
                 if( !aKnockout->GetLayerSet().test( aLayer ) )
                     return;
 
-                if( aKnockout->HigherPriority( aZone ) && !aKnockout->SameNet( aZone )
+                if( aKnockout->HigherPriority( aZone )
+                        && !aKnockout->SameNet( aZone )
                         && zoneKnockoutMayInteract( aZone, aKnockout ) )
                 {
-                    int gap = std::max( 0, evalRulesForItems( PHYSICAL_CLEARANCE_CONSTRAINT,
-                                                               aZone, aKnockout, aLayer ) );
-
-                    gap = std::max( gap, evalRulesForItems( CLEARANCE_CONSTRAINT, aZone,
-                                                             aKnockout, aLayer ) );
+                    int gap = evalRulesForItems( PHYSICAL_CLEARANCE_CONSTRAINT, aZone, aKnockout, aLayer );
+                    gap = std::max( gap, evalRulesForItems( CLEARANCE_CONSTRAINT, aZone, aKnockout, aLayer ) );
 
                     if( gap < 0 )
                         return;
 
                     SHAPE_POLY_SET poly;
-                    aKnockout->TransformShapeToPolygon( poly, aLayer, gap + extra_margin,
-                                                         m_maxError, ERROR_OUTSIDE );
+                    aKnockout->TransformShapeToPolygon( poly, aLayer, gap + extra_margin, m_maxError, ERROR_OUTSIDE );
                     aHoles.Append( poly );
                 }
             };
@@ -2686,8 +2638,7 @@ void ZONE_FILLER::buildDifferentNetZoneClearances( const ZONE* aZone, PCB_LAYER_
  * Removes the outlines of higher-proirity zones with the same net.  These zones should be
  * in charge of the fill parameters within their own outlines.
  */
-void ZONE_FILLER::subtractHigherPriorityZones( const ZONE* aZone, PCB_LAYER_ID aLayer,
-                                                SHAPE_POLY_SET& aRawFill )
+void ZONE_FILLER::subtractHigherPriorityZones( const ZONE* aZone, PCB_LAYER_ID aLayer, SHAPE_POLY_SET& aRawFill )
 {
     BOX2I          zoneBBox = aZone->GetBoundingBox();
     SHAPE_POLY_SET knockouts;
@@ -2768,7 +2719,22 @@ void ZONE_FILLER::connect_nearby_polys( SHAPE_POLY_SET& aPolys, double aDistance
 }
 
 
-void ZONE_FILLER::postKnockoutMinWidthPrune( const ZONE* aZone, SHAPE_POLY_SET& aFillPolys )
+// Subtracting a neighbouring zone's fill along an edge the two share sheds sub-micron contours
+// that survive Fracture() and are then counted as islands
+static void dropSubResolutionOutlines( SHAPE_POLY_SET& aPolys, int aMaxError )
+{
+    const double noiseArea = (double) aMaxError * aMaxError;
+
+    for( int ii = aPolys.OutlineCount() - 1; ii >= 0; ii-- )
+    {
+        if( aPolys.Outline( ii ).Area() < noiseArea )
+            aPolys.DeletePolygon( ii );
+    }
+}
+
+
+void ZONE_FILLER::postKnockoutMinWidthPrune( const ZONE* aZone, SHAPE_POLY_SET& aFillPolys,
+                                             const SHAPE_POLY_SET& aSameNetApron )
 {
     int half_min_width = aZone->GetMinThickness() / 2;
     int epsilon = pcbIUScale.mmToIU( 0.001 );
@@ -2776,7 +2742,11 @@ void ZONE_FILLER::postKnockoutMinWidthPrune( const ZONE* aZone, SHAPE_POLY_SET& 
     if( half_min_width - epsilon <= epsilon )
         return;
 
+    // Captured before the apron goes in so the closing intersection strips the apron back off
     SHAPE_POLY_SET preDeflate = aFillPolys.CloneDropTriangulation();
+
+    if( aSameNetApron.OutlineCount() > 0 )
+        aFillPolys.BooleanAdd( aSameNetApron );
 
     aFillPolys.Deflate( half_min_width - epsilon, CORNER_STRATEGY::CHAMFER_ALL_CORNERS,
                         m_maxError );
@@ -3174,19 +3144,28 @@ bool ZONE_FILLER::fillCopperZone( const ZONE* aZone, PCB_LAYER_ID aLayer, PCB_LA
     // Cache the pre-knockout fill for iterative refill optimization (issue 21746).
     // The cache stores the fill BEFORE zone-to-zone knockouts so the iterative refill can
     // reclaim space when higher-priority zones have islands removed.
-    bool knockoutsApplied = false;
+    bool           knockoutsApplied = false;
+    SHAPE_POLY_SET sameNetApron;
 
     if( iterativeRefill )
     {
+        // The band the aMaxExtents trim just took away but an abutting same-net zone still
+        // pours into (issue 23790)
+        sameNetApron = aSmoothedOutline.CloneDropTriangulation();
+        sameNetApron.BooleanSubtract( aMaxExtents );
+        sameNetApron.BooleanSubtract( clearanceHoles );
+
         {
             std::lock_guard<std::mutex> lock( m_cacheMutex );
             m_preKnockoutFillCache[{ aZone, aLayer }] = aFillPolys;
+            m_sameNetApronCache[{ aZone, aLayer }] = sameNetApron;
         }
 
         // Reuse the zone clearances already computed for spoke endpoint testing
         if( zoneClearances.OutlineCount() > 0 )
         {
             aFillPolys.BooleanSubtract( zoneClearances );
+            sameNetApron.BooleanSubtract( zoneClearances );
             knockoutsApplied = true;
         }
     }
@@ -3194,14 +3173,14 @@ bool ZONE_FILLER::fillCopperZone( const ZONE* aZone, PCB_LAYER_ID aLayer, PCB_LA
     /* -------------------------------------------------------------------------------------
      * Re-prune minimum-width violations introduced by different-net zone knockouts.
      *
-     * This must run BEFORE subtracting same-net higher-priority zones.  At this point the
-     * fill still extends into overlapping same-net zone areas, which provides a natural
-     * buffer that prevents the deflate/inflate cycle from creating divots at same-net
-     * zone boundaries (the same role aSmoothedOutline plays in the initial min-width pass).
+     * This must run BEFORE subtracting same-net higher-priority zones.  The fill no longer
+     * reaches into overlapping same-net zone areas once trimmed to aMaxExtents, so sameNetApron
+     * stands in for that overlap and keeps the deflate/inflate cycle from carving divots at
+     * same-net zone boundaries (the same role aSmoothedOutline plays in the initial pass).
      */
 
     if( knockoutsApplied )
-        postKnockoutMinWidthPrune( aZone, aFillPolys );
+        postKnockoutMinWidthPrune( aZone, aFillPolys, sameNetApron );
 
     DUMP_POLYS_TO_COPPER_LAYER( aFillPolys, In18_Cu, wxT( "after-post-knockout-min-width" ) );
 
@@ -3211,6 +3190,8 @@ bool ZONE_FILLER::fillCopperZone( const ZONE* aZone, PCB_LAYER_ID aLayer, PCB_LA
 
     subtractHigherPriorityZones( aZone, aLayer, aFillPolys );
     DUMP_POLYS_TO_COPPER_LAYER( aFillPolys, In19_Cu, wxT( "minus-higher-priority-zones" ) );
+
+    dropSubResolutionOutlines( aFillPolys, m_maxError );
 
     aFillPolys.Fracture();
     return true;
@@ -4400,44 +4381,27 @@ bool ZONE_FILLER::refillZoneFromCache( ZONE* aZone, PCB_LAYER_ID aLayer, SHAPE_P
 
                 if( otherZone->SameNet( aZone ) )
                 {
-                    if( otherZone->GetFillMode() == ZONE_FILL_MODE::HATCH_PATTERN )
-                    {
-                        // A hatched fill leaves intentional windows, knock out the pre-hatch
-                        // solid extent so the lower zone cannot pour through them (issue 24935).
-                        SHAPE_POLY_SET solidExtent;
+                    // Equal priorities tie-break on UUID in HigherPriority(). The initial fill
+                    // only gives strictly-higher zones their outline.
+                    bool ownsOutline = otherZone->GetFillMode() == ZONE_FILL_MODE::HATCH_PATTERN
+                                       && otherZone->GetAssignedPriority() > aZone->GetAssignedPriority();
 
-                        {
-                            std::lock_guard<std::mutex> lock( m_cacheMutex );
-                            auto                        sit = m_preHatchSolidFillCache.find( { otherZone, aLayer } );
-
-                            if( sit != m_preHatchSolidFillCache.end() )
-                                solidExtent = sit->second;
-                        }
-
-                        if( solidExtent.OutlineCount() > 0 )
-                            sameNetKnockouts.Append( solidExtent );
-                        else
-                            appendZoneOutlineWithoutArcs( otherZone, sameNetKnockouts );
-                    }
+                    if( ownsOutline )
+                        appendZoneOutlineWithoutArcs( otherZone, sameNetKnockouts );
                     else
-                    {
                         sameNetKnockouts.Append( *fillPtr );
-                    }
                 }
                 else
                 {
-                    int gap = std::max( 0, evalRulesForItems( PHYSICAL_CLEARANCE_CONSTRAINT,
-                                                              aZone, otherZone, aLayer ) );
-
-                    gap = std::max( gap, evalRulesForItems( CLEARANCE_CONSTRAINT, aZone,
-                                                            otherZone, aLayer ) );
+                    int gap = evalRulesForItems( PHYSICAL_CLEARANCE_CONSTRAINT, aZone, otherZone, aLayer );
+                    gap = std::max( gap, evalRulesForItems( CLEARANCE_CONSTRAINT, aZone, otherZone, aLayer ) );
 
                     if( gap < 0 )
                         return;
 
                     SHAPE_POLY_SET inflatedFill = *fillPtr;
-                    inflatedFill.Inflate( gap + extra_margin + m_maxError,
-                                          CORNER_STRATEGY::ROUND_ALL_CORNERS, m_maxError );
+                    inflatedFill.Inflate( gap + extra_margin + m_maxError, CORNER_STRATEGY::ROUND_ALL_CORNERS,
+                                          m_maxError );
                     diffNetKnockouts.Append( inflatedFill );
                     knockoutsApplied = true;
                 }
@@ -4473,16 +4437,31 @@ bool ZONE_FILLER::refillZoneFromCache( ZONE* aZone, PCB_LAYER_ID aLayer, SHAPE_P
     // pre-knockout fill.  They were subtracted before the initial deflate/inflate min-width
     // cycle so the cached fill already reflects keepout boundaries (issue 23515).
 
-    // Subtract different-net knockouts first, then re-prune min-width
-    // violations BEFORE subtracting same-net knockouts.  The fill still extends into
-    // overlapping same-net zone areas at this point, which provides a natural buffer
-    // that prevents the deflate/inflate cycle from creating divots at same-net
-    // zone boundaries.
+    // Subtract different-net knockouts first, then re-prune min-width violations BEFORE
+    // subtracting same-net knockouts.  The cached fill was already trimmed to the zone outline,
+    // so the prune needs the cached apron to stand in for the overlap with abutting same-net
+    // zones and keep the deflate/inflate cycle from carving divots at their shared boundaries.
     if( diffNetKnockouts.OutlineCount() > 0 )
         aFillPolys.BooleanSubtract( diffNetKnockouts );
 
     if( knockoutsApplied )
-        postKnockoutMinWidthPrune( aZone, aFillPolys );
+    {
+        SHAPE_POLY_SET sameNetApron;
+
+        {
+            std::lock_guard<std::mutex> lock( m_cacheMutex );
+            auto                        ait = m_sameNetApronCache.find( cacheKey );
+
+            if( ait != m_sameNetApronCache.end() )
+                sameNetApron = ait->second;
+        }
+
+        // The apron may only buffer where copper can still go, so it takes the same knockouts
+        if( sameNetApron.OutlineCount() > 0 && diffNetKnockouts.OutlineCount() > 0 )
+            sameNetApron.BooleanSubtract( diffNetKnockouts );
+
+        postKnockoutMinWidthPrune( aZone, aFillPolys, sameNetApron );
+    }
 
     if( sameNetKnockouts.OutlineCount() > 0 )
         aFillPolys.BooleanSubtract( sameNetKnockouts );
@@ -4514,6 +4493,8 @@ bool ZONE_FILLER::refillZoneFromCache( ZONE* aZone, PCB_LAYER_ID aLayer, SHAPE_P
             aFillPolys.BooleanAdd( border );
         }
     }
+
+    dropSubResolutionOutlines( aFillPolys, m_maxError );
 
     aFillPolys.Fracture();
 

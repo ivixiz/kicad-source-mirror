@@ -706,6 +706,8 @@ UI_FILL_MODE EDA_SHAPE::GetFillModeProp() const
 
 const SHAPE_POLY_SET& EDA_SHAPE::GetHatching() const
 {
+    EDA_SHAPE::UpdateHatching();
+
     if( !m_hatchingCache )
         m_hatchingCache = std::make_unique<EDA_SHAPE_HATCH_CACHE_DATA>();
 
@@ -715,6 +717,8 @@ const SHAPE_POLY_SET& EDA_SHAPE::GetHatching() const
 
 const std::vector<SEG>& EDA_SHAPE::GetHatchLines() const
 {
+    EDA_SHAPE::UpdateHatching();
+
     if( !m_hatchingCache )
         m_hatchingCache = std::make_unique<EDA_SHAPE_HATCH_CACHE_DATA>();
 
@@ -785,10 +789,24 @@ void EDA_SHAPE::UpdateHatching() const
         break;
 
     case SHAPE_T::POLY:
-        if( !IsClosed() )
+        if( GetPolyShape().OutlineCount() == 0 )
             return;
 
         shapeBuffer = GetPolyShape().CloneDropTriangulation();
+
+        for( int ii = 0; ii < shapeBuffer.OutlineCount(); ++ii )
+        {
+            SHAPE_LINE_CHAIN& outline = shapeBuffer.Outline( ii );
+
+            if( outline.IsClosed() )
+                continue;
+
+            if( outline.PointCount() < 3 )
+                continue;
+
+            outline.SetClosed( true );
+        }
+
         break;
 
     case SHAPE_T::ELLIPSE:
@@ -870,7 +888,7 @@ void EDA_SHAPE::UpdateHatching() const
         hole_base.SetClosed( true );
 
         // Build holes
-        BOX2I bbox = GetHatching().BBox( 0 );
+        BOX2I          bbox = hatching().BBox( 0 );
         SHAPE_POLY_SET holes;
 
         int x_offset = bbox.GetX() - ( bbox.GetX() ) % gridsize - gridsize;
@@ -2225,6 +2243,23 @@ void EDA_SHAPE::SetPolyPoints( const std::vector<VECTOR2I>& aPoints )
 
     for( const VECTOR2I& p : aPoints )
         GetPolyShape().Append( p.x, p.y );
+}
+
+
+std::vector<SHAPE*> EDA_SHAPE::MakeEffectiveShapesForStroking() const
+{
+    switch( m_shape )
+    {
+    // Stroke() has no Bezier primitive, so it gets the flattened polyline.  One chain, not
+    // loose segments, or the pattern restarts at every vertex.  This case goes away if
+    // Bezier ever becomes a SHAPE of its own.
+    case SHAPE_T::BEZIER: return { new SHAPE_LINE_CHAIN( buildBezierToSegmentsPointsList( getMaxError() ) ) };
+
+    case SHAPE_T::ELLIPSE:
+    case SHAPE_T::ELLIPSE_ARC: return { new SHAPE_ELLIPSE( buildShapeEllipse() ) };
+
+    default: return MakeEffectiveShapes( true );
+    }
 }
 
 

@@ -81,6 +81,9 @@ private:
     HANDLER_RESULT<BoardLayerNameResponse> handleGetBoardLayerName(
             const HANDLER_CONTEXT<GetBoardLayerName>& aCtx );
 
+    HANDLER_RESULT<BoardLayerResponse> handleGetBoardLayerByName(
+            const HANDLER_CONTEXT<GetBoardLayerByName>& aCtx );
+
     HANDLER_RESULT<NetsResponse> handleGetNets( const HANDLER_CONTEXT<GetNets>& aCtx );
 
     HANDLER_RESULT<commands::GetItemsResponse> handleGetConnectedItems(
@@ -105,6 +108,11 @@ private:
 
     HANDLER_RESULT<Empty> handleSetBoardEditorAppearanceSettings(
             const HANDLER_CONTEXT<SetBoardEditorAppearanceSettings>& aCtx );
+
+    HANDLER_RESULT<BoardPlotSettingsResponse>
+    handleGetBoardPlotSettings( const HANDLER_CONTEXT<GetBoardPlotSettings>& aCtx );
+
+    HANDLER_RESULT<Empty> handleSetBoardPlotSettings( const HANDLER_CONTEXT<SetBoardPlotSettings>& aCtx );
 
     HANDLER_RESULT<InjectDrcErrorResponse> handleInjectDrcError(
             const HANDLER_CONTEXT<InjectDrcError>& aCtx );

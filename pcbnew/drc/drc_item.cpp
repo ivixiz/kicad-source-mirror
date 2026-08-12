@@ -77,10 +77,6 @@ DRC_ITEM DRC_ITEM::edgeClearance( DRCE_EDGE_CLEARANCE,
         _HKI( "Board edge clearance violation" ),
         wxT( "copper_edge_clearance" ) );
 
-DRC_ITEM DRC_ITEM::zonesIntersect( DRCE_ZONES_INTERSECT,
-        _HKI( "Copper zones intersect" ),
-        wxT( "zones_intersect" ) );
-
 DRC_ITEM DRC_ITEM::isolatedCopper( DRCE_ISOLATED_COPPER,
         _HKI( "Isolated copper fill" ),
         wxT( "isolated_copper" ) );
@@ -269,6 +265,10 @@ DRC_ITEM DRC_ITEM::netChainReturnPathBreak( DRCE_NET_CHAIN_RETURN_PATH_BREAK,
         _HKI( "Net chain routed without continuous copper on the required reference layer" ),
         wxT( "net_chain_return_path" ) );
 
+DRC_ITEM DRC_ITEM::netChainTuningProfiles( DRCE_NET_CHAIN_TUNING_PROFILES,
+                                           _HKI( "Net chain nets do not have consistent tuning profile assignment" ),
+                                           wxT( "net_chain_tuning_profiles" ) );
+
 DRC_ITEM DRC_ITEM::skewOutOfRange( DRCE_SKEW_OUT_OF_RANGE,
         _HKI( "Skew between tracks out of range" ),
         wxT( "skew_out_of_range" ) );
@@ -278,11 +278,11 @@ DRC_ITEM DRC_ITEM::viaCountOutOfRange( DRCE_VIA_COUNT_OUT_OF_RANGE,
         _HKI( "Too many or too few vias on a connection" ),
         wxT( "too_many_vias" ) );
 
-DRC_ITEM DRC_ITEM::diffPairGapOutOfRange( DRCE_DIFF_PAIR_GAP_OUT_OF_RANGE,
+DRC_ITEM DRC_ITEM::diffPairGapOutOfRange( DRCE_DP_GAP_OUT_OF_RANGE,
         _HKI( "Differential pair gap out of range" ),
         wxT( "diff_pair_gap_out_of_range" ) );
 
-DRC_ITEM DRC_ITEM::diffPairUncoupledLengthTooLong( DRCE_DIFF_PAIR_UNCOUPLED_LENGTH_TOO_LONG,
+DRC_ITEM DRC_ITEM::diffPairUncoupledLengthTooLong( DRCE_DP_UNCOUPLED_LENGTH_TOO_LONG,
         _HKI( "Differential uncoupled length too long" ),
         wxT( "diff_pair_uncoupled_length_too_long" ) );
 
@@ -306,7 +306,7 @@ DRC_ITEM DRC_ITEM::mirroredTextOnFrontLayer( DRCE_MIRRORED_TEXT_ON_FRONT_LAYER,
         _HKI( "Mirrored text on front layer" ),
         wxT( "mirrored_text_on_front_layer" ) );
 
-DRC_ITEM DRC_ITEM::nonMirroredTextOnBackLayer( DRCE_NONMIRRORED_TEXT_ON_BACK_LAYER,
+DRC_ITEM DRC_ITEM::unMirroredTextOnBackLayer( DRCE_UNMIRRORED_TEXT_ON_BACK_LAYER,
         _HKI( "Non-Mirrored text on back layer" ),
         wxT( "nonmirrored_text_on_back_layer" ) );
 
@@ -373,6 +373,7 @@ std::vector<std::reference_wrapper<RC_ITEM>> DRC_ITEM::allItemTypes( {
         DRC_ITEM::lengthOutOfRange,
         DRC_ITEM::netChainStubTooLong,
         DRC_ITEM::netChainReturnPathBreak,
+        DRC_ITEM::netChainTuningProfiles,
         DRC_ITEM::skewOutOfRange,
         DRC_ITEM::viaCountOutOfRange,
         DRC_ITEM::diffPairGapOutOfRange,
@@ -385,12 +386,11 @@ std::vector<std::reference_wrapper<RC_ITEM>> DRC_ITEM::allItemTypes( {
         DRC_ITEM::textHeightOutOfRange,
         DRC_ITEM::textThicknessOutOfRange,
         DRC_ITEM::mirroredTextOnFrontLayer,
-        DRC_ITEM::nonMirroredTextOnBackLayer,
+        DRC_ITEM::unMirroredTextOnBackLayer,
 
         DRC_ITEM::heading_misc,
         DRC_ITEM::itemsNotAllowed,
         DRC_ITEM::textOnEdgeCuts,
-        DRC_ITEM::zonesIntersect,
         DRC_ITEM::isolatedCopper,
         DRC_ITEM::footprint,
         DRC_ITEM::padstack,
@@ -419,76 +419,75 @@ std::shared_ptr<DRC_ITEM> DRC_ITEM::Create( int aErrorCode )
 {
     switch( aErrorCode )
     {
-    case DRCE_UNCONNECTED_ITEMS:        return std::make_shared<DRC_ITEM>( unconnectedItems );
-    case DRCE_SHORTING_ITEMS:           return std::make_shared<DRC_ITEM>( shortingItems );
-    case DRCE_ALLOWED_ITEMS:            return std::make_shared<DRC_ITEM>( itemsNotAllowed );
-    case DRCE_TEXT_ON_EDGECUTS:         return std::make_shared<DRC_ITEM>( textOnEdgeCuts );
-    case DRCE_CLEARANCE:                return std::make_shared<DRC_ITEM>( clearance );
-    case DRCE_CREEPAGE:                 return std::make_shared<DRC_ITEM>( creepage );
-    case DRCE_TRACKS_CROSSING:          return std::make_shared<DRC_ITEM>( tracksCrossing );
-    case DRCE_EDGE_CLEARANCE:           return std::make_shared<DRC_ITEM>( edgeClearance );
-    case DRCE_ZONES_INTERSECT:          return std::make_shared<DRC_ITEM>( zonesIntersect );
-    case DRCE_ISOLATED_COPPER:          return std::make_shared<DRC_ITEM>( isolatedCopper );
-    case DRCE_STARVED_THERMAL:          return std::make_shared<DRC_ITEM>( starvedThermal );
-    case DRCE_DANGLING_VIA:             return std::make_shared<DRC_ITEM>( viaDangling );
-    case DRCE_DANGLING_TRACK:           return std::make_shared<DRC_ITEM>( trackDangling );
-    case DRCE_DRILLED_HOLES_TOO_CLOSE:  return std::make_shared<DRC_ITEM>( holeNearHole );
-    case DRCE_DRILLED_HOLES_COLOCATED:  return std::make_shared<DRC_ITEM>( holesCoLocated );
-    case DRCE_HOLE_CLEARANCE:           return std::make_shared<DRC_ITEM>( holeClearance );
-    case DRCE_CONNECTION_WIDTH:         return std::make_shared<DRC_ITEM>( connectionWidth );
-    case DRCE_TRACK_WIDTH:              return std::make_shared<DRC_ITEM>( trackWidth );
-    case DRCE_TRACK_ANGLE:              return std::make_shared<DRC_ITEM>( trackAngle );
-    case DRCE_TRACK_SEGMENT_LENGTH:     return std::make_shared<DRC_ITEM>( trackSegmentLength );
-    case DRCE_ANNULAR_WIDTH:            return std::make_shared<DRC_ITEM>( annularWidth );
-    case DRCE_DRILL_OUT_OF_RANGE:       return std::make_shared<DRC_ITEM>( drillTooSmall );
-    case DRCE_VIA_DIAMETER:             return std::make_shared<DRC_ITEM>( viaDiameter );
-    case DRCE_PADSTACK:                 return std::make_shared<DRC_ITEM>( padstack );
-    case DRCE_PADSTACK_INVALID:         return std::make_shared<DRC_ITEM>( padstackInvalid );
-    case DRCE_MICROVIA_DRILL_OUT_OF_RANGE: return std::make_shared<DRC_ITEM>( microviaDrillTooSmall );
-    case DRCE_OVERLAPPING_FOOTPRINTS:   return std::make_shared<DRC_ITEM>( courtyardsOverlap );
-    case DRCE_MISSING_COURTYARD:        return std::make_shared<DRC_ITEM>( missingCourtyard );
-    case DRCE_MALFORMED_COURTYARD:      return std::make_shared<DRC_ITEM>( malformedCourtyard );
-    case DRCE_PTH_IN_COURTYARD:         return std::make_shared<DRC_ITEM>( pthInsideCourtyard );
-    case DRCE_NPTH_IN_COURTYARD:        return std::make_shared<DRC_ITEM>( npthInsideCourtyard );
-    case DRCE_DISABLED_LAYER_ITEM:      return std::make_shared<DRC_ITEM>( itemOnDisabledLayer );
-    case DRCE_INVALID_OUTLINE:          return std::make_shared<DRC_ITEM>( invalidOutline );
-    case DRCE_MISSING_FOOTPRINT:        return std::make_shared<DRC_ITEM>( missingFootprint );
-    case DRCE_DUPLICATE_FOOTPRINT:      return std::make_shared<DRC_ITEM>( duplicateFootprints );
-    case DRCE_NET_CONFLICT:             return std::make_shared<DRC_ITEM>( netConflict );
-    case DRCE_EXTRA_FOOTPRINT:          return std::make_shared<DRC_ITEM>( extraFootprint );
-    case DRCE_SCHEMATIC_PARITY:         return std::make_shared<DRC_ITEM>( schematicParity );
-    case DRCE_SCHEMATIC_FIELDS_PARITY:         return std::make_shared<DRC_ITEM>( schematicFieldsParity );
-    case DRCE_FOOTPRINT_FILTERS:        return std::make_shared<DRC_ITEM>( footprintFilters );
-    case DRCE_LIB_FOOTPRINT_ISSUES:     return std::make_shared<DRC_ITEM>( libFootprintIssues );
-    case DRCE_LIB_FOOTPRINT_MISMATCH:   return std::make_shared<DRC_ITEM>( libFootprintMismatch );
-    case DRCE_UNRESOLVED_VARIABLE:      return std::make_shared<DRC_ITEM>( unresolvedVariable );
-    case DRCE_ASSERTION_FAILURE:        return std::make_shared<DRC_ITEM>( assertionFailure );
-    case DRCE_GENERIC_WARNING:          return std::make_shared<DRC_ITEM>( genericWarning );
-    case DRCE_GENERIC_ERROR:            return std::make_shared<DRC_ITEM>( genericError );
-    case DRCE_COPPER_SLIVER:            return std::make_shared<DRC_ITEM>( copperSliver );
-    case DRCE_SILK_CLEARANCE:           return std::make_shared<DRC_ITEM>( silkClearance );
-    case DRCE_SILK_MASK_CLEARANCE:      return std::make_shared<DRC_ITEM>( silkMaskClearance );
-    case DRCE_SILK_EDGE_CLEARANCE:      return std::make_shared<DRC_ITEM>( silkEdgeClearance );
-    case DRCE_SOLDERMASK_BRIDGE:        return std::make_shared<DRC_ITEM>( solderMaskBridge );
-    case DRCE_TEXT_HEIGHT:              return std::make_shared<DRC_ITEM>( textHeightOutOfRange );
-    case DRCE_TEXT_THICKNESS:           return std::make_shared<DRC_ITEM>( textThicknessOutOfRange );
-    case DRCE_LENGTH_OUT_OF_RANGE:      return std::make_shared<DRC_ITEM>( lengthOutOfRange );
-    case DRCE_NET_CHAIN_STUB_TOO_LONG:  return std::make_shared<DRC_ITEM>( netChainStubTooLong );
-    case DRCE_NET_CHAIN_RETURN_PATH_BREAK:
-        return std::make_shared<DRC_ITEM>( netChainReturnPathBreak );
-    case DRCE_SKEW_OUT_OF_RANGE:        return std::make_shared<DRC_ITEM>( skewOutOfRange );
-    case DRCE_VIA_COUNT_OUT_OF_RANGE:   return std::make_shared<DRC_ITEM>( viaCountOutOfRange );
-    case DRCE_DIFF_PAIR_GAP_OUT_OF_RANGE:          return std::make_shared<DRC_ITEM>( diffPairGapOutOfRange );
-    case DRCE_DIFF_PAIR_UNCOUPLED_LENGTH_TOO_LONG: return std::make_shared<DRC_ITEM>( diffPairUncoupledLengthTooLong );
-    case DRCE_FOOTPRINT:                return std::make_shared<DRC_ITEM>( footprint );
-    case DRCE_FOOTPRINT_TYPE_MISMATCH:  return std::make_shared<DRC_ITEM>( footprintTypeMismatch );
-    case DRCE_PAD_TH_WITH_NO_HOLE:      return std::make_shared<DRC_ITEM>( footprintTHPadhasNoHole );
-    case DRCE_FOOTPRINT_SCALED_WITH_PADS: return std::make_shared<DRC_ITEM>( footprintScaledWithPads );
-    case DRCE_MIRRORED_TEXT_ON_FRONT_LAYER:        return std::make_shared<DRC_ITEM>( mirroredTextOnFrontLayer );
-    case DRCE_NONMIRRORED_TEXT_ON_BACK_LAYER:      return std::make_shared<DRC_ITEM>( nonMirroredTextOnBackLayer );
-    case DRCE_MISSING_TUNING_PROFILE:   return std::make_shared<DRC_ITEM>( missingTuningProfile );
-    case DRCE_TRACK_ON_POST_MACHINED_LAYER: return std::make_shared<DRC_ITEM>( trackOnPostMachinedLayer );
-    case DRCE_TRACK_NOT_CENTERED_ON_VIA:    return std::make_shared<DRC_ITEM>( trackNotCenteredOnVia );
+    case DRCE_UNCONNECTED_ITEMS:             return std::make_shared<DRC_ITEM>( unconnectedItems );
+    case DRCE_SHORTING_ITEMS:                return std::make_shared<DRC_ITEM>( shortingItems );
+    case DRCE_ALLOWED_ITEMS:                 return std::make_shared<DRC_ITEM>( itemsNotAllowed );
+    case DRCE_TEXT_ON_EDGECUTS:              return std::make_shared<DRC_ITEM>( textOnEdgeCuts );
+    case DRCE_CLEARANCE:                     return std::make_shared<DRC_ITEM>( clearance );
+    case DRCE_CREEPAGE:                      return std::make_shared<DRC_ITEM>( creepage );
+    case DRCE_TRACKS_CROSSING:               return std::make_shared<DRC_ITEM>( tracksCrossing );
+    case DRCE_EDGE_CLEARANCE:                return std::make_shared<DRC_ITEM>( edgeClearance );
+    case DRCE_ISOLATED_COPPER:               return std::make_shared<DRC_ITEM>( isolatedCopper );
+    case DRCE_STARVED_THERMAL:               return std::make_shared<DRC_ITEM>( starvedThermal );
+    case DRCE_DANGLING_VIA:                  return std::make_shared<DRC_ITEM>( viaDangling );
+    case DRCE_DANGLING_TRACK:                return std::make_shared<DRC_ITEM>( trackDangling );
+    case DRCE_DRILLED_HOLES_TOO_CLOSE:       return std::make_shared<DRC_ITEM>( holeNearHole );
+    case DRCE_DRILLED_HOLES_COLOCATED:       return std::make_shared<DRC_ITEM>( holesCoLocated );
+    case DRCE_HOLE_CLEARANCE:                return std::make_shared<DRC_ITEM>( holeClearance );
+    case DRCE_CONNECTION_WIDTH:              return std::make_shared<DRC_ITEM>( connectionWidth );
+    case DRCE_TRACK_WIDTH:                   return std::make_shared<DRC_ITEM>( trackWidth );
+    case DRCE_TRACK_ANGLE:                   return std::make_shared<DRC_ITEM>( trackAngle );
+    case DRCE_TRACK_SEGMENT_LENGTH:          return std::make_shared<DRC_ITEM>( trackSegmentLength );
+    case DRCE_ANNULAR_WIDTH:                 return std::make_shared<DRC_ITEM>( annularWidth );
+    case DRCE_DRILL_OUT_OF_RANGE:            return std::make_shared<DRC_ITEM>( drillTooSmall );
+    case DRCE_VIA_DIAMETER:                  return std::make_shared<DRC_ITEM>( viaDiameter );
+    case DRCE_PADSTACK:                      return std::make_shared<DRC_ITEM>( padstack );
+    case DRCE_PADSTACK_INVALID:              return std::make_shared<DRC_ITEM>( padstackInvalid );
+    case DRCE_MICROVIA_DRILL_OUT_OF_RANGE:   return std::make_shared<DRC_ITEM>( microviaDrillTooSmall );
+    case DRCE_OVERLAPPING_FOOTPRINTS:        return std::make_shared<DRC_ITEM>( courtyardsOverlap );
+    case DRCE_MISSING_COURTYARD:             return std::make_shared<DRC_ITEM>( missingCourtyard );
+    case DRCE_MALFORMED_COURTYARD:           return std::make_shared<DRC_ITEM>( malformedCourtyard );
+    case DRCE_PTH_IN_COURTYARD:              return std::make_shared<DRC_ITEM>( pthInsideCourtyard );
+    case DRCE_NPTH_IN_COURTYARD:             return std::make_shared<DRC_ITEM>( npthInsideCourtyard );
+    case DRCE_DISABLED_LAYER_ITEM:           return std::make_shared<DRC_ITEM>( itemOnDisabledLayer );
+    case DRCE_INVALID_OUTLINE:               return std::make_shared<DRC_ITEM>( invalidOutline );
+    case DRCE_MISSING_FOOTPRINT:             return std::make_shared<DRC_ITEM>( missingFootprint );
+    case DRCE_DUPLICATE_FOOTPRINT:           return std::make_shared<DRC_ITEM>( duplicateFootprints );
+    case DRCE_NET_CONFLICT:                  return std::make_shared<DRC_ITEM>( netConflict );
+    case DRCE_EXTRA_FOOTPRINT:               return std::make_shared<DRC_ITEM>( extraFootprint );
+    case DRCE_SCHEMATIC_PARITY:              return std::make_shared<DRC_ITEM>( schematicParity );
+    case DRCE_SCHEMATIC_FIELDS_PARITY:       return std::make_shared<DRC_ITEM>( schematicFieldsParity );
+    case DRCE_FOOTPRINT_FILTERS:             return std::make_shared<DRC_ITEM>( footprintFilters );
+    case DRCE_LIB_FOOTPRINT_ISSUES:          return std::make_shared<DRC_ITEM>( libFootprintIssues );
+    case DRCE_LIB_FOOTPRINT_MISMATCH:        return std::make_shared<DRC_ITEM>( libFootprintMismatch );
+    case DRCE_UNRESOLVED_VARIABLE:           return std::make_shared<DRC_ITEM>( unresolvedVariable );
+    case DRCE_ASSERTION_FAILURE:             return std::make_shared<DRC_ITEM>( assertionFailure );
+    case DRCE_GENERIC_WARNING:               return std::make_shared<DRC_ITEM>( genericWarning );
+    case DRCE_GENERIC_ERROR:                 return std::make_shared<DRC_ITEM>( genericError );
+    case DRCE_COPPER_SLIVER:                 return std::make_shared<DRC_ITEM>( copperSliver );
+    case DRCE_SILK_CLEARANCE:                return std::make_shared<DRC_ITEM>( silkClearance );
+    case DRCE_SILK_MASK_CLEARANCE:           return std::make_shared<DRC_ITEM>( silkMaskClearance );
+    case DRCE_SILK_EDGE_CLEARANCE:           return std::make_shared<DRC_ITEM>( silkEdgeClearance );
+    case DRCE_SOLDERMASK_BRIDGE:             return std::make_shared<DRC_ITEM>( solderMaskBridge );
+    case DRCE_TEXT_HEIGHT:                   return std::make_shared<DRC_ITEM>( textHeightOutOfRange );
+    case DRCE_TEXT_THICKNESS:                return std::make_shared<DRC_ITEM>( textThicknessOutOfRange );
+    case DRCE_LENGTH_OUT_OF_RANGE:           return std::make_shared<DRC_ITEM>( lengthOutOfRange );
+    case DRCE_NET_CHAIN_STUB_TOO_LONG:       return std::make_shared<DRC_ITEM>( netChainStubTooLong );
+    case DRCE_NET_CHAIN_RETURN_PATH_BREAK:   return std::make_shared<DRC_ITEM>( netChainReturnPathBreak );
+    case DRCE_NET_CHAIN_TUNING_PROFILES: return std::make_shared<DRC_ITEM>( netChainTuningProfiles );
+    case DRCE_SKEW_OUT_OF_RANGE:             return std::make_shared<DRC_ITEM>( skewOutOfRange );
+    case DRCE_VIA_COUNT_OUT_OF_RANGE:        return std::make_shared<DRC_ITEM>( viaCountOutOfRange );
+    case DRCE_DP_GAP_OUT_OF_RANGE:           return std::make_shared<DRC_ITEM>( diffPairGapOutOfRange );
+    case DRCE_DP_UNCOUPLED_LENGTH_TOO_LONG:  return std::make_shared<DRC_ITEM>( diffPairUncoupledLengthTooLong );
+    case DRCE_FOOTPRINT:                     return std::make_shared<DRC_ITEM>( footprint );
+    case DRCE_FOOTPRINT_TYPE_MISMATCH:       return std::make_shared<DRC_ITEM>( footprintTypeMismatch );
+    case DRCE_PAD_TH_WITH_NO_HOLE:           return std::make_shared<DRC_ITEM>( footprintTHPadhasNoHole );
+    case DRCE_FOOTPRINT_SCALED_WITH_PADS:    return std::make_shared<DRC_ITEM>( footprintScaledWithPads );
+    case DRCE_MIRRORED_TEXT_ON_FRONT_LAYER:  return std::make_shared<DRC_ITEM>( mirroredTextOnFrontLayer );
+    case DRCE_UNMIRRORED_TEXT_ON_BACK_LAYER: return std::make_shared<DRC_ITEM>( unMirroredTextOnBackLayer );
+    case DRCE_MISSING_TUNING_PROFILE:        return std::make_shared<DRC_ITEM>( missingTuningProfile );
+    case DRCE_TRACK_ON_POST_MACHINED_LAYER:  return std::make_shared<DRC_ITEM>( trackOnPostMachinedLayer );
+    case DRCE_TRACK_NOT_CENTERED_ON_VIA:     return std::make_shared<DRC_ITEM>( trackNotCenteredOnVia );
 
     default:
         return nullptr;
@@ -498,10 +497,10 @@ std::shared_ptr<DRC_ITEM> DRC_ITEM::Create( int aErrorCode )
 
 std::shared_ptr<DRC_ITEM> DRC_ITEM::Create( const wxString& aErrorKey )
 {
-    for( const RC_ITEM& item : allItemTypes )
+    for( const std::reference_wrapper<RC_ITEM>& item : allItemTypes )
     {
-        if( aErrorKey == item.GetSettingsKey() )
-            return std::make_shared<DRC_ITEM>( static_cast<const DRC_ITEM&>( item ) );
+        if( aErrorKey == item.get().GetSettingsKey() )
+            return std::make_shared<DRC_ITEM>( static_cast<const DRC_ITEM&>( item.get() ) );
     }
 
     // This can happen if a project has old-format exclusions.  Just drop these items.
@@ -511,7 +510,7 @@ std::shared_ptr<DRC_ITEM> DRC_ITEM::Create( const wxString& aErrorKey )
 
 KIID DRC_ITEM::GetAuxItem2ID() const
 {
-    if( m_errorCode == DRCE_DIFF_PAIR_UNCOUPLED_LENGTH_TOO_LONG )
+    if( m_errorCode == DRCE_DP_UNCOUPLED_LENGTH_TOO_LONG )
     {
         // we have lots of segments, but it's enough to show the first P and the first N
         return niluuid;
@@ -523,7 +522,7 @@ KIID DRC_ITEM::GetAuxItem2ID() const
 
 KIID DRC_ITEM::GetAuxItem3ID() const
 {
-    if( m_errorCode == DRCE_DIFF_PAIR_UNCOUPLED_LENGTH_TOO_LONG )
+    if( m_errorCode == DRCE_DP_UNCOUPLED_LENGTH_TOO_LONG )
     {
         // we have lots of segments, but it's enough to show the first P and the first N
         return niluuid;
@@ -660,7 +659,7 @@ int DRC_ITEMS_PROVIDER::GetSeverities() const
 int DRC_ITEMS_PROVIDER::GetCount( int aSeverity ) const
 {
     if( aSeverity < 0 )
-        return m_filteredMarkers.size();
+        return (int) m_filteredMarkers.size();
 
     int count = 0;
 

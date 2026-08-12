@@ -33,6 +33,8 @@ public:
 
     PCB_FIELD( const PCB_TEXT& aText, FIELD_T aFieldId, const wxString& aName = wxEmptyString );
 
+    PCB_FIELD( const PCB_FIELD& aField );
+
     void Serialize( google::protobuf::Any &aContainer ) const override;
     bool Deserialize( const google::protobuf::Any &aContainer ) override;
 
@@ -67,6 +69,8 @@ public:
     bool IsValue() const { return m_id == FIELD_T::VALUE; }
     bool IsDatasheet() const { return m_id == FIELD_T::DATASHEET; }
     bool IsComponentClass() const { return GetName() == wxT( "Component Class" ); }
+    bool IsPrivate() const { return m_private; }
+    void SetPrivate( bool aPrivate ) { m_private = aPrivate; }
 
     bool IsMandatory() const;
 
@@ -134,6 +138,7 @@ private:
     FIELD_T  m_id;           ///< Field id, @see enum FIELD_T
     int      m_ordinal;      ///< Sort order for non-mandatory fields
     wxString m_name;
+    bool     m_private = false; ///< Not fully implemented yet, used in the fields data model
 };
 
 #endif

@@ -366,6 +366,14 @@ public:
         return true;
     }
 
+    bool CloseAllDocuments()
+    {
+        kiapi::common::commands::CloseAllDocuments request;
+        kiapi::common::ApiResponse                 response;
+
+        return sendCommand( request, &response );
+    }
+
     /**
      * Send an arbitrary job request and receive a RunJobResponse.
      */
@@ -756,7 +764,10 @@ public:
         m_cliPath = wxString::FromUTF8( QA_KICAD_CLI_PATH );
     }
 
-    ~API_SERVER_E2E_FIXTURE() = default;
+    ~API_SERVER_E2E_FIXTURE()
+    {
+        API_SERVER_MANAGER::Instance().Client().CloseAllDocuments();
+    }
 
     bool Start( const wxString& aCliPathOverride = wxString() )
     {

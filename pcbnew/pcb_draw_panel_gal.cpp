@@ -36,6 +36,7 @@
 #include <pcb_generator.h>
 #include <pcb_marker.h>
 #include <pcb_point.h>
+#include <pcb_griditem.h>
 #include <pcb_base_frame.h>
 #include <pcbnew_settings.h>
 #include <ratsnest/ratsnest_data.h>
@@ -106,6 +107,8 @@ const int GAL_LAYER_ORDER[] = {
     POINT_LAYER_FOR( F_Cu ),
 
     LAYER_FP_TEXT, LAYER_FP_REFERENCES, LAYER_FP_VALUES,
+
+    LAYER_GRIDITEMS,
 
     LAYER_RATSNEST, LAYER_ANCHOR, LAYER_POINTS, LAYER_LOCKED_ITEM_SHADOW, LAYER_CONSTRAINT_SHADOW,
     LAYER_VIA_HOLES, LAYER_VIA_HOLEWALLS,
@@ -341,6 +344,63 @@ void PCB_DRAW_PANEL_GAL::UpdateColors()
     m_gal->SetGridColor( cs->GetColor( LAYER_GRID ) );
     m_gal->SetAxesColor( cs->GetColor( LAYER_GRID_AXES ) );
     m_gal->SetCursorColor( cs->GetColor( LAYER_CURSOR ) );
+}
+
+
+void PCB_DRAW_PANEL_GAL::prepareGridSources()
+{
+    std::vector<KIGFX::GRID_SOURCE> sources;
+
+    BOARD* board = nullptr;
+
+    if( PCB_BASE_FRAME* frame = dynamic_cast<PCB_BASE_FRAME*>( GetParentEDAFrame() ) )
+        board = frame->GetBoard();
+
+    // The "Grid Items" object visibility toggle hides the rendered grid
+    // content; the items themselves (selection decorations, snap) follow
+    // the same flag at their own sites.
+    if( !board || !board->IsElementVisible( LAYER_GRIDITEMS ) )
+    {
+        m_gal->SetGridSources( std::move( sources ) );
+        return;
+    }
+
+    // Grid content color comes from the "Grid Items" entry of the color
+    // theme, falling back to the global grid color.
+    COLOR4D gridItemColor = m_gal->GetGridColor();
+
+    if( PCB_BASE_FRAME* frame = dynamic_cast<PCB_BASE_FRAME*>( GetParentEDAFrame() ) )
+    {
+        if( COLOR_SETTINGS* cs = frame->GetColorSettings() )
+            gridItemColor = cs->GetColor( LAYER_GRIDITEMS );
+    }
+
+    for( BOARD_ITEM* item : board->Drawings() )
+    {
+        if( item->Type() != PCB_GRIDITEM_T )
+            continue;
+
+        PCB_GRIDITEM* grid = static_cast<PCB_GRIDITEM*>( item );
+
+        // Priority 0 is the background grid's; a grid item must never sink behind it.
+        wxASSERT( grid->GetAssignedPriority() > 0 );
+
+        KIGFX::GRID_SOURCE src;
+        static_cast<GRID_GEOMETRY&>( src ) = grid->AsGridGeometry();
+
+        // Pitch is a loop step in the renderer; the spacing setters keep it positive.
+        wxASSERT( src.pitch.x > 0.0 && src.pitch.y > 0.0 );
+
+        src.tick = grid->GetTickInterval();
+        src.highlighted = grid->IsSelected();
+        src.snapCursor = grid->Affects().cursor && !grid->IsSelected();
+        src.color = gridItemColor;
+        src.style = m_gal->GetGridStyle(); // inherit display style
+
+        sources.push_back( src );
+    }
+
+    m_gal->SetGridSources( std::move( sources ) );
 }
 
 

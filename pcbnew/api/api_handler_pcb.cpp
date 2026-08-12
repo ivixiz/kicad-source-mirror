@@ -62,6 +62,7 @@
 #include <jobs/job_export_pcb_ps.h>
 #include <jobs/job_export_pcb_stats.h>
 #include <jobs/job_export_pcb_svg.h>
+#include <pcb_plot_params.h>
 #include <jobs/job_pcb_render.h>
 #include <layer_ids.h>
 #include <netlist_reader/board_netlist_updater.h>
@@ -115,6 +116,7 @@ API_HANDLER_PCB::API_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext, PCB_EDI
     registerHandler<GetBoardOrigin, types::Vector2>( &API_HANDLER_PCB::handleGetBoardOrigin );
     registerHandler<SetBoardOrigin, Empty>( &API_HANDLER_PCB::handleSetBoardOrigin );
     registerHandler<GetBoardLayerName, BoardLayerNameResponse>( &API_HANDLER_PCB::handleGetBoardLayerName );
+    registerHandler<GetBoardLayerByName, BoardLayerResponse>( &API_HANDLER_PCB::handleGetBoardLayerByName );
 
     registerHandler<GetNets, NetsResponse>( &API_HANDLER_PCB::handleGetNets );
     registerHandler<GetConnectedItems, GetItemsResponse>( &API_HANDLER_PCB::handleGetConnectedItems );
@@ -129,6 +131,8 @@ API_HANDLER_PCB::API_HANDLER_PCB( std::shared_ptr<PCB_CONTEXT> aContext, PCB_EDI
             &API_HANDLER_PCB::handleGetBoardEditorAppearanceSettings );
     registerHandler<SetBoardEditorAppearanceSettings, Empty>(
             &API_HANDLER_PCB::handleSetBoardEditorAppearanceSettings );
+    registerHandler<GetBoardPlotSettings, BoardPlotSettingsResponse>( &API_HANDLER_PCB::handleGetBoardPlotSettings );
+    registerHandler<SetBoardPlotSettings, Empty>( &API_HANDLER_PCB::handleSetBoardPlotSettings );
     registerHandler<InjectDrcError, InjectDrcErrorResponse>(
             &API_HANDLER_PCB::handleInjectDrcError );
 
@@ -278,16 +282,27 @@ HANDLER_RESULT<Empty> API_HANDLER_PCB::handleSaveCopyOfDocument(
 HANDLER_RESULT<Empty> API_HANDLER_PCB::handleRevertDocument(
         const HANDLER_CONTEXT<RevertDocument>& aCtx )
 {
+    // Validate first so a request meant for another editor's document is not captured here
+    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() );
+
+    if( !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    // Reloading frees every item, so refuse while any client transaction is open; the staged
+    // commit would otherwise dangle
+    if( !m_commits.empty() )
+    {
+        ApiResponseStatus e;
+        e.set_status( ApiStatusCode::AS_BUSY );
+        e.set_error_message( "cannot revert while a commit is open" );
+        return tl::unexpected( e );
+    }
+
     if( std::optional<ApiResponseStatus> headless = checkForHeadless( "RevertDocument" ) )
         return tl::unexpected( *headless );
 
     if( std::optional<ApiResponseStatus> busy = checkForBusy() )
         return tl::unexpected( *busy );
-
-    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() );
-
-    if( !documentValidation )
-        return tl::unexpected( documentValidation.error() );
 
     wxFileName fn = project().AbsolutePath( board()->GetFileName() );
 
@@ -392,6 +407,7 @@ HANDLER_RESULT<GetItemsResponse> API_HANDLER_PCB::handleGetItems( const HANDLER_
         case PCB_TEXTBOX_T:
         case PCB_BARCODE_T:
         case PCB_REFERENCE_IMAGE_T:
+        case PCB_GRIDITEM_T:
         {
             handledAnything = true;
             bool inserted = false;
@@ -1212,6 +1228,24 @@ HANDLER_RESULT<BoardLayerNameResponse> API_HANDLER_PCB::handleGetBoardLayerName(
 }
 
 
+HANDLER_RESULT<BoardLayerResponse> API_HANDLER_PCB::handleGetBoardLayerByName(
+            const HANDLER_CONTEXT<GetBoardLayerByName>& aCtx )
+{
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
+        !documentValidation )
+    {
+        return tl::unexpected( documentValidation.error() );
+    }
+
+    BoardLayerResponse response;
+
+    PCB_LAYER_ID id = board()->GetLayerID( wxString::FromUTF8( aCtx.Request.name() ) );
+    response.set_layer( ToProtoEnum<PCB_LAYER_ID, board::types::BoardLayer>( id ) );
+
+    return response;
+}
+
+
 std::optional<TITLE_BLOCK*> API_HANDLER_PCB::getTitleBlock()
 {
     return &context()->GetBoard()->GetTitleBlock();
@@ -1729,14 +1763,7 @@ HANDLER_RESULT<Empty> API_HANDLER_PCB::handleSetBoardEditorAppearanceSettings(
             FromProtoEnum<HIGH_CONTRAST_MODE>( newSettings.inactive_layer_display() );
     options.m_NetColorMode =
             FromProtoEnum<NET_COLOR_MODE>( newSettings.net_color_display() );
-
-    bool flip = newSettings.board_flip() == BoardFlipMode::BFM_FLIPPED_X;
-
-    if( flip != view->IsMirroredX() )
-    {
-        view->SetMirror( !view->IsMirroredX(), view->IsMirroredY() );
-        view->RecacheAllItems();
-    }
+    options.m_FlipBoardView = newSettings.board_flip() == BoardFlipMode::BFM_FLIPPED_X;
 
     editorSettings->m_Display.m_RatsnestMode =
             FromProtoEnum<RATSNEST_MODE>( newSettings.ratsnest_display() );
@@ -1744,6 +1771,111 @@ HANDLER_RESULT<Empty> API_HANDLER_PCB::handleSetBoardEditorAppearanceSettings(
     frame()->SetDisplayOptions( options );
     frame()->GetCanvas()->GetView()->UpdateAllLayersColor();
     frame()->GetCanvas()->Refresh();
+
+    return Empty();
+}
+
+
+HANDLER_RESULT<BoardPlotSettingsResponse>
+API_HANDLER_PCB::handleGetBoardPlotSettings( const HANDLER_CONTEXT<GetBoardPlotSettings>& aCtx )
+{
+    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
+
+    if( !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    const PCB_PLOT_PARAMS& plotOpts = board()->GetPlotOptions();
+
+    BoardPlotSettingsResponse response;
+    BoardPlotSettings*        settings = response.mutable_plot_settings();
+
+    board::PackLayerSet( *settings->mutable_layers(), plotOpts.GetLayerSelection() );
+
+    for( PCB_LAYER_ID layer : plotOpts.GetPlotOnAllLayersSequence() )
+        settings->add_common_layers( ToProtoEnum<PCB_LAYER_ID, board::types::BoardLayer>( layer ) );
+
+    settings->set_mirror( plotOpts.GetMirror() );
+    settings->set_black_and_white( plotOpts.GetBlackAndWhite() );
+    settings->set_negative( plotOpts.GetNegative() );
+    settings->set_scale( plotOpts.GetScale() );
+
+    settings->set_sketch_pads_on_fab_layers( plotOpts.GetSketchPadsOnFabLayers() );
+    settings->set_hide_dnp_footprints_on_fab_layers( plotOpts.GetHideDNPFPsOnFabLayers() );
+    settings->set_sketch_dnp_footprints_on_fab_layers( plotOpts.GetSketchDNPFPsOnFabLayers() );
+    settings->set_crossout_dnp_footprints_on_fab_layers( plotOpts.GetCrossoutDNPFPsOnFabLayers() );
+
+    settings->set_plot_footprint_values( plotOpts.GetPlotValue() );
+    settings->set_plot_reference_designators( plotOpts.GetPlotReference() );
+    settings->set_plot_drawing_sheet( plotOpts.GetPlotFrameRef() );
+    settings->set_subtract_solder_mask_from_silk( plotOpts.GetSubtractMaskFromSilk() );
+    settings->set_plot_pad_numbers( plotOpts.GetPlotPadNumbers() );
+
+    settings->set_drill_marks( ToProtoEnum<DRILL_MARKS, PlotDrillMarks>( plotOpts.GetDrillMarksType() ) );
+    settings->set_use_drill_origin( plotOpts.GetUseAuxOrigin() );
+
+    return response;
+}
+
+
+HANDLER_RESULT<Empty> API_HANDLER_PCB::handleSetBoardPlotSettings( const HANDLER_CONTEXT<SetBoardPlotSettings>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
+
+    HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.board() );
+
+    if( !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    const BoardPlotSettings& settings = aCtx.Request.plot_settings();
+    PCB_PLOT_PARAMS          plotOpts = board()->GetPlotOptions();
+
+    plotOpts.SetLayerSelection( board::UnpackLayerSet( settings.layers() ) );
+
+    LSEQ commonLayers;
+
+    for( int layer : settings.common_layers() )
+    {
+        PCB_LAYER_ID layerId =
+                FromProtoEnum<PCB_LAYER_ID, board::types::BoardLayer>( static_cast<board::types::BoardLayer>( layer ) );
+
+        if( !IsPcbLayer( layerId ) )
+        {
+            ApiResponseStatus e;
+            e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+            e.set_error_message( fmt::format( "SetBoardPlotSettings contains an invalid layer {}",
+                                              magic_enum::enum_name( layerId ) ) );
+            return tl::unexpected( e );
+        }
+
+        commonLayers.push_back( layerId );
+    }
+
+    plotOpts.SetPlotOnAllLayersSequence( commonLayers );
+
+    plotOpts.SetMirror( settings.mirror() );
+    plotOpts.SetBlackAndWhite( settings.black_and_white() );
+    plotOpts.SetNegative( settings.negative() );
+    plotOpts.SetScale( settings.scale() );
+
+    plotOpts.SetSketchPadsOnFabLayers( settings.sketch_pads_on_fab_layers() );
+    plotOpts.SetHideDNPFPsOnFabLayers( settings.hide_dnp_footprints_on_fab_layers() );
+    plotOpts.SetSketchDNPFPsOnFabLayers( settings.sketch_dnp_footprints_on_fab_layers() );
+    plotOpts.SetCrossoutDNPFPsOnFabLayers( settings.crossout_dnp_footprints_on_fab_layers() );
+
+    plotOpts.SetPlotValue( settings.plot_footprint_values() );
+    plotOpts.SetPlotReference( settings.plot_reference_designators() );
+    plotOpts.SetPlotFrameRef( settings.plot_drawing_sheet() );
+    plotOpts.SetSubtractMaskFromSilk( settings.subtract_solder_mask_from_silk() );
+    plotOpts.SetPlotPadNumbers( settings.plot_pad_numbers() );
+
+    plotOpts.SetDrillMarksType( FromProtoEnum<DRILL_MARKS>( settings.drill_marks() ) );
+    plotOpts.SetUseAuxOrigin( settings.use_drill_origin() );
+
+    board()->SetPlotOptions( plotOpts );
+
+    if( frame() )
+        frame()->OnModify();
 
     return Empty();
 }
@@ -2184,33 +2316,29 @@ HANDLER_RESULT<types::RunJobResponse> API_HANDLER_PCB::handleRunBoardJobExportGe
     if( !documentValidation )
         return tl::unexpected( documentValidation.error() );
 
-    if( aCtx.Request.layers().empty() )
-    {
-        ApiResponseStatus e;
-        e.set_status( ApiStatusCode::AS_BAD_REQUEST );
-        e.set_error_message( "RunBoardJobExportGerbers requires at least one layer" );
-        return tl::unexpected( e );
-    }
-
     JOB_EXPORT_PCB_GERBERS job;
     job.m_filename = pcbContext()->GetCurrentFileName();
     job.SetConfiguredOutputPath( wxString::FromUTF8( aCtx.Request.job_settings().output_path() ) );
 
-    for( int layer : aCtx.Request.layers() )
+    job.m_useBoardPlotParams = aCtx.Request.use_board_plot_params();
+
+    if( !job.m_useBoardPlotParams )
     {
-        PCB_LAYER_ID layerId =
-                FromProtoEnum<PCB_LAYER_ID, board::types::BoardLayer>(
-                        static_cast<board::types::BoardLayer>( layer ) );
+        if( std::optional<ApiResponseStatus> err = ApplyBoardPlotSettings( aCtx.Request.plot_settings(), job ) )
+            return tl::unexpected( *err );
+    }
 
-        if( layerId == PCB_LAYER_ID::UNDEFINED_LAYER )
-        {
-            ApiResponseStatus e;
-            e.set_status( ApiStatusCode::AS_BAD_REQUEST );
-            e.set_error_message( "RunBoardJobExportGerbers contains an invalid layer" );
-            return tl::unexpected( e );
-        }
+    job.m_createJobsFile = aCtx.Request.create_gerber_job_file();
+    job.m_includeNetlistAttributes = aCtx.Request.include_netlist_attributes();
+    job.m_useX2Format = aCtx.Request.use_x2_format();
+    job.m_disableApertureMacros = aCtx.Request.disable_aperture_macros();
+    job.m_useProtelFileExtension = aCtx.Request.use_protel_file_extensions();
 
-        job.m_plotLayerSequence.push_back( layerId );
+    switch( aCtx.Request.precision() )
+    {
+    default:
+    case GerberPrecision::GP_5: job.m_precision = 5; break;
+    case GerberPrecision::GP_6: job.m_precision = 6; break;
     }
 
     return ExecuteBoardJob( pcbContext(), job );

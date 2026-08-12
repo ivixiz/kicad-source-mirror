@@ -43,6 +43,7 @@
 #include <pcb_barcode.h>
 #include <pcb_target.h>
 #include <pcb_board_outline.h>
+#include <pcb_griditem.h>
 
 #include <layer_ids.h>
 #include <lset.h>
@@ -68,7 +69,6 @@
 #include <geometry/shape_simple.h>
 #include <geometry/shape_circle.h>
 #include <geometry/shape_arc.h>
-#include <geometry/shape_ellipse.h>
 #include <stroke_params.h>
 #include <bezier_curves.h>
 #include <kiface_base.h>
@@ -767,6 +767,8 @@ bool PCB_PAINTER::Draw( const VIEW_ITEM* aItem, int aLayer )
     case PCB_POINT_T:
         draw( static_cast<const PCB_POINT*>( item ), aLayer );
         break;
+
+    case PCB_GRIDITEM_T: draw( static_cast<const PCB_GRIDITEM*>( item ), aLayer ); break;
 
     case PCB_MARKER_T:
         draw( static_cast<const PCB_MARKER*>( item ), aLayer );
@@ -1792,12 +1794,6 @@ void PCB_PAINTER::draw( const PAD* aPad, int aLayer )
         // Drawing components of compound shapes in outline mode produces a mess.
         bool simpleShapes = !outline_mode;
 
-        // When this layer has post-machining (counterbore/countersink), GetEffectiveShape returns
-        // the counterbore hole circle (for DRC purposes), not the actual copper shape.  Force the
-        // slower TransformShapeToPolygon path which always returns the correct copper shape.
-        if( IsCopperLayer( pcbLayer ) && aPad->GetPostMachiningKnockout( pcbLayer ) > 0 )
-            simpleShapes = false;
-
         if( simpleShapes )
         {
             if( ( margin.x != margin.y && aPad->GetShape( pcbLayer ) != PAD_SHAPE::CUSTOM )
@@ -1824,18 +1820,15 @@ void PCB_PAINTER::draw( const PAD* aPad, int aLayer )
                     // To keep the right margin around the corners, we need to modify the corner radius.
                     // We must have only one radius correction, so use the smallest absolute margin.
                     int radius_margin = std::max( margin.x, margin.y );     // radius_margin is < 0
-                    dummyPad->SetRoundRectCornerRadius(
-                            pcbLayer, std::max( initial_radius + radius_margin, 0 ) );
+                    dummyPad->SetRoundRectCornerRadius( pcbLayer, std::max( initial_radius + radius_margin, 0 ) );
                 }
 
-                shapes = std::dynamic_pointer_cast<SHAPE_COMPOUND>(
-                        dummyPad->GetEffectiveShape( pcbLayer ) );
+                shapes = std::dynamic_pointer_cast<SHAPE_COMPOUND>( dummyPad->GetEffectiveShape( pcbLayer ) );
                 margin.x = margin.y = 0;
             }
             else
             {
-                shapes = std::dynamic_pointer_cast<SHAPE_COMPOUND>(
-                        aPad->GetEffectiveShape( pcbLayer ) );
+                shapes = std::dynamic_pointer_cast<SHAPE_COMPOUND>( aPad->GetEffectiveShape( pcbLayer ) );
             }
 
             // The dynamic cast above will fail if the pad returned the hole shape or a null shape
@@ -2006,8 +1999,8 @@ void PCB_PAINTER::draw( const PAD* aPad, int aLayer )
     }
 
     if( IsClearanceLayer( aLayer )
-        && ( ( pcbconfig() && pcbconfig()->m_Display.m_PadClearance ) || !pcbconfig() )
-        && !m_pcbSettings.m_isPrinting )
+            && ( ( pcbconfig() && pcbconfig()->m_Display.m_PadClearance ) || !pcbconfig() )
+            && !m_pcbSettings.m_isPrinting )
     {
         const PCB_LAYER_ID copperLayerForClearance = ToLAYER_ID( aLayer - LAYER_CLEARANCE_START );
 
@@ -2028,8 +2021,7 @@ void PCB_PAINTER::draw( const PAD* aPad, int aLayer )
             if( shape && shape->Size() == 1 && shape->Shapes()[0]->Type() == SH_SEGMENT )
             {
                 const SHAPE_SEGMENT* seg = (SHAPE_SEGMENT*) shape->Shapes()[0];
-                m_gal->DrawSegment( seg->GetSeg().A, seg->GetSeg().B,
-                                    seg->GetWidth() + 2 * clearance );
+                m_gal->DrawSegment( seg->GetSeg().A, seg->GetSeg().B, seg->GetWidth() + 2 * clearance );
             }
             else if( shape && shape->Size() == 1 && shape->Shapes()[0]->Type() == SH_CIRCLE )
             {
@@ -2041,8 +2033,7 @@ void PCB_PAINTER::draw( const PAD* aPad, int aLayer )
                 SHAPE_POLY_SET polySet;
 
                 // Use ERROR_INSIDE because it avoids Clipper and is therefore much faster.
-                aPad->TransformShapeToPolygon( polySet, copperLayerForClearance, clearance,
-                                               m_maxError, ERROR_INSIDE );
+                aPad->TransformShapeToPolygon( polySet, copperLayerForClearance, clearance, m_maxError, ERROR_INSIDE );
 
                 if( polySet.Outline( 0 ).PointCount() > 2 ) // Careful of empty pads
                     m_gal->DrawPolygon( polySet );
@@ -2051,8 +2042,7 @@ void PCB_PAINTER::draw( const PAD* aPad, int aLayer )
         else if( aPad->GetEffectiveHoleShape() && clearance > 0 )
         {
             std::shared_ptr<SHAPE_SEGMENT> slot = aPad->GetEffectiveHoleShape();
-            m_gal->DrawSegment( slot->GetSeg().A, slot->GetSeg().B,
-                                slot->GetWidth() + 2 * clearance );
+            m_gal->DrawSegment( slot->GetSeg().A, slot->GetSeg().B, slot->GetWidth() + 2 * clearance );
         }
     }
 
@@ -2554,25 +2544,7 @@ void PCB_PAINTER::draw( const PCB_SHAPE* aShape, int aLayer )
             m_gal->SetIsStroke( false );
         }
 
-        std::vector<SHAPE*> shapes;
-
-        // For ellipses, use SHAPE_ELLIPSE directly so STROKE_PARAMS::Stroke can
-        // distribute dashes uniformly by arc length instead of per-tessellation-segment.
-        if( aShape->GetShape() == SHAPE_T::ELLIPSE )
-        {
-            shapes.push_back( new SHAPE_ELLIPSE( aShape->GetEllipseCenter(), aShape->GetEllipseMajorRadius(),
-                                                 aShape->GetEllipseMinorRadius(), aShape->GetEllipseRotation() ) );
-        }
-        else if( aShape->GetShape() == SHAPE_T::ELLIPSE_ARC )
-        {
-            shapes.push_back( new SHAPE_ELLIPSE( aShape->GetEllipseCenter(), aShape->GetEllipseMajorRadius(),
-                                                 aShape->GetEllipseMinorRadius(), aShape->GetEllipseRotation(),
-                                                 aShape->GetEllipseStartAngle(), aShape->GetEllipseEndAngle() ) );
-        }
-        else
-        {
-            shapes = aShape->MakeEffectiveShapes( true );
-        }
+        std::vector<SHAPE*> shapes = aShape->MakeEffectiveShapesForStroking();
 
         for( SHAPE* shape : shapes )
         {
@@ -3401,6 +3373,84 @@ void PCB_PAINTER::draw( const PCB_DIMENSION_BASE* aDimension, int aLayer )
 }
 
 
+void PCB_PAINTER::draw( const PCB_GRIDITEM* aGridItem, int aLayer )
+{
+    // Grid content (lines/dots/crosses) is rendered by the GAL backend through
+    // GRID_SOURCE (see PCB_DRAW_PANEL_GAL::prepareGridSources).  Only selection
+    // decorations - outline and centre marker - live here, on LAYER_GRIDITEMS.
+    // The item is also registered on m_layer for VIEW::Query (selection); skip
+    // those passes.
+    const bool shadow = aLayer == LAYER_LOCKED_ITEM_SHADOW; // happens only if locked
+
+    if( aLayer != LAYER_GRIDITEMS && !shadow )
+        return;
+
+    if( !shadow && !aGridItem->IsSelected() )
+        return;
+
+    m_gal->SetLineWidth( shadow ? m_lockedShadowMargin : m_pcbSettings.m_outlineWidth );
+    m_gal->SetStrokeColor( m_pcbSettings.GetColor( aGridItem, aLayer ) );
+    m_gal->SetIsFill( false );
+    m_gal->SetIsStroke( true );
+
+    m_gal->Save();
+    m_gal->Translate( VECTOR2D( aGridItem->GetPosition() ) );
+    // GAL::Rotate is math-convention; grid orientation is screen-convention - negate.
+    m_gal->Rotate( -aGridItem->GetOrientation().AsRadians() );
+
+    switch( aGridItem->GetGridItemType() )
+    {
+    case PCB_GRIDITEM_TYPE::POLAR:
+    {
+        // hairline outline at the maximum radius, only over the active phi range
+        const int    radius = aGridItem->GetRadiusExtent();
+        const double phiMax = aGridItem->GetPhiExtent().AsRadians();
+        m_gal->DrawArc( VECTOR2D( 0, 0 ), radius, EDA_ANGLE( 0, RADIANS_T ), EDA_ANGLE( phiMax, RADIANS_T ) );
+
+        // bounding "pie" radials when phi is less than full circle
+        if( phiMax + 1e-9 < 2 * M_PI )
+        {
+            m_gal->DrawLine( VECTOR2D( 0, 0 ), VECTOR2D( radius, 0 ) );
+            m_gal->DrawLine( VECTOR2D( 0, 0 ), VECTOR2D( radius * std::cos( phiMax ), radius * std::sin( phiMax ) ) );
+        }
+        break;
+    }
+
+    case PCB_GRIDITEM_TYPE::CARTESIAN:
+    {
+        // hairline outline rectangle centred on the grid origin
+        const VECTOR2I extent = aGridItem->GetExtent();
+        m_gal->DrawLine( VECTOR2D( -extent.x, -extent.y ), VECTOR2D( extent.x, -extent.y ) );
+        m_gal->DrawLine( VECTOR2D( extent.x, -extent.y ), VECTOR2D( extent.x, extent.y ) );
+        m_gal->DrawLine( VECTOR2D( extent.x, extent.y ), VECTOR2D( -extent.x, extent.y ) );
+        m_gal->DrawLine( VECTOR2D( -extent.x, extent.y ), VECTOR2D( -extent.x, -extent.y ) );
+        break;
+    }
+
+    default: wxFAIL_MSG( wxT( "draw(PCB_GRIDITEM*): unhandled PCB_GRIDITEM_TYPE" ) ); break;
+    }
+
+    if( shadow )
+    {
+        m_gal->Restore();
+        return;
+    }
+
+    // Centre marker: screen-pixel-sized '+' cross in the LAYER_ANCHOR color, same
+    // convention FOOTPRINT uses for its anchor (see draw(FOOTPRINT*)).
+    const double  anchorSize = 5.0 / m_gal->GetWorldScale();
+    const double  anchorThickness = 1.0 / m_gal->GetWorldScale();
+    const COLOR4D anchorColor = m_pcbSettings.GetColor( aGridItem, LAYER_ANCHOR );
+
+    m_gal->SetStrokeColor( anchorColor );
+    m_gal->SetLineWidth( anchorThickness );
+    m_gal->DrawLine( VECTOR2D( -anchorSize, 0 ), VECTOR2D( anchorSize, 0 ) );
+    m_gal->DrawLine( VECTOR2D( 0, -anchorSize ), VECTOR2D( 0, anchorSize ) );
+
+    m_gal->Restore();
+}
+
+
 void PCB_PAINTER::draw( const PCB_TARGET* aTarget )
 {
     const COLOR4D strokeColor = m_pcbSettings.GetColor( aTarget, aTarget->GetLayer() );
@@ -3612,11 +3662,13 @@ void PCB_PAINTER::draw( const PCB_BOARD_OUTLINE* aBoardOutline, int aLayer )
 
 
 void PCB_PAINTER::drawBackdrillIndicator( const BOARD_ITEM* aItem, const VECTOR2D& aCenter,
-                                          int aDrillSize, PCB_LAYER_ID aStartLayer,
-                                          PCB_LAYER_ID aEndLayer )
+                                          int aDrillSize, PCB_LAYER_ID aStartLayer, PCB_LAYER_ID aEndLayer )
 {
     double backdrillRadius = aDrillSize / 2.0;
-    double lineWidth = std::max( backdrillRadius / 4.0, m_pcbSettings.m_outlineWidth * 2.0 );
+    double lineWidth = std::max( backdrillRadius / 16.0, m_pcbSettings.m_outlineWidth * 2.0 );
+
+    // Inset so entire graphic is within backdrill extent
+    backdrillRadius -= lineWidth / 2;
 
     GAL_SCOPED_ATTRS scopedAttrs( *m_gal, GAL_SCOPED_ATTRS::ALL_ATTRS );
     m_gal->AdvanceDepth();
@@ -3624,15 +3676,16 @@ void PCB_PAINTER::drawBackdrillIndicator( const BOARD_ITEM* aItem, const VECTOR2
     m_gal->SetIsStroke( true );
     m_gal->SetLineWidth( lineWidth );
 
-    // Draw semi-circle in start layer color (top half, from 90° to 270°)
-    m_gal->SetStrokeColor( m_pcbSettings.GetColor( aItem, aStartLayer ) );
-    m_gal->DrawArc( aCenter, backdrillRadius, EDA_ANGLE( 90, DEGREES_T ),
-                    EDA_ANGLE( 180, DEGREES_T ) );
+    // Draw dashed circle manually with fixed number of segments for consistent appearance
+    constexpr int NUM_DASHES = 12;  // Number of dashes around the circle
+    EDA_ANGLE dashAngle = ANGLE_360 / ( NUM_DASHES * 2 );  // Dash and gap are equal size
 
-    // Draw semi-circle in end layer color (bottom half, from 270° to 90°)
-    m_gal->SetStrokeColor( m_pcbSettings.GetColor( aItem, aEndLayer ) );
-    m_gal->DrawArc( aCenter, backdrillRadius, EDA_ANGLE( 270, DEGREES_T ),
-                    EDA_ANGLE( 180, DEGREES_T ) );
+    for( int i = 0; i < NUM_DASHES; ++i )
+    {
+        EDA_ANGLE startAngle = dashAngle * ( i * 2 );
+        m_gal->SetStrokeColor( m_pcbSettings.GetColor( aItem, i % 2 ? aStartLayer : aEndLayer ) );
+        m_gal->DrawArc( aCenter, backdrillRadius, startAngle, dashAngle );
+    }
 }
 
 
@@ -3642,13 +3695,9 @@ void PCB_PAINTER::drawPostMachiningIndicator( const BOARD_ITEM* aItem, const VEC
 
     // Check to see if the pad or via has a post-machining operation on this layer
     if( const PAD* pad = dynamic_cast<const PAD*>( aItem ) )
-    {
         size = pad->GetPostMachiningKnockout( aLayer );
-    }
     else if( const PCB_VIA* via = dynamic_cast<const PCB_VIA*>( aItem ) )
-    {
         size = via->GetPostMachiningKnockout( aLayer );
-    }
 
     if( size <= 0 )
         return;
@@ -3658,7 +3707,10 @@ void PCB_PAINTER::drawPostMachiningIndicator( const BOARD_ITEM* aItem, const VEC
 
     double pmRadius = size / 2.0;
     // Use a line width proportional to the radius for visibility
-    double lineWidth = std::max( pmRadius / 8.0, m_pcbSettings.m_outlineWidth * 2.0 );
+    double lineWidth = std::max( pmRadius / 16.0, m_pcbSettings.m_outlineWidth * 2.0 );
+
+    // Inset so entire graphic is within post machining extent
+    pmRadius -= lineWidth / 2;
 
     COLOR4D layerColor = m_pcbSettings.GetColor( aItem, aLayer );
 

@@ -28,6 +28,8 @@
 #include <limits>
 
 #include <math/matrix3x3.h>
+#include <math/box2.h>
+#include <geometry/grid_geometry.h>
 
 #include <gal/gal.h>
 #include <gal/color4d.h>
@@ -45,6 +47,56 @@ class BITMAP_BASE;
 
 namespace KIGFX
 {
+
+/**
+ * Multiply aPitch by aTick until it exceeds aThreshold, so a sub-threshold grid
+ * still shows every Nth line.  aTick <= 1 is clamped to 2.
+ *
+ * @return the sparsified pitch.
+ */
+inline double AutoSparsePitch( double aPitch, unsigned aTick, double aThreshold )
+{
+    const unsigned mult = ( aTick > 1 ) ? aTick : 2u;
+
+    while( aPitch > 0.0 && aPitch <= aThreshold )
+        aPitch *= mult;
+
+    return aPitch;
+}
+
+
+/**
+ * Render-time projection of a grid: GRID_GEOMETRY (kind/origin/pitch/orientation/extent)
+ * plus rendering and interaction flags.  SetGridSources keeps the list in precedence
+ * order, so consumers may simply take the first source that applies.
+ */
+struct GRID_SOURCE : public GRID_GEOMETRY
+{
+    bool unbounded = false;   ///< No extent; visible range derived from screen corners.
+                              ///< Used by the synthesised display grid.
+    bool axesEnabled = false; ///< Skip grid lines coincident with the world axes
+                              ///< (only meaningful for unbounded cartesian).
+    bool snapCursor = false;  ///< Participate in the cursor snap (GAL::GetGridPoint).
+    bool highlighted = false; ///< Render with edit-mode emphasis (selected grid).
+
+    unsigned tick = 0;        ///< Major-tick interval (0 = inherit default).
+
+    COLOR4D    color;
+    GRID_STYLE style = GRID_STYLE::LINES;
+};
+
+
+/// Opacity of the background wash laid over a selected grid item's area, to fade the
+/// grids showing through it.
+constexpr double GRID_DIM_ALPHA = 0.4;
+
+/// How far the hairline round a grid's coverage sits below its own colour.
+constexpr double GRID_EDGE_DARKEN = 0.75;
+
+/// How far the grid being edited is lifted above its own colour.
+constexpr double GRID_SELECTED_BRIGHTEN = 0.5;
+
+
 /**
  * Abstract interface for drawing on a 2D-surface.
  *
@@ -910,10 +962,11 @@ public:
 
         // If we cannot display the grid density, scale down by a tick size and
         // try again.  Eventually, we get some representation of the grid
-        while( std::min( gridScreenSize.x, gridScreenSize.y ) <= gridThreshold )
-        {
-            gridScreenSize = gridScreenSize * static_cast<double>( m_gridTick );
-        }
+        const double minSize = std::min( gridScreenSize.x, gridScreenSize.y );
+        const double sparsed = AutoSparsePitch( minSize, m_gridTick, gridThreshold );
+
+        if( minSize > 0.0 && sparsed != minSize )
+            gridScreenSize *= sparsed / minSize;
 
         return gridScreenSize;
     }
@@ -965,6 +1018,21 @@ public:
     {
         return m_gridLineWidth;
     }
+
+    /**
+     * Set the grid-source list rendered alongside the display grid.
+     *
+     * The list is sorted by GRID_GEOMETRY::TakesPrecedenceOver, so every consumer can take
+     * the first source that applies rather than re-deriving the overlap rules.  The sort
+     * is stable, leaving exact ties in the caller's original order.
+     */
+    void SetGridSources( std::vector<GRID_SOURCE> aSources );
+
+    const std::vector<GRID_SOURCE>& GetGridSources() const { return m_gridSources; }
+
+    GRID_STYLE     GetGridStyle() const { return m_gridStyle; }
+    int            GetCoarseGrid() const { return m_gridTick; }
+    const COLOR4D& GetGridColor() const { return m_gridColor; }
 
     ///< Draw the grid
     virtual void DrawGrid() {};
@@ -1102,6 +1170,12 @@ protected:
      */
     double computeMinGridSpacing() const;
 
+    /**
+     * @return the visible screen area expressed in aSrc's frame (relative to its
+     *         origin and counter-rotated by its orientation).
+     */
+    BOX2D gridScreenBBox( const GRID_SOURCE& aSrc ) const;
+
     /// Possible depth range
     static const int MIN_DEPTH;
     static const int MAX_DEPTH;
@@ -1192,6 +1266,8 @@ protected:
     float                m_gridLineWidth;      ///< Line width of the grid
     int                  m_gridMinSpacing;     ///< Minimum screen size of the grid (pixels)
                                                ///< below which the grid is not drawn
+
+    std::vector<GRID_SOURCE> m_gridSources;    ///< Sources overlayed on the display grid.
 
     // Cursor settings
     bool                 m_isCursorEnabled;    ///< Is the cursor enabled?

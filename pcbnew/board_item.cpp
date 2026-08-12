@@ -34,6 +34,12 @@
 #include <properties/property_mgr.h>
 
 
+bool BOARD_ITEM::FitsEnabledLayers( const LSET& aEnabledLayers, int aCopperLayerCount ) const
+{
+    return IsLayerAgnostic() || ( GetLayerSet() & aEnabledLayers ).any();
+}
+
+
 bool BOARD_ITEM::IsGroupableType() const
 {
     switch ( Type() )
@@ -59,6 +65,8 @@ bool BOARD_ITEM::IsGroupableType() const
     case PCB_DIM_ORTHOGONAL_T:
     case PCB_ZONE_T:
     case PCB_BARCODE_T:
+    case PCB_POINT_T:
+    case PCB_GRIDITEM_T:
         return true;
     default:
         return false;
@@ -377,7 +385,7 @@ bool BOARD_ITEM::ptr_cmp::operator() ( const BOARD_ITEM* a, const BOARD_ITEM* b 
 }
 
 
-std::shared_ptr<SHAPE> BOARD_ITEM::GetEffectiveShape( PCB_LAYER_ID aLayer, FLASHING aFlash ) const
+std::shared_ptr<SHAPE> BOARD_ITEM::GetEffectiveShape( PCB_LAYER_ID, FLASHING, DRC_CONSTRAINT_T ) const
 {
     static std::shared_ptr<SHAPE> shape;
 
@@ -387,7 +395,7 @@ std::shared_ptr<SHAPE> BOARD_ITEM::GetEffectiveShape( PCB_LAYER_ID aLayer, FLASH
 }
 
 
-std::shared_ptr<SHAPE_SEGMENT> BOARD_ITEM::GetEffectiveHoleShape() const
+std::shared_ptr<SHAPE_SEGMENT> BOARD_ITEM::GetEffectiveHoleShape( PCB_LAYER_ID, DRC_CONSTRAINT_T ) const
 {
     static std::shared_ptr<SHAPE_SEGMENT> slot;
 

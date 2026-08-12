@@ -194,6 +194,9 @@ public:
     VECTOR2I GetPosition() const override { return VECTOR2I(); }
     void     SetPosition( const VECTOR2I& ) override {}
 
+    /// @copydoc BOARD_ITEM::IsLayerAgnostic
+    bool IsLayerAgnostic() const override { return true; }
+
     const BOX2I GetBoundingBox() const override { return BOX2I(); }
 
     bool HitTest( const VECTOR2I& aPosition, int aAccuracy = 0 ) const override { return false; }
@@ -213,7 +216,8 @@ public:
 
     /// Empty shape so any generic GetItemSet()/RunOnChildren consumer stays safe.
     std::shared_ptr<SHAPE> GetEffectiveShape( PCB_LAYER_ID aLayer = UNDEFINED_LAYER,
-                                              FLASHING aFlash = FLASHING::DEFAULT ) const override;
+                                              FLASHING aFlash = FLASHING::DEFAULT,
+                                              DRC_CONSTRAINT_T aUsage = NULL_CONSTRAINT ) const override;
 
     wxString GetItemDescription( UNITS_PROVIDER* aUnitsProvider, bool aFull ) const override;
     BITMAPS  GetMenuImage() const override;

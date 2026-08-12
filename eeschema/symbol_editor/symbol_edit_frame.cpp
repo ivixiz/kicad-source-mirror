@@ -117,7 +117,7 @@ END_EVENT_TABLE()
 
 
 SYMBOL_EDIT_FRAME::SYMBOL_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
-        SCH_BASE_FRAME( aKiway, aParent, FRAME_SCH_SYMBOL_EDITOR, _( "Library Editor" ),
+        SCH_BASE_FRAME( aKiway, aParent, FRAME_SCH_SYMBOL_EDITOR, _( "Symbol Editor" ),
                         wxDefaultPosition, wxDefaultSize, KICAD_DEFAULT_DRAWFRAME_STYLE,
                         LIB_EDIT_FRAME_NAME ),
         m_unitSelectBox( nullptr ),
@@ -160,7 +160,6 @@ SYMBOL_EDIT_FRAME::SYMBOL_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
     m_treePane->GetLibTree()->SetSortMode( (LIB_TREE_MODEL_ADAPTER::SORT_MODE) m_settings->m_LibrarySortMode );
 
     resolveCanvasType();
-    SwitchCanvas( m_canvasType );
 
     // Ensure axis are always drawn
     KIGFX::GAL_DISPLAY_OPTIONS& gal_opts = GetGalDisplayOptions();
@@ -185,7 +184,6 @@ SYMBOL_EDIT_FRAME::SYMBOL_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
     configureToolbars();
     RecreateToolbars();
 
-    UpdateTitle();
     UpdateSymbolMsgPanelInfo();
     RebuildSymbolUnitAndBodyStyleLists();
 
@@ -235,8 +233,10 @@ SYMBOL_EDIT_FRAME::SYMBOL_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
                 if( aIdx < 0 || aIdx >= static_cast<int>( entries.size() ) )
                     return TAB_VISUAL_STATE{};
 
-                const SYMBOL_EDITOR_TAB_CONTEXT* ctx = symbolTabContextForIndex( aIdx );
-                const bool modified = ctx ? ctx->IsModified() : entries[aIdx].modified;
+                bool modified = entries[aIdx].modified;
+
+                if( SYMBOL_EDITOR_TAB_CONTEXT* ctx = symbolTabContextForIndex( aIdx ) )
+                    modified = ctx->IsModified();
 
                 return ResolveTabVisualState( entries[aIdx].preview, modified );
             };
@@ -752,10 +752,7 @@ bool SYMBOL_EDIT_FRAME::CanCloseSymbolFromSchematic( bool doClose )
     }
 
     if( doClose )
-    {
         SetCurSymbol( nullptr, false );
-        UpdateTitle();
-    }
 
     return true;
 }
@@ -977,33 +974,136 @@ bool SYMBOL_EDIT_FRAME::IsSymbolFromLegacyLibrary() const
 }
 
 
-wxString SYMBOL_EDIT_FRAME::GetCurLib() const
+void SYMBOL_EDIT_FRAME::updateInfoBar()
 {
-    wxString libNickname = Prj().GetRString( PROJECT::SCH_LIBEDIT_CUR_LIB );
+    // Use CallAfter so that we update the canvas before waiting for the infobar animation
+    CallAfter(
+            [this]()
+            {
+                WX_INFOBAR& infobar = *GetInfoBar();
+                infobar.RemoveAllButtons();
 
-    if( !libNickname.empty() )
-    {
-        if( !PROJECT_SCH::SymbolLibAdapter( &Prj() )->HasLibrary( libNickname ) )
-        {
-            Prj().SetRString( PROJECT::SCH_LIBEDIT_CUR_LIB, wxEmptyString );
-            libNickname = wxEmptyString;
-        }
-    }
+                wxArrayString msgs;
+                int           infobarFlags = wxICON_INFORMATION;
+                wxString      symbolName;
+                wxString      libName;
 
-    return libNickname;
-}
+                if( m_symbol )
+                {
+                    symbolName = m_symbol->GetName();
+                    libName = UnescapeString( m_symbol->GetLibId().GetLibNickname() );
+                }
 
+                if( IsSymbolFromSchematic() )
+                {
+                    msgs.push_back( wxString::Format( _( "Editing symbol %s from schematic.  Saving will "
+                                                         "update the schematic only." ),
+                                                      m_reference ) );
 
-wxString SYMBOL_EDIT_FRAME::SetCurLib( const wxString& aLibNickname )
-{
-    wxString old = GetCurLib();
+                    wxString         link = wxString::Format( _( "Open symbol from library %s" ),
+                                                              UnescapeString( libName ) );
+                    wxHyperlinkCtrl* button = new wxHyperlinkCtrl( &infobar, wxID_ANY, link, wxEmptyString );
 
-    if( aLibNickname.empty() || !PROJECT_SCH::SymbolLibAdapter( &Prj() )->HasLibrary( aLibNickname ) )
-        Prj().SetRString( PROJECT::SCH_LIBEDIT_CUR_LIB, wxEmptyString );
-    else
-        Prj().SetRString( PROJECT::SCH_LIBEDIT_CUR_LIB, aLibNickname );
+                    button->Bind( wxEVT_COMMAND_HYPERLINK, std::function<void( wxHyperlinkEvent& aEvent )>(
+                            [this]( wxHyperlinkEvent& aEvent )
+                            {
+                                GetToolManager()->RunAction( SCH_ACTIONS::editLibSymbolWithLibEdit );
+                            } ) );
 
-    return old;
+                    infobar.AddButton( button );
+                }
+                else if( IsSymbolFromLegacyLibrary() )
+                {
+                    msgs.push_back( _( "Symbols in legacy libraries are not editable.  Use Manage Symbol "
+                                       "Libraries to migrate to current format." ) );
+
+                    wxString         link = _( "Manage symbol libraries" );
+                    wxHyperlinkCtrl* button = new wxHyperlinkCtrl( &infobar, wxID_ANY, link, wxEmptyString );
+
+                    button->Bind( wxEVT_COMMAND_HYPERLINK, std::function<void( wxHyperlinkEvent& aEvent )>(
+                            [this]( wxHyperlinkEvent& aEvent )
+                            {
+                                InvokeSchEditSymbolLibTable( &Kiway(), this );
+                            } ) );
+
+                    infobar.AddButton( button );
+                }
+                else if( IsSymbolAlias() )
+                {
+                    msgs.push_back( wxString::Format( _( "Symbol %s is a derived symbol. Symbol graphics will "
+                                                         "not be editable." ),
+                                                      UnescapeString( symbolName ) ) );
+
+                    // Don't assume the parent symbol shared pointer is still valid.
+                    if( std::shared_ptr<LIB_SYMBOL> rootSymbol = m_symbol->GetRootSymbol() )
+                    {
+                        int      unit = GetUnit();
+                        int      bodyStyle = GetBodyStyle();
+                        wxString rootSymbolName = rootSymbol->GetName();
+                        wxString link = wxString::Format( _( "Open %s" ), UnescapeString( rootSymbolName ) );
+
+                        wxHyperlinkCtrl* button = new wxHyperlinkCtrl( &infobar, wxID_ANY, link, wxEmptyString );
+
+                        button->Bind( wxEVT_COMMAND_HYPERLINK, std::function<void( wxHyperlinkEvent& aEvent )>(
+                                [this, libName, rootSymbolName, unit, bodyStyle]( wxHyperlinkEvent& aEvent )
+                                {
+                                    LoadSymbolFromLib( libName, rootSymbolName, unit, bodyStyle );
+                                } ) );
+
+                        infobar.AddButton( button );
+                    }
+                }
+
+                if( m_symbol
+                        && !IsSymbolFromSchematic()
+                        && m_libMgr->IsLibraryReadOnly( m_symbol->GetLibId().GetFullLibraryName() ) )
+                {
+                    msgs.push_back( _( "Library is read-only.  Changes cannot be saved to this library." ) );
+
+                    wxString         link = wxString::Format( _( "Create an editable copy" ) );
+                    wxHyperlinkCtrl* button = new wxHyperlinkCtrl( &infobar, wxID_ANY, link, wxEmptyString );
+
+                    button->Bind( wxEVT_COMMAND_HYPERLINK, std::function<void( wxHyperlinkEvent& aEvent )>(
+                            [this, libName]( wxHyperlinkEvent& aEvent )
+                            {
+                                wxString msg = wxString::Format( _( "Create an editable copy of the symbol or "
+                                                                    "the entire library (%s)?" ),
+                                                                 UnescapeString( libName ) );
+
+                                KIDIALOG errorDlg( this, msg, _( "Select type of item to save" ),
+                                                   wxYES_NO | wxCANCEL | wxICON_QUESTION );
+                                // These buttons are in a weird order(?)
+                                errorDlg.SetYesNoCancelLabels( _( "Copy symbol" ), _( "Cancel" ), _( "Copy library" ) );
+
+                                int choice = errorDlg.ShowModal();
+
+                                switch( choice )
+                                {
+                                case wxID_YES:
+                                    SaveSymbolCopyAs( true );
+                                    break;
+                                case wxID_CANCEL:
+                                    SaveLibraryAs();
+                                    break;
+                                default:
+                                    // Do nothing
+                                    break;
+                                }
+                            } ) );
+
+                    infobar.AddButton( button );
+                }
+
+                if( msgs.empty() )
+                {
+                    infobar.Dismiss();
+                }
+                else
+                {
+                    wxString msg = wxJoin( msgs, '\n', '\0' );
+                    infobar.ShowMessage( msg, infobarFlags );
+                }
+            } );
 }
 
 
@@ -1031,18 +1131,6 @@ void SYMBOL_EDIT_FRAME::SetCurSymbol( LIB_SYMBOL* aSymbol, bool aUpdateZoom )
     else
         GetLibTree()->Unselect();
 
-    wxString symbolName;
-    wxString libName;
-
-    if( m_symbol )
-    {
-        symbolName = m_symbol->GetName();
-        libName = UnescapeString( m_symbol->GetLibId().GetLibNickname() );
-    }
-
-    // retain in case this wxFrame is re-opened later on the same PROJECT
-    Prj().SetRString( PROJECT::SCH_LIBEDIT_CUR_SYMBOL, symbolName );
-
     // Ensure synchronized pin edit can be enabled only symbols with interchangeable units
     m_SyncPinEdit = aSymbol && aSymbol->IsRoot() && aSymbol->IsMultiUnit() && !aSymbol->UnitsLocked();
 
@@ -1061,123 +1149,7 @@ void SYMBOL_EDIT_FRAME::SetCurSymbol( LIB_SYMBOL* aSymbol, bool aUpdateZoom )
 
     GetCanvas()->Refresh();
     m_propertiesPanel->UpdateData();
-
-    WX_INFOBAR& infobar = *GetInfoBar();
-    infobar.RemoveAllButtons();
-
-    wxArrayString msgs;
-    int           infobarFlags = wxICON_INFORMATION;
-
-    if( IsSymbolFromSchematic() )
-    {
-        msgs.push_back( wxString::Format( _( "Editing symbol %s from schematic.  Saving will "
-                                             "update the schematic only." ),
-                                          m_reference ) );
-
-        wxString         link = wxString::Format( _( "Open symbol from library %s" ), libName );
-        wxHyperlinkCtrl* button = new wxHyperlinkCtrl( &infobar, wxID_ANY, link, wxEmptyString );
-
-        button->Bind( wxEVT_COMMAND_HYPERLINK, std::function<void( wxHyperlinkEvent& aEvent )>(
-                [this, symbolName, libName]( wxHyperlinkEvent& aEvent )
-                {
-                    GetToolManager()->RunAction( SCH_ACTIONS::editLibSymbolWithLibEdit );
-                } ) );
-
-        infobar.AddButton( button );
-    }
-    else if( IsSymbolFromLegacyLibrary() )
-    {
-        msgs.push_back( _( "Symbols in legacy libraries are not editable.  Use Manage Symbol "
-                           "Libraries to migrate to current format." ) );
-
-        wxString         link = _( "Manage symbol libraries" );
-        wxHyperlinkCtrl* button = new wxHyperlinkCtrl( &infobar, wxID_ANY, link, wxEmptyString );
-
-        button->Bind( wxEVT_COMMAND_HYPERLINK, std::function<void( wxHyperlinkEvent& aEvent )>(
-                [this]( wxHyperlinkEvent& aEvent )
-                {
-                    InvokeSchEditSymbolLibTable( &Kiway(), this );
-                } ) );
-
-        infobar.AddButton( button );
-    }
-    else if( IsSymbolAlias() )
-    {
-        msgs.push_back( wxString::Format( _( "Symbol %s is a derived symbol. Symbol graphics will "
-                                             "not be editable." ),
-                                          UnescapeString( symbolName ) ) );
-
-        // Don't assume the parent symbol shared pointer is still valid.
-        if( std::shared_ptr<LIB_SYMBOL> rootSymbol = m_symbol->GetRootSymbol() )
-        {
-            int      unit = GetUnit();
-            int      bodyStyle = GetBodyStyle();
-            wxString rootSymbolName = rootSymbol->GetName();
-            wxString link = wxString::Format( _( "Open %s" ), UnescapeString( rootSymbolName ) );
-
-            wxHyperlinkCtrl* button = new wxHyperlinkCtrl( &infobar, wxID_ANY, link,
-                                                           wxEmptyString );
-
-            button->Bind( wxEVT_COMMAND_HYPERLINK, std::function<void( wxHyperlinkEvent& aEvent )>(
-                    [this, rootSymbolName, unit, bodyStyle]( wxHyperlinkEvent& aEvent )
-                    {
-                        LoadSymbolFromCurrentLib( rootSymbolName, unit, bodyStyle );
-                    } ) );
-
-            infobar.AddButton( button );
-        }
-    }
-
-    if( m_symbol
-            && !IsSymbolFromSchematic()
-            && m_libMgr->IsLibraryReadOnly( m_symbol->GetLibId().GetFullLibraryName() ) )
-    {
-        msgs.push_back( _( "Library is read-only.  Changes cannot be saved to this library." ) );
-
-        wxString         link = wxString::Format( _( "Create an editable copy" ) );
-        wxHyperlinkCtrl* button = new wxHyperlinkCtrl( &infobar, wxID_ANY, link, wxEmptyString );
-
-        button->Bind( wxEVT_COMMAND_HYPERLINK, std::function<void( wxHyperlinkEvent& aEvent )>(
-                [this, symbolName, libName]( wxHyperlinkEvent& aEvent )
-                {
-                    wxString msg = wxString::Format( _( "Create an editable copy of the symbol or "
-                                                        "the entire library (%s)?" ),
-                                                     libName );
-
-                    KIDIALOG errorDlg( this, msg, _( "Select type of item to save" ),
-                                       wxYES_NO | wxCANCEL | wxICON_QUESTION );
-                    // These buttons are in a weird order(?)
-                    errorDlg.SetYesNoCancelLabels( _( "Copy symbol" ), _( "Cancel" ),
-                                                   _( "Copy library" ) );
-
-                    int choice = errorDlg.ShowModal();
-
-                    switch( choice )
-                    {
-                    case wxID_YES:
-                        SaveSymbolCopyAs( true );
-                        break;
-                    case wxID_CANCEL:
-                        SaveLibraryAs();
-                        break;
-                    default:
-                        // Do nothing
-                        break;
-                    }
-                } ) );
-
-        infobar.AddButton( button );
-    }
-
-    if( msgs.empty() )
-    {
-        infobar.Dismiss();
-    }
-    else
-    {
-        wxString msg = wxJoin( msgs, '\n', '\0' );
-        infobar.ShowMessage( msg, infobarFlags );
-    }
+    updateInfoBar();
 }
 
 
@@ -1195,7 +1167,10 @@ void SYMBOL_EDIT_FRAME::OnModify()
     GetScreen()->SetContentModified();
 
     if( !IsSymbolFromSchematic() )
-        storeCurrentSymbol();
+    {
+        if( m_symbol && GetScreen()->IsContentModified() )
+            m_libMgr->UpdateSymbol( m_symbol, m_symbol->GetLibNickname() ); // UpdateSymbol() makes a copy
+    }
 
     if( m_isClosing )
         return;
@@ -1210,9 +1185,6 @@ void SYMBOL_EDIT_FRAME::OnModify()
     }
 
     GetLibTree()->RefreshLibTree();
-
-    if( !GetTitle().StartsWith( "*" ) )
-        UpdateTitle();
 }
 
 
@@ -1352,7 +1324,6 @@ wxString SYMBOL_EDIT_FRAME::AddLibraryFile( bool aCreateNew )
         adapter->LoadOne( fn.GetName() );
 
     SyncLibraries( false );
-    SetCurLib( fn.GetName() );
 
     if( m_treePane )
     {
@@ -1491,10 +1462,11 @@ void SYMBOL_EDIT_FRAME::SyncLibraries( bool aShowProgress, bool aPreloadCancelle
 
     m_syncLibrariesInProgress = true;
 
-    auto resetGuard = [this]( bool* )
-    {
-        m_syncLibrariesInProgress = false;
-    };
+    auto resetGuard =
+            [this]( bool* )
+            {
+                m_syncLibrariesInProgress = false;
+            };
 
     std::unique_ptr<bool, decltype( resetGuard )> guard( &m_syncLibrariesInProgress, resetGuard );
 
@@ -1572,13 +1544,6 @@ void SYMBOL_EDIT_FRAME::SyncLibraries( bool aShowProgress, bool aPreloadCancelle
             if( found )
                 GetLibTree()->SelectLibId( selected );
         }
-
-        // If no selection, see if there's a current symbol to centre
-        if( !selected.IsValid() && m_symbol )
-        {
-            LIB_ID current( GetCurLib(), m_symbol->GetName() );
-            GetLibTree()->CenterLibId( current );
-        }
     }
 
     wxLogTrace( wxT( "KICAD_TABS_DBG" ), wxT( "SYMBOL_EDIT_FRAME::SyncLibraries exit" ) );
@@ -1630,13 +1595,6 @@ bool SYMBOL_EDIT_FRAME::backupFile( const wxFileName& aOriginalFile, const wxStr
 }
 
 
-void SYMBOL_EDIT_FRAME::storeCurrentSymbol()
-{
-    if( m_symbol && !GetCurLib().IsEmpty() && GetScreen()->IsContentModified() )
-        m_libMgr->UpdateSymbol( m_symbol, GetCurLib() ); // UpdateSymbol() makes a copy
-}
-
-
 bool SYMBOL_EDIT_FRAME::IsCurrentSymbol( const LIB_ID& aLibId ) const
 {
     // This will return the root symbol of any alias
@@ -1650,7 +1608,6 @@ bool SYMBOL_EDIT_FRAME::IsCurrentSymbol( const LIB_ID& aLibId ) const
 void SYMBOL_EDIT_FRAME::emptyScreen()
 {
     GetLibTree()->Unselect();
-    SetCurLib( wxEmptyString );
 
     // Tear down every tab first so no context observes the about-to-be-deleted working symbol.
     closeAllSymbolTabsSilently();
@@ -1900,8 +1857,6 @@ void SYMBOL_EDIT_FRAME::KiwayMailIn( KIWAY_MAIL_EVENT& mail )
                 break;
             }
 
-            SetCurLib( libNickname );
-
             if( m_treePane )
             {
                 LIB_ID id( libNickname, wxEmptyString );
@@ -1918,17 +1873,7 @@ void SYMBOL_EDIT_FRAME::KiwayMailIn( KIWAY_MAIL_EVENT& mail )
         wxLogTrace( wxT( "KICAD_TABS_DBG" ),
                     wxT( "SYMBOL_EDIT_FRAME::KiwayMailIn MAIL_RELOAD_LIB -> SyncLibraries" ) );
 
-        wxString          currentLib = GetCurLib();
-
         FreezeLibraryTree();
-
-        // Check if the currently selected symbol library been removed or disabled.
-        if( !currentLib.empty()
-            && !PROJECT_SCH::SymbolLibAdapter( &Prj() )->HasLibrary( currentLib, true ) )
-        {
-            SetCurLib( wxEmptyString );
-            emptyScreen();
-        }
 
         // Suppress the progress dialog for this background reload. It would steal focus from the
         // editor that broadcast the reload, and the tree is already frozen around the sync.
@@ -2200,9 +2145,9 @@ void SYMBOL_EDIT_FRAME::LoadSymbolFromSchematic( SCH_SYMBOL* aSymbol )
         Refresh();
     }
 
-    UpdateTitle();
     RebuildSymbolUnitAndBodyStyleLists();
     UpdateSymbolMsgPanelInfo();
+    updateInfoBar();
 
     // Let tools add things to the view if necessary
     if( m_toolManager )

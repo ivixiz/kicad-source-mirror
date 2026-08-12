@@ -715,16 +715,18 @@ bool DIALOG_LIB_SYMBOL_PROPERTIES::TransferDataFromWindow()
             m_libEntry->GetUnitDisplayNames()[row+1] = m_unitNamesGrid->GetCellValue( row, 1 );
     }
 
+    // SetBodyStyleCount() adds and deletes draw items relative to the current body style count,
+    // so it has to run before the flag and the names it is derived from are overwritten
     if( m_radioSingle->GetValue() )
     {
-        m_libEntry->SetHasDeMorganBodyStyles( false );
         m_libEntry->SetBodyStyleCount( 1, false, false );
+        m_libEntry->SetHasDeMorganBodyStyles( false );
         m_libEntry->SetBodyStyleNames( {} );
     }
     else if( m_radioDeMorgan->GetValue() )
     {
-        m_libEntry->SetHasDeMorganBodyStyles( true );
         m_libEntry->SetBodyStyleCount( 2, false, true );
+        m_libEntry->SetHasDeMorganBodyStyles( true );
         m_libEntry->SetBodyStyleNames( {} );
     }
     else
@@ -737,8 +739,8 @@ bool DIALOG_LIB_SYMBOL_PROPERTIES::TransferDataFromWindow()
                 bodyStyleNames.push_back( m_bodyStyleNamesGrid->GetCellValue( row, 0 ) );
         }
 
-        m_libEntry->SetHasDeMorganBodyStyles( false );
         m_libEntry->SetBodyStyleCount( bodyStyleNames.size(), true, true );
+        m_libEntry->SetHasDeMorganBodyStyles( false );
         m_libEntry->SetBodyStyleNames( bodyStyleNames );
     }
 
@@ -781,11 +783,6 @@ bool DIALOG_LIB_SYMBOL_PROPERTIES::TransferDataFromWindow()
 
     m_libEntry->SetDuplicatePinNumbersAreJumpers( m_cbDuplicatePinsAreJumpers->GetValue() );
 
-    std::set<wxString> availablePins;
-
-    for( const SCH_PIN* pin : m_libEntry->GetGraphicalPins( 0, 0 ) )
-        availablePins.insert( pin->GetNumber() );
-
     std::vector<std::set<wxString>>& jumpers = m_libEntry->JumperPinGroups();
     jumpers.clear();
 
@@ -801,7 +798,7 @@ bool DIALOG_LIB_SYMBOL_PROPERTIES::TransferDataFromWindow()
             if( token.IsEmpty() )
                 continue;
 
-            if( !availablePins.count( token ) )
+            if( !m_libEntry->HasPinNumber( token ) )
             {
                 wxString msg;
                 msg.Printf( _( "Pin '%s' in jumper pin group %d does not exist in this symbol." ),
@@ -1148,7 +1145,7 @@ void DIALOG_LIB_SYMBOL_PROPERTIES::OnCancelButtonClick( wxCommandEvent& event )
 {
     // Running the Footprint Browser gums up the works and causes the automatic cancel
     // stuff to no longer work.  So we do it here ourselves.
-    EndQuasiModal( wxID_CANCEL );
+    EndDialogShim( wxID_CANCEL );
 }
 
 

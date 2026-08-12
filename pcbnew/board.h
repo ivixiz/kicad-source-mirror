@@ -1241,6 +1241,16 @@ public:
     void SynchronizeNetsAndNetClasses( bool aResetTrackAndViaSizes );
 
     /**
+     * Expand the project's chain-to-netclass assignments into per-net pattern assignments,
+     * using the chain membership recorded on this board's nets.
+     *
+     * CONNECTION_GRAPH::ApplyNetChainNetclasses() does the same for the schematic.  Each owns its
+     * own half of the derived list, so a board resync in a session with the schematic open leaves
+     * the schematic's assignments intact.
+     */
+    void ApplyNetChainNetclasses();
+
+    /**
      * Copy component class / component class generator information from the project settings
      */
     bool SynchronizeComponentClasses( const std::unordered_set<wxString>& aNewSheetPaths ) const;
@@ -1735,6 +1745,9 @@ private:
 
     // Refresh user layer opposites.
     void recalcOpposites();
+
+    /// Get a simple vector of the board's pointers
+    std::vector<BOARD_ITEM*> collectOwnedItems() const;
 
     friend class PCB_EDIT_FRAME;
 

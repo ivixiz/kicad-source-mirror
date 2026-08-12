@@ -52,7 +52,7 @@
 #include <sim/simulator_frame_ui.h>
 #include <sim/sim_plot_tab.h>
 #include <sim/spice_simulator.h>
-#include <sim/simulator_reporter.h>
+#include <reporter.h>
 #include <eeschema_settings.h>
 #include <advanced_config.h>
 #include <sim/toolbars_simulator_frame.h>
@@ -67,25 +67,35 @@
 static WX_STRING_REPORTER s_reporter;
 
 
-class SIM_THREAD_REPORTER : public SIMULATOR_REPORTER
+class SIM_CONSOLE_REPORTER : public SYNC_REPORTER
 {
 public:
-    SIM_THREAD_REPORTER( SIMULATOR_FRAME* aParent ) :
+    SIM_CONSOLE_REPORTER() :
+            SYNC_REPORTER( m_strRep )
+    {
+    }
+
+    wxString TakePendingMessages()
+    {
+        std::lock_guard lock( m_mutex );
+
+        wxString messages = m_strRep.GetMessages();
+        m_strRep.Clear();
+
+        return messages;
+    }
+
+private:
+    WX_STRING_REPORTER m_strRep;
+};
+
+
+class SIM_FRAME_STATE_LISTENER : public SIM_STATE_LISTENER
+{
+public:
+    SIM_FRAME_STATE_LISTENER( SIMULATOR_FRAME* aParent ) :
         m_parent( aParent )
     {
-    }
-
-    REPORTER& Report( const wxString& aText, SEVERITY aSeverity = RPT_SEVERITY_UNDEFINED ) override
-    {
-        wxCommandEvent* event = new wxCommandEvent( EVT_SIM_REPORT );
-        event->SetString( aText );
-        wxQueueEvent( m_parent, event );
-        return *this;
-    }
-
-    bool HasMessage() const override
-    {
-        return false;       // Technically "indeterminate" rather than false.
     }
 
     void OnSimStateChange( SIMULATOR* aObject, SIM_STATE aNewState ) override
@@ -119,6 +129,8 @@ SIMULATOR_FRAME::SIMULATOR_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
         m_schematicFrame( nullptr ),
         m_toolBar( nullptr ),
         m_ui( nullptr ),
+        m_consoleReporter( nullptr ),
+        m_stateListener( nullptr ),
         m_simFinished( false ),
         m_workbookModified( false ),
         m_autoProbeActive( false ),
@@ -161,8 +173,10 @@ SIMULATOR_FRAME::SIMULATOR_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
 
     m_simulator->Init();
 
-    m_reporter = new SIM_THREAD_REPORTER( this );
-    m_simulator->SetReporter( m_reporter );
+    m_consoleReporter = new SIM_CONSOLE_REPORTER();
+    m_stateListener = new SIM_FRAME_STATE_LISTENER( this );
+    m_simulator->SetReporter( m_consoleReporter );
+    m_simulator->SetSimStateListener( m_stateListener );
 
     m_circuitModel = std::make_shared<SPICE_CIRCUIT_MODEL>( &m_schematicFrame->Schematic() );
 
@@ -181,7 +195,6 @@ SIMULATOR_FRAME::SIMULATOR_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
     Bind( wxEVT_COMMAND_MENU_SELECTED, wxCommandEventHandler( SIMULATOR_FRAME::onExit ), this, wxID_EXIT );
 
     Bind( EVT_SIM_UPDATE, &SIMULATOR_FRAME::onUpdateSim, this );
-    Bind( EVT_SIM_REPORT, &SIMULATOR_FRAME::onSimReport, this );
     Bind( EVT_SIM_STARTED, &SIMULATOR_FRAME::onSimStarted, this );
     Bind( EVT_SIM_FINISHED, &SIMULATOR_FRAME::onSimFinished, this );
     bindSchematicCanvasHandlers();
@@ -201,6 +214,7 @@ SIMULATOR_FRAME::SIMULATOR_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
     Raise();
 
     m_ui->InitWorkbook();
+    m_ui->FlushSimConsole();
     UpdateTitle();
 }
 
@@ -212,8 +226,10 @@ SIMULATOR_FRAME::~SIMULATOR_FRAME()
     unbindSchematicCanvasHandlers();
 
     m_simulator->Attach( nullptr, wxEmptyString, 0, wxEmptyString, devnull );
+    m_simulator->SetSimStateListener( nullptr );
     m_simulator->SetReporter( nullptr );
-    delete m_reporter;
+    delete m_stateListener;
+    delete m_consoleReporter;
 }
 
 
@@ -1086,8 +1102,17 @@ void SIMULATOR_FRAME::onSimStarted( wxCommandEvent& aEvent )
 }
 
 
+wxString SIMULATOR_FRAME::TakeSimReportMessages()
+{
+    return m_consoleReporter->TakePendingMessages();
+}
+
+
 void SIMULATOR_FRAME::onSimFinished( wxCommandEvent& aEvent )
 {
+    if( IsClosing() )
+        return;
+
     // Sometimes (for instance with a directive like wrdata my_file.csv "my_signal")
     // the simulator is in idle state (simulation is finished), but still running, during
     // the time the file is written. So gives a slice of time to fully finish the work:
@@ -1163,12 +1188,6 @@ void SIMULATOR_FRAME::onUpdateSim( wxCommandEvent& aEvent )
 }
 
 
-void SIMULATOR_FRAME::onSimReport( wxCommandEvent& aEvent )
-{
-    m_ui->OnSimReport( aEvent.GetString() );
-}
-
-
 void SIMULATOR_FRAME::onExit( wxCommandEvent& aEvent )
 {
     if( aEvent.GetId() == wxID_EXIT )
@@ -1188,7 +1207,6 @@ void SIMULATOR_FRAME::OnModify()
 
 
 wxDEFINE_EVENT( EVT_SIM_UPDATE, wxCommandEvent );
-wxDEFINE_EVENT( EVT_SIM_REPORT, wxCommandEvent );
 
 wxDEFINE_EVENT( EVT_SIM_STARTED, wxCommandEvent );
 wxDEFINE_EVENT( EVT_SIM_FINISHED, wxCommandEvent );

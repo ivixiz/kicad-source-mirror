@@ -99,6 +99,9 @@ BOARD* PCB_IO_FABMASTER::LoadBoard( const wxString& aFileName, BOARD* aAppendToM
 {
     m_props = aProperties;
 
+    // Must be set before Read()/Process(), which emit most of the parse diagnostics.
+    m_fabmaster.SetReporter( m_reporter );
+
     m_board = aAppendToMe ? aAppendToMe : new BOARD();
 
     // Give the filename to the board if it's new
@@ -114,12 +117,7 @@ BOARD* PCB_IO_FABMASTER::LoadBoard( const wxString& aFileName, BOARD* aAppendToM
     }
 
     if( !m_fabmaster.Read( aFileName.ToStdString() ) )
-    {
-        std::string readerr;
-
-        readerr = _( "Could not read file " ) + aFileName.ToStdString();
-        THROW_IO_ERROR( readerr );
-    }
+        THROW_IO_ERRORF( _( "Could not read file %s." ), aFileName );
 
     m_fabmaster.Process();
     m_fabmaster.LoadBoard( m_board, m_progressReporter );

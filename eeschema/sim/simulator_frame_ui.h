@@ -40,7 +40,6 @@ class SPICE_SETTINGS;
 class EESCHEMA_SETTINGS;
 class SPICE_CIRCUIT_MODEL;
 
-class SIM_THREAD_REPORTER;
 class TUNER_SLIDER;
 
 
@@ -275,8 +274,8 @@ public:
     void OnPlotSettingsChanged();
 
     void OnSimUpdate();
-    void OnSimReport( const wxString& aMsg );
     void OnSimRefresh( bool aFinal );
+    void FlushSimConsole();
 
     void OnModify();
 
@@ -298,7 +297,7 @@ private:
     void updateTrace( const wxString& aVectorName, int aTraceType, SIM_PLOT_TAB* aPlotTab,
                       std::vector<double>* aDataX = nullptr, bool aClearData = false );
 
-    ///< Reference impedance of the response port for an S-parameter vector, defaults to 50 Ohm.
+    ///< Reference impedance of the response port for an S-parameter vector, zero when unresolved.
     double getSmithPortImpedance( const wxString& aVectorName );
 
     /**
@@ -334,6 +333,19 @@ private:
      * Update the cursor values (in the grid) and graphics (in the plot window).
      */
     void updatePlotCursors();
+
+    /**
+     * Add or remove the Smith-only cursor columns, carrying their shown/hidden state across.
+     */
+    void updateSmithCursorColumns( bool aSmithMode );
+
+    void fillSmithCursorRow( int aRow, CURSOR* aCursor, TRACE* aTrace );
+
+    void setSmithCursorColumnLabels();
+
+    void rememberSmithCursorColumns();
+
+    void applySmithCursorColumns();
 
     /**
      * Updates m_signalsGrid cursor widget, column rendering and attributes
@@ -456,6 +468,9 @@ private:
 
     // Holds cursor formating for m_cursorsGrid, includes m_cursorFormats[3][2], TODO: merge.
     std::vector<std::vector<SPICE_VALUE_FORMAT>> m_cursorFormatsDyn;
+
+    wxString m_smithCursorColumns;
+    std::vector<int> m_smithCursorWidths;
 
     // Variables for temporary storage:
     int                          m_splitterLeftRightSashPosition;

@@ -42,6 +42,7 @@
 #include <pad.h>
 #include <pcb_dimension.h>
 #include <pcb_generator.h>
+#include <pcb_griditem.h>
 #include <pcb_group.h>
 #include <constraints/pcb_constraint.h>
 #include <pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.h>
@@ -94,16 +95,10 @@ void FP_CACHE::Save( FOOTPRINT* aFootprintFilter )
     m_cache_timestamp = 0;
 
     if( !m_lib_path.DirExists() && !m_lib_path.Mkdir() )
-    {
-        THROW_IO_ERROR( wxString::Format( _( "Cannot create footprint library '%s'." ),
-                                          m_lib_raw_path ) );
-    }
+        THROW_IO_ERRORF( _( "Cannot create footprint library '%s'." ), m_lib_raw_path );
 
     if( !m_lib_path.IsDirWritable() )
-    {
-        THROW_IO_ERROR( wxString::Format( _( "Footprint library '%s' is read only." ),
-                                          m_lib_raw_path ) );
-    }
+        THROW_IO_ERRORF( _( "Footprint library '%s' is read only." ), m_lib_raw_path );
 
     for( auto it = m_footprints.begin(); it != m_footprints.end(); ++it )
     {
@@ -156,11 +151,7 @@ void FP_CACHE::Load()
     wxDir dir( m_lib_raw_path );
 
     if( !dir.IsOpened() )
-    {
-        wxString msg = wxString::Format( _( "Footprint library '%s' not found." ),
-                                         m_lib_raw_path );
-        THROW_IO_ERROR( msg );
-    }
+        THROW_IO_ERRORF( _( "Footprint library '%s' not found." ), m_lib_raw_path );
 
     wxString fullName;
     wxString fileSpec = wxT( "*." ) + wxString( FILEEXT::KiCadFootprintFileExtension );
@@ -228,10 +219,9 @@ void FP_CACHE::Remove( const wxString& aFootprintName )
 
     if( it == m_footprints.end() )
     {
-        wxString msg = wxString::Format( _( "Library '%s' has no footprint '%s'." ),
-                                         m_lib_raw_path,
-                                         aFootprintName );
-        THROW_IO_ERROR( msg );
+        THROW_IO_ERRORF( _( "Library '%s' has no footprint '%s'." ),
+                         m_lib_raw_path,
+                         aFootprintName );
     }
 
     // Remove the footprint from the cache and delete the footprint file from the library.
@@ -397,6 +387,8 @@ void PCB_IO_KICAD_SEXPR::Format( const BOARD_ITEM* aItem ) const
     case PCB_TARGET_T:
         format( static_cast<const PCB_TARGET*>( aItem ) );
         break;
+
+    case PCB_GRIDITEM_T: format( static_cast<const PCB_GRIDITEM*>( aItem ) ); break;
 
     case PCB_FOOTPRINT_T:
         format( static_cast<const FOOTPRINT*>( aItem ) );
@@ -1311,6 +1303,52 @@ void PCB_IO_KICAD_SEXPR::format( const PCB_TARGET* aTarget ) const
 }
 
 
+void PCB_IO_KICAD_SEXPR::format( const PCB_GRIDITEM* aGridItem ) const
+{
+    const bool polar = aGridItem->GetGridItemType() == PCB_GRIDITEM_TYPE::POLAR;
+
+    // Grid type (polar/xy) must be emitted before extent/spacing: those tokens change
+    // meaning based on the type (y component = angle for polar, length for cartesian).
+    m_out->Print( "(grid_item %s (at %s)", polar ? "polar" : "xy",
+                  formatInternalUnits( aGridItem->GetPosition() ).c_str() );
+
+    if( polar )
+    {
+        // Polar y components are angles; use FormatAngle, not formatInternalUnits.
+        m_out->Print( " (extent %s %s) (spacing %s %s)", formatInternalUnits( aGridItem->GetRadiusExtent() ).c_str(),
+                      EDA_UNIT_UTILS::FormatAngle( aGridItem->GetPhiExtent() ).c_str(),
+                      formatInternalUnits( aGridItem->GetRadiusSpacing() ).c_str(),
+                      EDA_UNIT_UTILS::FormatAngle( aGridItem->GetPhiSpacing() ).c_str() );
+    }
+    else
+    {
+        m_out->Print( " (extent %s) (spacing %s)", formatInternalUnits( aGridItem->GetExtent() ).c_str(),
+                      formatInternalUnits( aGridItem->GetSpacing() ).c_str() );
+    }
+
+    if( !aGridItem->GetOrientation().IsZero() )
+    {
+        m_out->Print( " (angle %s)", EDA_UNIT_UTILS::FormatAngle( aGridItem->GetOrientation() ).c_str() );
+    }
+
+    // Priority is always set
+    m_out->Print( " (priority %u)", aGridItem->GetAssignedPriority() );
+
+    if( aGridItem->GetTickInterval() > 0 )
+        m_out->Print( " (tick_interval %u)", aGridItem->GetTickInterval() );
+
+    const PCB_GRIDITEM_AFFECTS& aff = aGridItem->Affects();
+    m_out->Print( " (affects (cursor %s) (routing %s) (placement %s))", aff.cursor ? "yes" : "no",
+                  aff.routing ? "yes" : "no", aff.placement ? "yes" : "no" );
+
+    if( aGridItem->IsLocked() )
+        KICAD_FORMAT::FormatBool( m_out, "locked", true );
+
+    KICAD_FORMAT::FormatUuid( m_out, aGridItem->m_Uuid );
+    m_out->Print( ")\n" );
+}
+
+
 void PCB_IO_KICAD_SEXPR::format( const FOOTPRINT* aFootprint ) const
 {
     if( !( m_ctl & CTL_OMIT_INITIAL_COMMENTS ) )
@@ -1828,8 +1866,7 @@ void PCB_IO_KICAD_SEXPR::format( const PAD* aPad ) const
             case PAD_SHAPE::CUSTOM:          return "custom";
 
             default:
-                THROW_IO_ERROR( wxString::Format( _( "unknown pad type: %d"),
-                                aPad->GetShape( aLayer ) ) );
+                THROW_IO_ERRORF( _( "unknown pad type: %d" ), aPad->GetShape( aLayer ) );
             }
         };
 
@@ -1843,8 +1880,7 @@ void PCB_IO_KICAD_SEXPR::format( const PAD* aPad ) const
     case PAD_ATTRIB::NPTH:   type = "np_thru_hole";   break;
 
     default:
-        THROW_IO_ERROR( wxString::Format( wxT( "unknown pad attribute: %d" ),
-                                          aPad->GetAttribute() ) );
+        THROW_IO_ERRORF( _( "unknown pad attribute: %d" ), aPad->GetAttribute() );
     }
 
     const char* property = nullptr;
@@ -1862,8 +1898,7 @@ void PCB_IO_KICAD_SEXPR::format( const PAD* aPad ) const
     case PAD_PROP::PRESSFIT:         property = "pad_prop_pressfit";      break;
 
     default:
-        THROW_IO_ERROR( wxString::Format( wxT( "unknown pad property: %d" ),
-                                          aPad->GetProperty() ) );
+        THROW_IO_ERRORF( _( "unknown pad property: %d" ), aPad->GetProperty() );
     }
 
     const char* simElectricalType = nullptr;
@@ -2911,7 +2946,7 @@ void PCB_IO_KICAD_SEXPR::format( const PCB_TRACK* aTrack ) const
             break;
 
         default:
-            THROW_IO_ERROR( wxString::Format( _( "unknown via type %d"  ), via->GetViaType() ) );
+            THROW_IO_ERRORF( _( "unknown via type %d"  ), via->GetViaType() );
         }
 
         m_out->Print( "(at %s) (size %s)",
@@ -3287,8 +3322,7 @@ void PCB_IO_KICAD_SEXPR::format( const ZONE* aZone ) const
             break;
 
         default:
-            THROW_IO_ERROR( wxString::Format( _( "unknown zone corner smoothing type %d"  ),
-                                              aZone->GetCornerSmoothingType() ) );
+            THROW_IO_ERRORF( _( "unknown zone corner smoothing type %d"  ), aZone->GetCornerSmoothingType() );
         }
 
         if( aZone->GetCornerRadius() != 0 )
@@ -3600,6 +3634,9 @@ void PCB_IO_KICAD_SEXPR::FootprintEnumerate( wxArrayString& aFootprintNames,
     try
     {
         validateCache( aLibPath );
+
+        if( !dir.IsOpened() )
+            THROW_IO_ERRORF( _( "Footprint library '%s' not found." ), aLibPath );
     }
     catch( const IO_ERROR& ioe )
     {
@@ -3759,8 +3796,7 @@ void PCB_IO_KICAD_SEXPR::FootprintSave( const wxString& aLibraryPath, const FOOT
         }
         else
         {
-            wxString msg = wxString::Format( _( "Library '%s' is read only." ), libPath );
-            THROW_IO_ERROR( msg );
+            THROW_IO_ERRORF( _( "Library '%s' is read only." ), libPath );
         }
     }
 
@@ -3779,15 +3815,10 @@ void PCB_IO_KICAD_SEXPR::FootprintSave( const wxString& aLibraryPath, const FOOT
     WX_FILENAME::ResolvePossibleSymlinks( fn );
 
     if( !fn.IsOk() )
-    {
-        THROW_IO_ERROR( wxString::Format( _( "Footprint file name '%s' is not valid." ), fn.GetFullPath() ) );
-    }
+        THROW_IO_ERRORF( _( "Footprint file name '%s' is not valid." ), fn.GetFullPath() );
 
     if( fn.FileExists() && !fn.IsFileWritable() )
-    {
-        THROW_IO_ERROR( wxString::Format( _( "Insufficient permissions to delete '%s'." ),
-                                          fn.GetFullPath() ) );
-    }
+        THROW_IO_ERRORF( _( "Insufficient permissions to delete '%s'." ), fn.GetFullPath() );
 
     wxString fullPath = fn.GetFullPath();
     wxString fullName = fn.GetFullName();
@@ -3842,10 +3873,7 @@ void PCB_IO_KICAD_SEXPR::FootprintDelete( const wxString& aLibraryPath,
     validateCache( aLibraryPath );
 
     if( !m_cache->IsWritable() )
-    {
-        THROW_IO_ERROR( wxString::Format( _( "Library '%s' is read only." ),
-                                          aLibraryPath.GetData() ) );
-    }
+        THROW_IO_ERRORF( _( "Library '%s' is read only." ), aLibraryPath.GetData() );
 
     m_cache->Remove( aFootprintName );
 }
@@ -3871,10 +3899,7 @@ void PCB_IO_KICAD_SEXPR::CreateLibrary( const wxString& aLibraryPath,
                                         const std::map<std::string, UTF8>* aProperties )
 {
     if( wxDir::Exists( aLibraryPath ) )
-    {
-        THROW_IO_ERROR( wxString::Format( _( "Cannot overwrite library path '%s'." ),
-                                          aLibraryPath.GetData() ) );
-    }
+        THROW_IO_ERRORF( _( "Cannot overwrite library path '%s'." ), aLibraryPath.GetData() );
 
     init( aProperties );
 
@@ -3895,18 +3920,12 @@ bool PCB_IO_KICAD_SEXPR::DeleteLibrary( const wxString& aLibraryPath,
         return false;
 
     if( !fn.IsDirWritable() )
-    {
-        THROW_IO_ERROR( wxString::Format( _( "Insufficient permissions to delete folder '%s'." ),
-                                          aLibraryPath.GetData() ) );
-    }
+        THROW_IO_ERRORF( _( "Insufficient permissions to delete folder '%s'." ), aLibraryPath.GetData() );
 
     wxDir dir( aLibraryPath );
 
     if( dir.HasSubDirs() )
-    {
-        THROW_IO_ERROR( wxString::Format( _( "Library folder '%s' has unexpected sub-folders." ),
-                                          aLibraryPath.GetData() ) );
-    }
+        THROW_IO_ERRORF( _( "Library folder '%s' has unexpected sub-folders." ), aLibraryPath.GetData() );
 
     // All the footprint files must be deleted before the directory can be deleted.
     if( dir.HasFiles() )
@@ -3923,10 +3942,9 @@ bool PCB_IO_KICAD_SEXPR::DeleteLibrary( const wxString& aLibraryPath,
 
             if( tmp.GetExt() != FILEEXT::KiCadFootprintFileExtension )
             {
-                THROW_IO_ERROR( wxString::Format( _( "Unexpected file '%s' found in library "
-                                                     "path '%s'." ),
-                                                  files[i].GetData(),
-                                                  aLibraryPath.GetData() ) );
+                THROW_IO_ERRORF( _( "Unexpected file '%s' found in library path '%s'." ),
+                                 files[i].GetData(),
+                                 aLibraryPath.GetData() );
             }
         }
 
@@ -3940,10 +3958,7 @@ bool PCB_IO_KICAD_SEXPR::DeleteLibrary( const wxString& aLibraryPath,
     // Some of the more elaborate wxRemoveFile() crap puts up its own wxLog dialog
     // we don't want that.  we want bare metal portability with no UI here.
     if( !wxRmdir( aLibraryPath ) )
-    {
-        THROW_IO_ERROR( wxString::Format( _( "Footprint library '%s' cannot be deleted." ),
-                                          aLibraryPath.GetData() ) );
-    }
+        THROW_IO_ERRORF( _( "Footprint library '%s' cannot be deleted." ), aLibraryPath.GetData() );
 
     // For some reason removing a directory in Windows is not immediately updated.  This delay
     // prevents an error when attempting to immediately recreate the same directory when over

@@ -94,6 +94,11 @@ void PCB_TEXTBOX::Serialize( google::protobuf::Any& aContainer ) const
     if( GetFont() )
         attrs->set_font_name( GetFont()->GetName().ToStdString() );
 
+    if( FOOTPRINT* parent = GetParentFootprint() )
+        boardText.mutable_parent()->set_value( parent->m_Uuid.AsStdString() );
+    else if( const BOARD* board = GetBoard() )
+        boardText.mutable_parent()->set_value( board->m_Uuid.AsStdString() );
+
     attrs->set_horizontal_alignment( ToProtoEnum<GR_TEXT_H_ALIGN_T, HorizontalAlignment>( GetHorizJustify() ) );
 
     attrs->set_vertical_alignment( ToProtoEnum<GR_TEXT_V_ALIGN_T, VerticalAlignment>( GetVertJustify() ) );
@@ -751,6 +756,20 @@ void PCB_TEXTBOX::OnFootprintRescaled( double aRatioX, double aRatioY, double aL
 }
 
 
+const BOX2I PCB_TEXTBOX::GetBoundingBox() const
+{
+    BOX2I bbox;
+
+    for( const VECTOR2I& pt : GetCorners() )
+        bbox.Merge( pt );
+
+    bbox.Inflate( std::max( 0, GetWidth() ) / 2 );
+    bbox.Normalize();
+
+    return bbox;
+}
+
+
 bool PCB_TEXTBOX::HitTest( const VECTOR2I& aPosition, int aAccuracy ) const
 {
     BOX2I rect = GetBoundingBox();
@@ -807,12 +826,13 @@ void PCB_TEXTBOX::swapData( BOARD_ITEM* aImage )
 }
 
 
-std::shared_ptr<SHAPE> PCB_TEXTBOX::GetEffectiveShape( PCB_LAYER_ID aLayer, FLASHING aFlash ) const
+std::shared_ptr<SHAPE> PCB_TEXTBOX::GetEffectiveShape( PCB_LAYER_ID aLayer, FLASHING aFlash,
+                                                       DRC_CONSTRAINT_T aUsage ) const
 {
     std::shared_ptr<SHAPE_COMPOUND> shape = GetEffectiveTextShape();
 
     if( PCB_SHAPE::GetStroke().GetWidth() >= 0 )
-        shape->AddShape( PCB_SHAPE::GetEffectiveShape( aLayer, aFlash ) );
+        shape->AddShape( PCB_SHAPE::GetEffectiveShape( aLayer, aFlash, aUsage ) );
 
     return shape;
 }
