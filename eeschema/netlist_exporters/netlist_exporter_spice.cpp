@@ -231,6 +231,7 @@ void NETLIST_EXPORTER_SPICE::ConvertToSpiceMarkup( wxString* aNetName )
 {
     MARKUP::MARKUP_PARSER         markupParser( aNetName->ToStdString() );
     std::unique_ptr<MARKUP::NODE> root = markupParser.Parse();
+    bool                           hadMarkup = false;
 
     std::function<void( const std::unique_ptr<MARKUP::NODE>&)> convertMarkup =
             [&]( const std::unique_ptr<MARKUP::NODE>& aNode )
@@ -239,14 +240,14 @@ void NETLIST_EXPORTER_SPICE::ConvertToSpiceMarkup( wxString* aNetName )
                 {
                     if( !aNode->is_root() )
                     {
-                        if( aNode->isOverbar() )
+                        if( aNode->isOverbar() || aNode->isSubscript()
+                            || aNode->isSuperscript() )
                         {
-                            // ~{CLK} is a different signal than CLK
-                            *aNetName += '~';
-                        }
-                        else if( aNode->isSubscript() || aNode->isSuperscript() )
-                        {
-                            // V_{OUT} is just a pretty-printed version of VOUT
+                            // Formatting is part of the schematic net identity.  Preserve an
+                            // explicit separator and a suffix below so a formatted name does
+                            // not collapse onto an otherwise identical literal ngspice node.
+                            *aNetName += '_';
+                            hadMarkup = true;
                         }
 
                         if( aNode->has_content() )
@@ -287,6 +288,9 @@ void NETLIST_EXPORTER_SPICE::ConvertToSpiceMarkup( wxString* aNetName )
     // will trip up ngspice as "//" opens a line comment.
     if( aNetName->StartsWith( wxS( "//" ) ) )
         aNetName->Replace( wxS( "//" ), wxS( "/root/" ), false /* replace all */ );
+
+    if( hadMarkup )
+        *aNetName += wxS( "-net" );
 }
 
 
@@ -949,4 +953,3 @@ SCH_SHEET_LIST NETLIST_EXPORTER_SPICE::BuildSheetList( unsigned aNetlistOptions 
 
     return sheets;
 }
-

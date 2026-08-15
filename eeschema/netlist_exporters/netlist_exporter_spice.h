@@ -107,7 +107,8 @@ public:
     virtual bool ReadSchematicAndLibraries( unsigned aNetlistOptions, REPORTER& aReporter );
 
     /**
-     * Remove formatting wrappers and replace illegal spice net name characters with underscores.
+     * Encode formatting wrappers as separators and add a net suffix before replacing illegal
+     * SPICE characters.  This avoids collisions between formatted labels and literal net names.
      */
     static void ConvertToSpiceMarkup( wxString* aNetName );
 

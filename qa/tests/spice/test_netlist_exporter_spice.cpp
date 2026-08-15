@@ -55,6 +55,30 @@ public:
 };
 
 
+BOOST_AUTO_TEST_CASE( SpiceMarkupNetsAvoidLiteralCollisions )
+{
+    struct MARKUP_CASE
+    {
+        wxString source;
+        wxString expected;
+    };
+
+    const std::vector<MARKUP_CASE> cases = {
+        { wxS( "V_{OUT}" ), wxS( "V_OUT-net" ) },
+        { wxS( "V^{OUT}" ), wxS( "V_OUT-net" ) },
+        { wxS( "~{OUT}" ), wxS( "_OUT-net" ) },
+        { wxS( "V_OUT" ), wxS( "V_OUT" ) }
+    };
+
+    for( const MARKUP_CASE& test : cases )
+    {
+        wxString converted = test.source;
+        NETLIST_EXPORTER_SPICE::ConvertToSpiceMarkup( &converted );
+        BOOST_CHECK_EQUAL( converted, test.expected );
+    }
+}
+
+
 // Normalizes volatile parts of a SPICE netlist so a checked-in golden file stays
 // portable across machines and checkouts.  Only `.include` lines carry absolute
 // filesystem paths; everything else (nets, model names, NC counters, pin order)
