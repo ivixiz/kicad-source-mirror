@@ -88,6 +88,15 @@ BOOST_AUTO_TEST_CASE( SpiceMarkupNetsAvoidLiteralCollisions )
 }
 
 
+BOOST_AUTO_TEST_CASE( SpiceMarkupReferencesAvoidLiteralCollisions )
+{
+    wxString converted = wxS( "L_{prim}" );
+    NETLIST_EXPORTER_SPICE::ConvertReferenceToSpiceMarkup( &converted );
+
+    BOOST_CHECK_EQUAL( converted, wxS( "L_prim-ref" ) );
+}
+
+
 BOOST_AUTO_TEST_CASE( SpiceMarkupReferencesAreRewrittenInDirectives )
 {
     BOOST_CHECK_EQUAL(

@@ -893,7 +893,9 @@ int SCH_EDITOR_CONTROL::SimProbe( const TOOL_EVENT& aEvent )
                         return false;
 
                     SPICE_ITEM spiceItem;
-                    spiceItem.refName = symbol->GetRef( &sheet ).ToStdString();
+                    wxString refName = symbol->GetRef( &sheet );
+                    NETLIST_EXPORTER_SPICE::ConvertReferenceToSpiceMarkup( &refName );
+                    spiceItem.refName = refName.ToStdString();
 
                     wxString itemName = model.SpiceGenerator().ItemName( spiceItem );
 
@@ -1003,7 +1005,9 @@ int SCH_EDITOR_CONTROL::SimProbe( const TOOL_EVENT& aEvent )
                             THROW_IO_ERROR( reporter.GetMessages() );
 
                         SPICE_ITEM spiceItem;
-                        spiceItem.refName = symbol->GetRef( &sheet ).ToStdString();
+                        wxString refName = symbol->GetRef( &sheet );
+                        NETLIST_EXPORTER_SPICE::ConvertReferenceToSpiceMarkup( &refName );
+                        spiceItem.refName = refName.ToStdString();
                         std::vector<std::string> currentNames = model.SpiceGenerator().CurrentNames( spiceItem );
 
                         if( currentNames.size() == 0 )

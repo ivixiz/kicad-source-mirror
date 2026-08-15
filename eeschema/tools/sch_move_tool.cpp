@@ -199,7 +199,9 @@ static bool makeScopeMeasurementSignal( SCH_EDIT_FRAME* aFrame, SCH_SYMBOL* aSym
                                                 aFrame->Schematic().GetCurrentVariant(),
                                                 reporter ).model;
         SPICE_ITEM spiceItem;
-        spiceItem.refName = aSymbol->GetRef( &sheet ).ToStdString();
+        wxString refName = aSymbol->GetRef( &sheet );
+        NETLIST_EXPORTER_SPICE::ConvertReferenceToSpiceMarkup( &refName );
+        spiceItem.refName = refName.ToStdString();
 
         if( wantsPower )
         {

@@ -114,6 +114,14 @@ public:
     static void ConvertToSpiceMarkup( wxString* aNetName );
 
     /**
+     * Encode formatting wrappers in a component reference for its SPICE instance name.
+     *
+     * Formatted references need a distinct suffix so they cannot collide with an otherwise
+     * identical literal reference in the same schematic.
+     */
+    static void ConvertReferenceToSpiceMarkup( wxString* aReference );
+
+    /**
      * Return the list of nets.
      */
     std::set<wxString> GetNets() const { return m_nets; }

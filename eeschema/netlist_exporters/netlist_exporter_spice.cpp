@@ -312,6 +312,12 @@ void NETLIST_EXPORTER_SPICE::ConvertToSpiceMarkup( wxString* aNetName )
 }
 
 
+void NETLIST_EXPORTER_SPICE::ConvertReferenceToSpiceMarkup( wxString* aReference )
+{
+    convertToSpiceMarkup( aReference, wxS( "-ref" ) );
+}
+
+
 wxString NETLIST_EXPORTER_SPICE::GetItemName( const wxString& aRefName ) const
 {
     if( const SPICE_ITEM* item = FindItem( aRefName ) )
@@ -324,7 +330,7 @@ wxString NETLIST_EXPORTER_SPICE::GetItemName( const wxString& aRefName ) const
 const SPICE_ITEM* NETLIST_EXPORTER_SPICE::FindItem( const wxString& aRefName ) const
 {
     wxString                     spiceRefName = aRefName;
-    convertToSpiceMarkup( &spiceRefName, wxS( "-ref" ) );
+    ConvertReferenceToSpiceMarkup( &spiceRefName );
     const std::string            refName = spiceRefName.ToStdString();
     const std::list<SPICE_ITEM>& spiceItems = GetItems();
 
@@ -692,7 +698,7 @@ void NETLIST_EXPORTER_SPICE::readRefName( SCH_SHEET_PATH& aSheet, SCH_SYMBOL& aS
 
     // References with formatted text are valid SPICE instance identifiers after flattening.
     // Keep a distinct suffix so L_{prim} cannot collide with literal L_prim in the same design.
-    convertToSpiceMarkup( &spiceRefName, wxS( "-ref" ) );
+    ConvertReferenceToSpiceMarkup( &spiceRefName );
     aItem.refName = spiceRefName.ToStdString();
 
     if( schematicRefName != spiceRefName )
