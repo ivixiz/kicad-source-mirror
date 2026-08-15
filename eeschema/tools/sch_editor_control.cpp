@@ -778,6 +778,10 @@ int SCH_EDITOR_CONTROL::SimProbe( const TOOL_EVENT& aEvent )
     // Deactivate other tools; particularly important if another PICKER is currently running
     Activate();
 
+    // Probes use a native cursor.  The canvas cursor belongs to interactive drawing and can
+    // otherwise survive a previous Move/Draw tool as a full-screen dashed crosshair.
+    getViewControls()->ShowCursor( false );
+
     picker->SetCursor( KICURSOR::VOLTAGE_PROBE );
     picker->SetSnapping( false );
     picker->ClearHandlers();
@@ -1134,7 +1138,10 @@ int SCH_EDITOR_CONTROL::SimProbe( const TOOL_EVENT& aEvent )
                 SCH_SELECTION_TOOL* selectionTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
                 selectionTool->ClearSelection();
                 m_toolMgr->PostAction( ACTIONS::selectionActivate );
+                getViewControls()->ShowCursor( false );
 
+                if( KIWAY_PLAYER* simFrame = m_frame->Kiway().Player( FRAME_SIMULATOR, false ) )
+                    static_cast<SIMULATOR_FRAME*>( simFrame )->NotifySchematicProbeFinished();
             } );
 
     m_toolMgr->RunAction( ACTIONS::pickerTool, &aEvent );
@@ -1149,6 +1156,8 @@ int SCH_EDITOR_CONTROL::SimTune( const TOOL_EVENT& aEvent )
 
     // Deactivate other tools; particularly important if another PICKER is currently running
     Activate();
+
+    getViewControls()->ShowCursor( false );
 
     picker->SetCursor( KICURSOR::TUNE );
     picker->SetSnapping( false );
@@ -1229,6 +1238,7 @@ int SCH_EDITOR_CONTROL::SimTune( const TOOL_EVENT& aEvent )
                 SCH_SELECTION_TOOL* selectionTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
                 selectionTool->ClearSelection();
                 m_toolMgr->PostAction( ACTIONS::selectionActivate );
+                getViewControls()->ShowCursor( false );
 
                 if( KIWAY_PLAYER* simFrame = m_frame->Kiway().Player( FRAME_SIMULATOR, false ) )
                     static_cast<SIMULATOR_FRAME*>( simFrame )->SetAutoProbeTuneActive( false );

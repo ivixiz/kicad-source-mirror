@@ -32,6 +32,7 @@
 #include <sch_scope.h>
 #include <widgets/wx_infobar.h>
 #include <kiway.h>
+#include <kiplatform/ui.h>
 #include <confirm.h>
 #include <bitmaps.h>
 #include <wildcards_and_files_ext.h>
@@ -132,7 +133,9 @@ SIMULATOR_FRAME::SIMULATOR_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
         m_stateListener( nullptr ),
         m_simFinished( false ),
         m_workbookModified( false ),
-        m_autoProbeTuneActive( false )
+        m_autoProbeActive( false ),
+        m_autoProbeTuneActive( false ),
+        m_autoProbeHandlersBound( false )
 {
     m_schematicFrame = (SCH_EDIT_FRAME*) Kiway().Player( FRAME_SCH, false );
     wxASSERT( m_schematicFrame );
@@ -194,6 +197,7 @@ SIMULATOR_FRAME::SIMULATOR_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
     Bind( EVT_SIM_UPDATE, &SIMULATOR_FRAME::onUpdateSim, this );
     Bind( EVT_SIM_STARTED, &SIMULATOR_FRAME::onSimStarted, this );
     Bind( EVT_SIM_FINISHED, &SIMULATOR_FRAME::onSimFinished, this );
+    bindSchematicCanvasHandlers();
     // Ensure new items are taken in account by sizers:
     Layout();
 
@@ -217,6 +221,8 @@ SIMULATOR_FRAME::SIMULATOR_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
 SIMULATOR_FRAME::~SIMULATOR_FRAME()
 {
     NULL_REPORTER devnull;
+
+    unbindSchematicCanvasHandlers();
 
     m_simulator->Attach( nullptr, wxEmptyString, 0, wxEmptyString, devnull );
     m_simulator->SetSimStateListener( nullptr );
@@ -870,6 +876,8 @@ bool SIMULATOR_FRAME::canCloseWindow( wxCloseEvent& aEvent )
 
 void SIMULATOR_FRAME::doCloseWindow()
 {
+    unbindSchematicCanvasHandlers();
+
     if( m_simulator->IsRunning() )
         m_simulator->Stop();
 
@@ -884,6 +892,71 @@ void SIMULATOR_FRAME::doCloseWindow()
     m_simulator->Settings().reset();
 
     Destroy();
+}
+
+
+void SIMULATOR_FRAME::bindSchematicCanvasHandlers()
+{
+    if( m_autoProbeHandlersBound || !m_schematicFrame || !m_schematicFrame->GetCanvas() )
+        return;
+
+    wxWindow* canvas = m_schematicFrame->GetCanvas();
+
+    canvas->Bind( wxEVT_ENTER_WINDOW, &SIMULATOR_FRAME::onSchematicCanvasEnter, this );
+
+    m_autoProbeHandlersBound = true;
+}
+
+
+void SIMULATOR_FRAME::unbindSchematicCanvasHandlers()
+{
+    if( !m_autoProbeHandlersBound || !m_schematicFrame )
+        return;
+
+    if( wxWindow* canvas = m_schematicFrame->GetCanvas() )
+        canvas->Unbind( wxEVT_ENTER_WINDOW, &SIMULATOR_FRAME::onSchematicCanvasEnter, this );
+
+    m_autoProbeHandlersBound = false;
+}
+
+
+void SIMULATOR_FRAME::startAutoProbe()
+{
+    if( m_autoProbeActive || m_autoProbeTuneActive || !m_simFinished || !m_schematicFrame )
+        return;
+
+    if( KIPLATFORM::UI::IsWindowActive( m_schematicFrame )
+        || !KIPLATFORM::UI::IsWindowActive( this ) )
+    {
+        return;
+    }
+
+    m_autoProbeActive = true;
+    m_schematicFrame->GetToolManager()->PostAction( SCH_ACTIONS::simProbe );
+    m_schematicFrame->Raise();
+
+    if( m_schematicFrame->GetCanvas() )
+        m_schematicFrame->GetCanvas()->SetFocus();
+}
+
+
+void SIMULATOR_FRAME::NotifySchematicProbeFinished()
+{
+    m_autoProbeActive = false;
+}
+
+
+void SIMULATOR_FRAME::onSchematicCanvasEnter( wxMouseEvent& aEvent )
+{
+    if( m_suppressNextAutoProbe )
+    {
+        m_suppressNextAutoProbe = false;
+        aEvent.Skip();
+        return;
+    }
+
+    startAutoProbe();
+    aEvent.Skip();
 }
 
 
