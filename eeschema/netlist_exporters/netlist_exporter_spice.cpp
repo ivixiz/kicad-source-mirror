@@ -135,10 +135,9 @@ bool NETLIST_EXPORTER_SPICE::ReadSchematicAndLibraries( unsigned aNetlistOptions
     int                   ncCounter = 1;
     wxString              variant = m_schematic->GetCurrentVariant();
 
-    ReadDirectives( aNetlistOptions );
-
     m_nets.clear();
     m_items.clear();
+    m_spiceReferenceNames.clear();
     m_multiunitModels.clear();
     m_modelNameGenerator.Clear();
     m_referencesAlreadyFound.Clear();
@@ -222,6 +221,10 @@ bool NETLIST_EXPORTER_SPICE::ReadSchematicAndLibraries( unsigned aNetlistOptions
             }
         }
     }
+
+    // Directives may name components (for example, a K mutual-inductor statement).  Read them
+    // after every symbol has contributed its SPICE-safe reference mapping.
+    ReadDirectives( aNetlistOptions );
 
     return !aReporter.HasMessageOfSeverity( RPT_SEVERITY_UNDEFINED | RPT_SEVERITY_ERROR );
 }
@@ -447,9 +450,55 @@ void NETLIST_EXPORTER_SPICE::ReadDirectives( unsigned aNetlistOptions )
             }
 
             if( foundDirective )
-                m_directives.emplace_back( text );
+                m_directives.emplace_back(
+                        normalizeDirectiveReferences( text, m_spiceReferenceNames ) );
         }
     }
+}
+
+
+wxString NETLIST_EXPORTER_SPICE::normalizeDirectiveReferences(
+        const wxString& aDirective, const std::map<wxString, wxString>& aReferences )
+{
+    wxString normalized = aDirective;
+
+    auto isIdentifierChar = []( wxUniChar aCharacter )
+    {
+        return ( aCharacter >= 'a' && aCharacter <= 'z' )
+               || ( aCharacter >= 'A' && aCharacter <= 'Z' )
+               || ( aCharacter >= '0' && aCharacter <= '9' )
+               || aCharacter == '_' || aCharacter == '-';
+    };
+
+    for( const auto& [ schematicRef, spiceRef ] : aReferences )
+    {
+        size_t offset = 0;
+
+        while( true )
+        {
+            const size_t found = normalized.find( schematicRef, offset );
+
+            if( found == wxString::npos )
+                break;
+
+            const size_t after = found + schematicRef.Length();
+            const bool hasLeftBoundary = found == 0 || !isIdentifierChar( normalized[found - 1] );
+            const bool hasRightBoundary = after == normalized.Length()
+                                          || !isIdentifierChar( normalized[after] );
+
+            if( hasLeftBoundary && hasRightBoundary )
+            {
+                normalized.replace( found, schematicRef.Length(), spiceRef );
+                offset = found + spiceRef.Length();
+            }
+            else
+            {
+                offset = after;
+            }
+        }
+    }
+
+    return normalized;
 }
 
 
@@ -641,12 +690,16 @@ SIM_DECOMPOSITION NETLIST_EXPORTER_SPICE::getDecomposition( SCH_SYMBOL& aSymbol,
 void NETLIST_EXPORTER_SPICE::readRefName( SCH_SHEET_PATH& aSheet, SCH_SYMBOL& aSymbol,
                                           SPICE_ITEM& aItem, std::set<std::string>& aRefNames )
 {
-    wxString spiceRefName = aSymbol.GetRef( &aSheet );
+    const wxString schematicRefName = aSymbol.GetRef( &aSheet );
+    wxString       spiceRefName = schematicRefName;
 
     // References with formatted text are valid SPICE instance identifiers after flattening.
     // Keep a distinct suffix so L_{prim} cannot collide with literal L_prim in the same design.
     convertToSpiceMarkup( &spiceRefName, wxS( "-ref" ) );
     aItem.refName = spiceRefName.ToStdString();
+
+    if( schematicRefName != spiceRefName )
+        m_spiceReferenceNames.emplace( schematicRefName, spiceRefName );
 
     [[maybe_unused]] bool inserted = aRefNames.insert( aItem.refName ).second;
     wxASSERT_MSG( inserted, wxT( "Duplicate refdes encountered; what happened to ReadyToNetlist()?" ) );

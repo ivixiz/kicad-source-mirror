@@ -38,6 +38,14 @@
 class NETLIST_EXPORTER_SPICE_PROBE
 {
 public:
+    static wxString NormalizeDirectiveReferences( const wxString& aDirective,
+                                                  const wxString& aSchematicRef,
+                                                  const wxString& aSpiceRef )
+    {
+        return NETLIST_EXPORTER_SPICE::normalizeDirectiveReferences(
+                aDirective, { { aSchematicRef, aSpiceRef } } );
+    }
+
     static std::vector<UNIT_PIN_MAP> CollectUnitPinMaps( NETLIST_EXPORTER_SPICE& aExporter,
                                                          SCH_SYMBOL& aSymbol,
                                                          const SCH_SHEET_PATH& aSheet,
@@ -76,6 +84,21 @@ BOOST_AUTO_TEST_CASE( SpiceMarkupNetsAvoidLiteralCollisions )
         NETLIST_EXPORTER_SPICE::ConvertToSpiceMarkup( &converted );
         BOOST_CHECK_EQUAL( converted, test.expected );
     }
+}
+
+
+BOOST_AUTO_TEST_CASE( SpiceMarkupReferencesAreRewrittenInDirectives )
+{
+    BOOST_CHECK_EQUAL(
+            NETLIST_EXPORTER_SPICE_PROBE::NormalizeDirectiveReferences(
+                    wxS( "K1 L3 L_{prim} L6 1" ), wxS( "L_{prim}" ),
+                    wxS( "L_prim-ref" ) ),
+            wxS( "K1 L3 L_prim-ref L6 1" ) );
+    BOOST_CHECK_EQUAL(
+            NETLIST_EXPORTER_SPICE_PROBE::NormalizeDirectiveReferences(
+                    wxS( "V3 /G2 GND PULSE( {VLOW} {VHIGH} )" ), wxS( "L_{prim}" ),
+                    wxS( "L_prim-ref" ) ),
+            wxS( "V3 /G2 GND PULSE( {VLOW} {VHIGH} )" ) );
 }
 
 

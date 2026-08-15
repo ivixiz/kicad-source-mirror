@@ -30,6 +30,7 @@
 #include <sim/spice_generator.h>
 
 #include <list>
+#include <map>
 
 
 class wxWindow;
@@ -153,6 +154,9 @@ protected:
     SCH_SHEET_LIST BuildSheetList( unsigned aNetlistOptions = 0 ) const;
 
 private:
+    static wxString normalizeDirectiveReferences( const wxString& aDirective,
+                                                  const std::map<wxString, wxString>& aReferences );
+
     void readRefName( SCH_SHEET_PATH& aSheet, SCH_SYMBOL& aSymbol, SPICE_ITEM& aItem,
                       std::set<std::string>& aRefNames );
 
@@ -214,8 +218,9 @@ private:
     SIM_LIB_MGR             m_libMgr;             ///< Holds libraries and models
     NAME_GENERATOR          m_modelNameGenerator; ///< Generates unique model names
 
-    std::vector<wxString>   m_directives;         ///< Spice directives found in the schematic sheet
-    std::set<wxString>      m_rawIncludes;        ///< include directives found in symbols
+    std::vector<wxString>   m_directives;          ///< Spice directives found in the schematic sheet
+    std::map<wxString, wxString> m_spiceReferenceNames; ///< Schematic-to-SPICE reference mapping.
+    std::set<wxString>      m_rawIncludes;         ///< include directives found in symbols
     std::set<wxString>      m_nets;
 
     ///< Items representing schematic symbols in Spice world.
