@@ -936,8 +936,8 @@ void DIALOG_LIB_SYMBOL_PROPERTIES::OnAddField( wxCommandEvent& event )
                 SYMBOL_EDITOR_SETTINGS* settings = m_Parent->GetSettings();
                 SCH_FIELD newField( m_libEntry, FIELD_T::USER, GetUserFieldName( m_fields->size(), DO_TRANSLATE ) );
 
-                newField.SetTextSize( VECTOR2I( schIUScale.MilsToIU( settings->m_Defaults.text_size ),
-                                                schIUScale.MilsToIU( settings->m_Defaults.text_size ) ) );
+                const int textSize = settings->GetDefaultTextSize();
+                newField.SetTextSize( VECTOR2I( textSize, textSize ) );
                 newField.SetVisible( false );
 
                 m_fields->push_back( newField );
@@ -1406,5 +1406,3 @@ void DIALOG_LIB_SYMBOL_PROPERTIES::OnRemoveJumperGroup( wxCommandEvent& event )
 
     OnModify();
 }
-
-

@@ -120,7 +120,7 @@ int EE_GRAPHIC_TOOL::getDefaultTextSize() const
     {
         const SYMBOL_EDITOR_SETTINGS* cfg = frame<SYMBOL_EDIT_FRAME>()->libeditconfig();
 
-        return schIUScale.MilsToIU( cfg ? cfg->m_Defaults.text_size : DEFAULT_TEXT_SIZE );
+        return cfg ? cfg->GetDefaultTextSize() : schIUScale.MilsToIU( DEFAULT_TEXT_SIZE );
     }
 
     return getModel<SCHEMATIC>()->Settings().m_DefaultTextSize;

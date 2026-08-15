@@ -228,8 +228,8 @@ int SYMBOL_EDITOR_DRAWING_TOOLS::TwoClickPlace( const TOOL_EVENT& aEvent )
 
                     if( cfg )
                     {
-                        text->SetTextSize( VECTOR2I( schIUScale.MilsToIU( cfg->m_Defaults.text_size ),
-                                                     schIUScale.MilsToIU( cfg->m_Defaults.text_size ) ) );
+                        const int textSize = cfg->GetDefaultTextSize();
+                        text->SetTextSize( VECTOR2I( textSize, textSize ) );
                     }
 
                     text->SetTextAngle( m_lastTextAngle );

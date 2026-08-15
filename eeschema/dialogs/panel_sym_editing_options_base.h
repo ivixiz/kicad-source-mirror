@@ -44,6 +44,9 @@ class PANEL_SYM_EDITING_OPTIONS_BASE : public RESETTABLE_PANEL
 		wxStaticText* m_textSizeLabel;
 		wxTextCtrl* m_textSizeCtrl;
 		wxStaticText* m_textSizeUnits;
+		wxStaticText* m_junctionSizeLabel;
+		wxTextCtrl* m_junctionSizeCtrl;
+		wxStaticText* m_junctionSizeUnits;
 		wxStaticText* m_pinLengthLabel;
 		wxTextCtrl* m_pinLengthCtrl;
 		wxStaticText* m_pinLengthUnits;
@@ -75,4 +78,3 @@ class PANEL_SYM_EDITING_OPTIONS_BASE : public RESETTABLE_PANEL
 		~PANEL_SYM_EDITING_OPTIONS_BASE();
 
 };
-

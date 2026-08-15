@@ -19,6 +19,7 @@
 
 #include <json_common.h>
 
+#include <base_units.h>
 #include <settings/common_settings.h>
 #include <settings/parameters.h>
 #include <settings/settings_manager.h>
@@ -60,14 +61,28 @@ SYMBOL_EDITOR_SETTINGS::SYMBOL_EDITOR_SETTINGS() :
     m_params.emplace_back( new PARAM<int>( "defaults.text_size",
             &m_Defaults.text_size, DEFAULT_TEXT_SIZE ) );
 
+    // Keep the legacy mil values above so existing user preferences stay valid.  The IU values
+    // below retain exact metric sizes such as 1.000 mm.
+    m_params.emplace_back( new PARAM<int>( "defaults.text_size_iu",
+            &m_Defaults.text_size_iu, 0 ) );
+
     m_params.emplace_back( new PARAM<int>( "defaults.pin_length",
             &m_Defaults.pin_length, DEFAULT_PIN_LENGTH ) );
 
     m_params.emplace_back( new PARAM<int>( "defaults.pin_name_size",
             &m_Defaults.pin_name_size, DEFAULT_PINNAME_SIZE ) );
 
+    m_params.emplace_back( new PARAM<int>( "defaults.pin_name_size_iu",
+            &m_Defaults.pin_name_size_iu, 0 ) );
+
     m_params.emplace_back( new PARAM<int>( "defaults.pin_num_size",
             &m_Defaults.pin_num_size, DEFAULT_PINNUM_SIZE ) );
+
+    m_params.emplace_back( new PARAM<int>( "defaults.pin_num_size_iu",
+            &m_Defaults.pin_num_size_iu, 0 ) );
+
+    m_params.emplace_back( new PARAM<int>( "defaults.junction_size_iu",
+            &m_Defaults.junction_size_iu, 0 ) );
 
     m_params.emplace_back( new PARAM<int>( "repeat.label_delta",
             &m_Repeat.label_delta, 1 ) );
@@ -220,6 +235,34 @@ SYMBOL_EDITOR_SETTINGS::SYMBOL_EDITOR_SETTINGS() :
                            // This is actually a migration for APP_SETTINGS_BASE::m_LibTree
                            return migrateLibTreeWidth();
                        } );
+}
+
+
+int SYMBOL_EDITOR_SETTINGS::GetDefaultTextSize() const
+{
+    return m_Defaults.text_size_iu > 0 ? m_Defaults.text_size_iu
+                                       : schIUScale.MilsToIU( m_Defaults.text_size );
+}
+
+
+int SYMBOL_EDITOR_SETTINGS::GetDefaultPinNameSize() const
+{
+    return m_Defaults.pin_name_size_iu > 0 ? m_Defaults.pin_name_size_iu
+                                           : schIUScale.MilsToIU( m_Defaults.pin_name_size );
+}
+
+
+int SYMBOL_EDITOR_SETTINGS::GetDefaultPinNumberSize() const
+{
+    return m_Defaults.pin_num_size_iu > 0 ? m_Defaults.pin_num_size_iu
+                                          : schIUScale.MilsToIU( m_Defaults.pin_num_size );
+}
+
+
+int SYMBOL_EDITOR_SETTINGS::GetDefaultJunctionSize() const
+{
+    return m_Defaults.junction_size_iu > 0 ? m_Defaults.junction_size_iu
+                                           : schIUScale.MilsToIU( DEFAULT_JUNCTION_DIAM );
 }
 
 

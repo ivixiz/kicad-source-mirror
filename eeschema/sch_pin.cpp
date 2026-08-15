@@ -150,8 +150,8 @@ SCH_PIN::SCH_PIN( LIB_SYMBOL* aParentSymbol ) :
     if( SYMBOL_EDITOR_SETTINGS* cfg = GetAppSettings<SYMBOL_EDITOR_SETTINGS>( "symbol_editor" ) )
     {
         m_length       = schIUScale.MilsToIU( cfg->m_Defaults.pin_length );
-        m_numTextSize  = schIUScale.MilsToIU( cfg->m_Defaults.pin_num_size );
-        m_nameTextSize = schIUScale.MilsToIU( cfg->m_Defaults.pin_name_size );
+        m_numTextSize  = cfg->GetDefaultPinNumberSize();
+        m_nameTextSize = cfg->GetDefaultPinNameSize();
     }
 
     m_layer = LAYER_DEVICE;

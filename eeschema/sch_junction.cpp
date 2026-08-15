@@ -34,10 +34,13 @@
 #include <settings/color_settings.h>
 #include <connection_graph.h>
 #include <string_utils.h>
+#include <pgm_base.h>
 #include <api/api_utils.h>
 #include <api/schematic/schematic_types.pb.h>
 #include <properties/property.h>
 #include <properties/property_mgr.h>
+#include <settings/settings_manager.h>
+#include <symbol_editor/symbol_editor_settings.h>
 
 
 SCH_JUNCTION::SCH_JUNCTION( const VECTOR2I& aPosition, int aDiameter, SCH_LAYER_ID aLayer ) :
@@ -126,6 +129,8 @@ SHAPE_CIRCLE SCH_JUNCTION::getEffectiveShape() const
         m_lastResolvedDiameter = m_diameter;
     else if( Schematic() )
         m_lastResolvedDiameter = Schematic()->Settings().GetJunctionSize();
+    else if( SYMBOL_EDITOR_SETTINGS* cfg = GetAppSettings<SYMBOL_EDITOR_SETTINGS>( "symbol_editor" ) )
+        m_lastResolvedDiameter = cfg->GetDefaultJunctionSize();
     else
         m_lastResolvedDiameter = schIUScale.MilsToIU( DEFAULT_JUNCTION_DIAM );
 

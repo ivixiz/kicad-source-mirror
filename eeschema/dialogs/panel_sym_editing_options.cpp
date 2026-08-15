@@ -35,6 +35,8 @@ PANEL_SYM_EDITING_OPTIONS::PANEL_SYM_EDITING_OPTIONS( wxWindow* aWindow,
                      m_lineWidthUnits ),
         m_textSize( aUnitsProvider, aEventSource, m_textSizeLabel, m_textSizeCtrl,
                     m_textSizeUnits ),
+        m_junctionSize( aUnitsProvider, aEventSource, m_junctionSizeLabel, m_junctionSizeCtrl,
+                        m_junctionSizeUnits ),
         m_pinLength( aUnitsProvider, aEventSource, m_pinLengthLabel, m_pinLengthCtrl,
                      m_pinLengthUnits ),
         m_pinNameSize( aUnitsProvider, aEventSource ,m_pinNameSizeLabel, m_pinNameSizeCtrl,
@@ -43,6 +45,12 @@ PANEL_SYM_EDITING_OPTIONS::PANEL_SYM_EDITING_OPTIONS( wxWindow* aWindow,
                          m_pinNumSizeUnits ),
         m_pinPitch( aUnitsProvider, aEventSource, m_pinPitchLabel, m_pinPitchCtrl, m_pinPitchUnits )
 {
+    // These defaults are persisted in IU so metric values do not round through whole mils.
+    m_textSize.SetUnits( EDA_UNITS::MM );
+    m_junctionSize.SetUnits( EDA_UNITS::MM );
+    m_pinNameSize.SetUnits( EDA_UNITS::MM );
+    m_pinNumberSize.SetUnits( EDA_UNITS::MM );
+
     m_widthHelpText->SetFont( KIUI::GetInfoFont( this ).Italic() );
 }
 
@@ -50,10 +58,11 @@ PANEL_SYM_EDITING_OPTIONS::PANEL_SYM_EDITING_OPTIONS( wxWindow* aWindow,
 void PANEL_SYM_EDITING_OPTIONS::loadSymEditorSettings( SYMBOL_EDITOR_SETTINGS* aCfg )
 {
     m_lineWidth.SetValue( schIUScale.MilsToIU( aCfg->m_Defaults.line_width ) );
-    m_textSize.SetValue( schIUScale.MilsToIU( aCfg->m_Defaults.text_size ) );
+    m_textSize.SetValue( aCfg->GetDefaultTextSize() );
+    m_junctionSize.SetValue( aCfg->GetDefaultJunctionSize() );
     m_pinLength.SetValue( schIUScale.MilsToIU( aCfg->m_Defaults.pin_length ) );
-    m_pinNumberSize.SetValue( schIUScale.MilsToIU( aCfg->m_Defaults.pin_num_size ) );
-    m_pinNameSize.SetValue( schIUScale.MilsToIU( aCfg->m_Defaults.pin_name_size ) );
+    m_pinNumberSize.SetValue( aCfg->GetDefaultPinNumberSize() );
+    m_pinNameSize.SetValue( aCfg->GetDefaultPinNameSize() );
     m_pinPitch.SetValue( schIUScale.MilsToIU( aCfg->m_Repeat.pin_step ) );
     m_spinRepeatLabel->SetValue( aCfg->m_Repeat.label_delta );
     m_dragPinsWithEdges->SetValue( aCfg->m_dragPinsAlongWithEdges );
@@ -73,9 +82,13 @@ bool PANEL_SYM_EDITING_OPTIONS::TransferDataFromWindow()
     {
         cfg->m_Defaults.line_width = schIUScale.IUToMils( m_lineWidth.GetIntValue() );
         cfg->m_Defaults.text_size = schIUScale.IUToMils( m_textSize.GetIntValue() );
+        cfg->m_Defaults.text_size_iu = m_textSize.GetIntValue();
+        cfg->m_Defaults.junction_size_iu = m_junctionSize.GetIntValue();
         cfg->m_Defaults.pin_length = schIUScale.IUToMils( m_pinLength.GetIntValue() );
         cfg->m_Defaults.pin_num_size = schIUScale.IUToMils( m_pinNumberSize.GetIntValue() );
+        cfg->m_Defaults.pin_num_size_iu = m_pinNumberSize.GetIntValue();
         cfg->m_Defaults.pin_name_size = schIUScale.IUToMils( m_pinNameSize.GetIntValue() );
+        cfg->m_Defaults.pin_name_size_iu = m_pinNameSize.GetIntValue();
         cfg->m_Repeat.label_delta = m_spinRepeatLabel->GetValue();
         cfg->m_Repeat.pin_step = schIUScale.IUToMils( m_pinPitch.GetIntValue() );
         cfg->m_dragPinsAlongWithEdges = m_dragPinsWithEdges->GetValue();
@@ -108,5 +121,3 @@ void PANEL_SYM_EDITING_OPTIONS::ResetPanel()
 
     loadSymEditorSettings( &cfg );
 }
-
-

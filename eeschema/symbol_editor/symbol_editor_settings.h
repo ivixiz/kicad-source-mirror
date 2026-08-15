@@ -41,9 +41,13 @@ public:
     {
         int line_width;
         int text_size;
+        int text_size_iu;
         int pin_length;
         int pin_name_size;
+        int pin_name_size_iu;
         int pin_num_size;
+        int pin_num_size_iu;
+        int junction_size_iu;
     };
 
     struct REPEAT
@@ -79,6 +83,12 @@ public:
     virtual ~SYMBOL_EDITOR_SETTINGS() {}
 
     virtual bool MigrateFromLegacy( wxConfigBase* aLegacyConfig ) override;
+
+    /// Return defaults stored with internal-unit precision, falling back to legacy mil values.
+    int GetDefaultTextSize() const;
+    int GetDefaultPinNameSize() const;
+    int GetDefaultPinNumberSize() const;
+    int GetDefaultJunctionSize() const;
 
     AUI_PANELS m_AuiPanels;
 

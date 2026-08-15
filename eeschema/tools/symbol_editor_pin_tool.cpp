@@ -59,7 +59,7 @@ static int GetLastPinNameSize()
     if( g_LastPinNameSize == -1 )
     {
         if( SYMBOL_EDITOR_SETTINGS* cfg = GetAppSettings<SYMBOL_EDITOR_SETTINGS>( "symbol_editor" ) )
-            g_LastPinNameSize = schIUScale.MilsToIU( cfg->m_Defaults.pin_name_size );
+            g_LastPinNameSize = cfg->GetDefaultPinNameSize();
     }
 
     return g_LastPinNameSize;
@@ -70,7 +70,7 @@ static int GetLastPinNumSize()
     if( g_LastPinNumSize == -1 )
     {
         if( SYMBOL_EDITOR_SETTINGS* cfg = GetAppSettings<SYMBOL_EDITOR_SETTINGS>( "symbol_editor" ) )
-            g_LastPinNumSize = schIUScale.MilsToIU( cfg->m_Defaults.pin_num_size );
+            g_LastPinNumSize = cfg->GetDefaultPinNumberSize();
     }
 
     return g_LastPinNumSize;

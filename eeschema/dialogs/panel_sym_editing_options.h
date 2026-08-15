@@ -45,6 +45,7 @@ private:
 private:
     UNIT_BINDER        m_lineWidth;
     UNIT_BINDER        m_textSize;
+    UNIT_BINDER        m_junctionSize;
 
     UNIT_BINDER        m_pinLength;
     UNIT_BINDER        m_pinNameSize;
