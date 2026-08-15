@@ -1128,18 +1128,21 @@ int SCH_EDITOR_CONTROL::SimProbe( const TOOL_EVENT& aEvent )
                     UpdateNetHighlighting( dummyEvent );
                 }
 
-                // Wake the selection tool after exiting to ensure the cursor gets updated
-                // and deselect previous selection from simulator to avoid any issue
-                // ( avoid crash in some cases when the SimProbe tool is deselected )
+                // Deselect the item used by the simulator probe.  Selection is reactivated
+                // after the nested picker action has fully returned below.
                 SCH_SELECTION_TOOL* selectionTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
                 selectionTool->ClearSelection();
-                m_toolMgr->PostAction( ACTIONS::selectionActivate );
 
                 if( KIWAY_PLAYER* simFrame = m_frame->Kiway().Player( FRAME_SIMULATOR, false ) )
                     static_cast<SIMULATOR_FRAME*>( simFrame )->NotifySchematicProbeFinished();
             } );
 
     m_toolMgr->RunAction( ACTIONS::pickerTool, &aEvent );
+
+    // PICKER_TOOL finalizes while this nested RunAction is still active.  Posting this from the
+    // finalizer allows RunAction to restore SimProbe's view-control state after Selection has
+    // started, leaving the drawing crosshair enabled.  Queue it only after the picker returns.
+    m_toolMgr->PostAction( ACTIONS::selectionActivate );
 
     return 0;
 }
@@ -1225,18 +1228,20 @@ int SCH_EDITOR_CONTROL::SimTune( const TOOL_EVENT& aEvent )
                 if( m_pickerItem )
                     m_toolMgr->GetTool<SCH_SELECTION_TOOL>()->UnbrightenItem( m_pickerItem );
 
-                // Wake the selection tool after exiting to ensure the cursor gets updated
-                // and deselect previous selection from simulator to avoid any issue
-                // ( avoid crash in some cases when the SimTune tool is deselected )
+                // Deselect the item used by the simulator tuner.  Selection is reactivated
+                // after the nested picker action has fully returned below.
                 SCH_SELECTION_TOOL* selectionTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
                 selectionTool->ClearSelection();
-                m_toolMgr->PostAction( ACTIONS::selectionActivate );
 
                 if( KIWAY_PLAYER* simFrame = m_frame->Kiway().Player( FRAME_SIMULATOR, false ) )
                     static_cast<SIMULATOR_FRAME*>( simFrame )->SetAutoProbeTuneActive( false );
             } );
 
     m_toolMgr->RunAction( ACTIONS::pickerTool, &aEvent );
+
+    // See SimProbe: this transition must happen after the picker has popped from the nested
+    // RunAction, otherwise its restored view controls can leak into Selection.
+    m_toolMgr->PostAction( ACTIONS::selectionActivate );
 
     return 0;
 }
