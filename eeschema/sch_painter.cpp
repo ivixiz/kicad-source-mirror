@@ -585,6 +585,46 @@ static bool isFieldsLayer( int aLayer )
 }
 
 
+static GR_TEXT_H_ALIGN_T scopeCursorLabelHAlign( SCH_SCOPE::CURSOR_LABEL_ALIGNMENT aAlignment )
+{
+    switch( aAlignment )
+    {
+    case SCH_SCOPE::CURSOR_LABEL_ALIGNMENT::TOP_LEFT:
+    case SCH_SCOPE::CURSOR_LABEL_ALIGNMENT::CENTER_LEFT:
+    case SCH_SCOPE::CURSOR_LABEL_ALIGNMENT::BOTTOM_LEFT:
+        return GR_TEXT_H_ALIGN_RIGHT;
+
+    case SCH_SCOPE::CURSOR_LABEL_ALIGNMENT::TOP_RIGHT:
+    case SCH_SCOPE::CURSOR_LABEL_ALIGNMENT::CENTER_RIGHT:
+    case SCH_SCOPE::CURSOR_LABEL_ALIGNMENT::BOTTOM_RIGHT:
+        return GR_TEXT_H_ALIGN_LEFT;
+
+    default:
+        return GR_TEXT_H_ALIGN_CENTER;
+    }
+}
+
+
+static GR_TEXT_V_ALIGN_T scopeCursorLabelVAlign( SCH_SCOPE::CURSOR_LABEL_ALIGNMENT aAlignment )
+{
+    switch( aAlignment )
+    {
+    case SCH_SCOPE::CURSOR_LABEL_ALIGNMENT::TOP_LEFT:
+    case SCH_SCOPE::CURSOR_LABEL_ALIGNMENT::TOP_CENTER:
+    case SCH_SCOPE::CURSOR_LABEL_ALIGNMENT::TOP_RIGHT:
+        return GR_TEXT_V_ALIGN_BOTTOM;
+
+    case SCH_SCOPE::CURSOR_LABEL_ALIGNMENT::BOTTOM_LEFT:
+    case SCH_SCOPE::CURSOR_LABEL_ALIGNMENT::BOTTOM_CENTER:
+    case SCH_SCOPE::CURSOR_LABEL_ALIGNMENT::BOTTOM_RIGHT:
+        return GR_TEXT_V_ALIGN_TOP;
+
+    default:
+        return GR_TEXT_V_ALIGN_CENTER;
+    }
+}
+
+
 static BOX2I GetTextExtents( const wxString& aText, const VECTOR2D& aPosition, KIFONT::FONT& aFont,
                              const TEXT_ATTRIBUTES& aAttrs, const KIFONT::METRICS& aFontMetrics )
 {
@@ -3301,43 +3341,24 @@ void SCH_PAINTER::drawScopeWaveforms( const SCH_SYMBOL* aSymbol )
             const VECTOR2I periodExtent = font->StringBoundaryLimits(
                     measurement.periodLabel, textAttrs.m_Size, textAttrs.m_StrokeWidth,
                     false, false, KIFONT::METRICS::Default() );
-            const int textWidth = std::max( frequencyExtent.x, periodExtent.x );
             const int textGap = std::max( cursorTextSize * 2 / 3, arrowWidth * 2 );
-            const int leftSpace = x1 - plotBox.GetX();
-            const int rightSpace = plotBox.GetEnd().x - x2;
-            int textX = ( x1 + x2 ) / 2;
-            GR_TEXT_H_ALIGN_T textAlign = GR_TEXT_H_ALIGN_CENTER;
+            const BOX2I arrowSpan( VECTOR2I( x1, arrowY ), VECTOR2I( span, 0 ) );
+            const VECTOR2I arrowAnchor( ( x1 + x2 ) / 2, arrowY );
+            const SCH_SCOPE::CURSOR_LABEL_PLACEMENT frequencyPlacement =
+                    SCH_SCOPE::PlaceCursorLabel( plotBox, arrowSpan, arrowAnchor, frequencyExtent,
+                                                 textGap / 2,
+                                                 SCH_SCOPE::CURSOR_LABEL_PREFERENCE::TOP );
+            const SCH_SCOPE::CURSOR_LABEL_PLACEMENT periodPlacement =
+                    SCH_SCOPE::PlaceCursorLabel( plotBox, arrowSpan, arrowAnchor, periodExtent,
+                                                 textGap / 2,
+                                                 SCH_SCOPE::CURSOR_LABEL_PREFERENCE::BOTTOM );
 
-            if( span < textWidth + textGap * 2 )
-            {
-                if( rightSpace >= textWidth + textGap )
-                {
-                    textX = x2 + textGap + textWidth;
-                    textAlign = GR_TEXT_H_ALIGN_RIGHT;
-                }
-                else if( leftSpace >= textWidth + textGap )
-                {
-                    textX = x1 - textGap - textWidth;
-                    textAlign = GR_TEXT_H_ALIGN_LEFT;
-                }
-                else if( rightSpace >= leftSpace )
-                {
-                    textX = plotBox.GetEnd().x;
-                    textAlign = GR_TEXT_H_ALIGN_RIGHT;
-                }
-                else
-                {
-                    textX = plotBox.GetX();
-                    textAlign = GR_TEXT_H_ALIGN_LEFT;
-                }
-            }
-
-            drawScopeText( measurement.frequencyLabel,
-                           VECTOR2I( textX, arrowY - cursorTextSize - textGap / 2 ),
-                           textAlign, GR_TEXT_V_ALIGN_TOP, cursorColor );
-            drawScopeText( measurement.periodLabel,
-                           VECTOR2I( textX, arrowY + cursorTextSize + textGap / 2 ),
-                           textAlign, GR_TEXT_V_ALIGN_BOTTOM, cursorColor );
+            drawScopeText( measurement.frequencyLabel, frequencyPlacement.position,
+                           scopeCursorLabelHAlign( frequencyPlacement.alignment ),
+                           scopeCursorLabelVAlign( frequencyPlacement.alignment ), cursorColor );
+            drawScopeText( measurement.periodLabel, periodPlacement.position,
+                           scopeCursorLabelHAlign( periodPlacement.alignment ),
+                           scopeCursorLabelVAlign( periodPlacement.alignment ), cursorColor );
 
             VECTOR2I point1;
             VECTOR2I point2;
@@ -3363,33 +3384,16 @@ void SCH_PAINTER::drawScopeWaveforms( const SCH_SYMBOL* aSymbol )
                         false, false, KIFONT::METRICS::Default() );
                 const int labelWidth = std::max( cursorTextSize, yDeltaExtent.x );
                 const int labelHeight = std::max( cursorTextSize, yDeltaExtent.y );
-                const int yMinText = plotBox.GetY() + labelHeight / 2 + textGap;
-                const int yMaxText = plotBox.GetEnd().y - labelHeight / 2 - textGap;
-                const int labelY = yMinText <= yMaxText
-                                           ? std::clamp( ( y1 + y2 ) / 2, yMinText, yMaxText )
-                                           : ( y1 + y2 ) / 2;
-                GR_TEXT_H_ALIGN_T yDeltaAlign = GR_TEXT_H_ALIGN_CENTER;
-                int labelX = yArrowX;
-                const bool centeredLabel = ySpan >= labelHeight + textGap * 4
-                                           && yArrowX - labelWidth / 2 >= plotBox.GetX() + textGap
-                                           && yArrowX + labelWidth / 2
-                                                      <= plotBox.GetEnd().x - textGap;
-
-                if( !centeredLabel )
-                {
-                    if( yArrowX < plotBox.GetCenter().x )
-                    {
-                        labelX = std::min( yArrowX + textGap,
-                                           plotBox.GetEnd().x - labelWidth );
-                        yDeltaAlign = GR_TEXT_H_ALIGN_LEFT;
-                    }
-                    else
-                    {
-                        labelX = std::max( yArrowX - textGap,
-                                           plotBox.GetX() + labelWidth );
-                        yDeltaAlign = GR_TEXT_H_ALIGN_RIGHT;
-                    }
-                }
+                const BOX2I deltaSpan( VECTOR2I( plotBox.GetX(), y1 ),
+                                       VECTOR2I( plotBox.GetWidth(), ySpan ) );
+                const SCH_SCOPE::CURSOR_LABEL_PLACEMENT deltaPlacement =
+                        SCH_SCOPE::PlaceCursorLabel( plotBox, deltaSpan,
+                                                     VECTOR2I( yArrowX, ( y1 + y2 ) / 2 ),
+                                                     VECTOR2I( labelWidth, labelHeight ), textGap / 2,
+                                                     SCH_SCOPE::CURSOR_LABEL_PREFERENCE::CENTER );
+                const bool centeredLabel =
+                        deltaPlacement.alignment
+                        == SCH_SCOPE::CURSOR_LABEL_ALIGNMENT::CENTER_CENTER;
 
                 if( measurement.arrowVisible )
                 {
@@ -3405,8 +3409,8 @@ void SCH_PAINTER::drawScopeWaveforms( const SCH_SYMBOL* aSymbol )
                     {
                         if( centeredLabel )
                         {
-                            const int gapStart = labelY - labelHeight / 2 - textGap / 2;
-                            const int gapEnd = labelY + labelHeight / 2 + textGap / 2;
+                            const int gapStart = deltaPlacement.bounds.GetY() - textGap / 2;
+                            const int gapEnd = deltaPlacement.bounds.GetEnd().y + textGap / 2;
 
                             if( lineStart < gapStart )
                             {
@@ -3444,8 +3448,9 @@ void SCH_PAINTER::drawScopeWaveforms( const SCH_SYMBOL* aSymbol )
                     m_gal->DrawPolygon( bottomArrow, 3 );
                 }
 
-                drawScopeText( measurement.yDeltaLabel, VECTOR2I( labelX, labelY ),
-                               yDeltaAlign, GR_TEXT_V_ALIGN_CENTER, cursorColor );
+                drawScopeText( measurement.yDeltaLabel, deltaPlacement.position,
+                               scopeCursorLabelHAlign( deltaPlacement.alignment ),
+                               scopeCursorLabelVAlign( deltaPlacement.alignment ), cursorColor );
             }
 
             textAttrs.m_Size = VECTOR2I( textSize, textSize );
@@ -3469,25 +3474,17 @@ void SCH_PAINTER::drawScopeWaveforms( const SCH_SYMBOL* aSymbol )
                     false, false, KIFONT::METRICS::Default() );
             const int labelWidth = std::max( cursorTextSize, xExtent.x );
             const int labelHeight = std::max( cursorTextSize, xExtent.y );
-            int labelX = cursorX + textGap;
-            GR_TEXT_H_ALIGN_T xAlign = GR_TEXT_H_ALIGN_LEFT;
-
-            if( labelX + labelWidth > plotBox.GetEnd().x )
-            {
-                labelX = cursorX - textGap;
-                xAlign = GR_TEXT_H_ALIGN_RIGHT;
-            }
-
-            if( labelX - labelWidth < plotBox.GetX() )
-            {
-                labelX = plotBox.GetEnd().x - textGap;
-                xAlign = GR_TEXT_H_ALIGN_RIGHT;
-            }
-
-            const int labelY = std::min( plotBox.GetY() + textGap,
-                                         plotBox.GetEnd().y - labelHeight );
-            drawScopeText( measurement.cursorXLabel, VECTOR2I( labelX, labelY ),
-                           xAlign, GR_TEXT_V_ALIGN_TOP, cursorColor );
+            const BOX2I xLabelReference(
+                    VECTOR2I( plotBox.GetX(), plotBox.GetY() + labelHeight + textGap * 2 ),
+                    VECTOR2I( plotBox.GetWidth(), 0 ) );
+            const SCH_SCOPE::CURSOR_LABEL_PLACEMENT xPlacement =
+                    SCH_SCOPE::PlaceCursorLabel( plotBox, xLabelReference,
+                                                 VECTOR2I( cursorX, xLabelReference.GetY() ),
+                                                 VECTOR2I( labelWidth, labelHeight ), textGap,
+                                                 SCH_SCOPE::CURSOR_LABEL_PREFERENCE::TOP );
+            drawScopeText( measurement.cursorXLabel, xPlacement.position,
+                           scopeCursorLabelHAlign( xPlacement.alignment ),
+                           scopeCursorLabelVAlign( xPlacement.alignment ), cursorColor );
         }
 
         if( SCH_SCOPE::CursorToPlot( cursors.front(), viewport, plotBox, point ) )
@@ -3497,32 +3494,16 @@ void SCH_PAINTER::drawScopeWaveforms( const SCH_SYMBOL* aSymbol )
                     false, false, KIFONT::METRICS::Default() );
             const int labelWidth = std::max( cursorTextSize, yExtent.x );
             const int labelHeight = std::max( cursorTextSize, yExtent.y );
-            int labelX = plotBox.GetX() + textGap;
-            GR_TEXT_H_ALIGN_T yAlign = GR_TEXT_H_ALIGN_LEFT;
-
-            if( labelX + labelWidth > plotBox.GetEnd().x )
-            {
-                labelX = plotBox.GetEnd().x - textGap;
-                yAlign = GR_TEXT_H_ALIGN_RIGHT;
-            }
-
-            GR_TEXT_V_ALIGN_T yValign = GR_TEXT_V_ALIGN_BOTTOM;
-            int labelY = point.y - textGap;
-
-            if( labelY - labelHeight < plotBox.GetY() )
-            {
-                labelY = point.y + textGap;
-                yValign = GR_TEXT_V_ALIGN_TOP;
-            }
-
-            if( labelY + labelHeight > plotBox.GetEnd().y )
-            {
-                labelY = point.y - textGap;
-                yValign = GR_TEXT_V_ALIGN_BOTTOM;
-            }
-
-            drawScopeText( measurement.cursorYLabel, VECTOR2I( labelX, labelY ),
-                           yAlign, yValign, cursorColor );
+            const BOX2I yLabelReference( VECTOR2I( plotBox.GetX(), point.y ),
+                                          VECTOR2I( plotBox.GetWidth(), 0 ) );
+            const SCH_SCOPE::CURSOR_LABEL_PLACEMENT yPlacement =
+                    SCH_SCOPE::PlaceCursorLabel( plotBox, yLabelReference,
+                                                 VECTOR2I( plotBox.GetX(), point.y ),
+                                                 VECTOR2I( labelWidth, labelHeight ), textGap,
+                                                 SCH_SCOPE::CURSOR_LABEL_PREFERENCE::TOP );
+            drawScopeText( measurement.cursorYLabel, yPlacement.position,
+                           scopeCursorLabelHAlign( yPlacement.alignment ),
+                           scopeCursorLabelVAlign( yPlacement.alignment ), cursorColor );
         }
 
         textAttrs.m_Size = VECTOR2I( textSize, textSize );

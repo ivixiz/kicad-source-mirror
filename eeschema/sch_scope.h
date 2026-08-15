@@ -206,6 +206,41 @@ public:
         wxString cursorYLabel;
     };
 
+    /**
+     * The nine positions available to an on-canvas cursor label.
+     *
+     * The position names describe the label relative to its cursor or delta arrow, rather than
+     * the renderer's text-origin convention.  This keeps screen and plot exports independent of
+     * GAL/PLOTTER alignment enums.
+     */
+    enum class CURSOR_LABEL_ALIGNMENT
+    {
+        TOP_LEFT,
+        TOP_CENTER,
+        TOP_RIGHT,
+        CENTER_LEFT,
+        CENTER_CENTER,
+        CENTER_RIGHT,
+        BOTTOM_LEFT,
+        BOTTOM_CENTER,
+        BOTTOM_RIGHT
+    };
+
+    enum class CURSOR_LABEL_PREFERENCE
+    {
+        TOP,
+        CENTER,
+        BOTTOM
+    };
+
+    /** Renderer-neutral result of cursor-label placement. */
+    struct CURSOR_LABEL_PLACEMENT
+    {
+        CURSOR_LABEL_ALIGNMENT alignment = CURSOR_LABEL_ALIGNMENT::CENTER_CENTER;
+        VECTOR2I               position;
+        BOX2I                  bounds;
+    };
+
     SCH_SCOPE( const VECTOR2I& aPosition = VECTOR2I( 0, 0 ), SCH_LAYER_ID aLayer = LAYER_DEVICE,
                int aLineWidth = 0, FILL_T aFillType = FILL_T::FILLED_WITH_COLOR );
 
@@ -276,6 +311,18 @@ public:
                                const BOX2I& aPlotBox, int& aPosition );
     static bool CursorToPlot( const CURSOR& aCursor, const VIEWPORT& aViewport,
                               const BOX2I& aPlotBox, VECTOR2I& aPosition );
+    /**
+     * Pick a non-clipping one of nine label alignments around a cursor feature.
+     *
+     * aReferenceBox is the span a centered label must fit inside.  Side labels may move outside
+     * it but are always kept inside aPlotBox.  This makes a short cursor delta choose a top/bottom
+     * side label instead of painting across its two horizontal crosshair lines.
+     */
+    static CURSOR_LABEL_PLACEMENT PlaceCursorLabel( const BOX2I& aPlotBox,
+                                                     const BOX2I& aReferenceBox,
+                                                     const VECTOR2I& aAnchor,
+                                                     const VECTOR2I& aTextSize, int aGap,
+                                                     CURSOR_LABEL_PREFERENCE aPreference );
     /** Formatting helpers shared by the screen renderer and vector PDF renderer. */
     static wxString FormatEngineeringValue( double aValue );
     static wxString FormatWaveformLabel( const wxString& aSource );
