@@ -135,6 +135,8 @@ bool NETLIST_EXPORTER_SPICE::ReadSchematicAndLibraries( unsigned aNetlistOptions
     int                   ncCounter = 1;
     wxString              variant = m_schematic->GetCurrentVariant();
 
+    ReadDirectives( aNetlistOptions );
+
     m_nets.clear();
     m_items.clear();
     m_spiceReferenceNames.clear();
@@ -221,10 +223,6 @@ bool NETLIST_EXPORTER_SPICE::ReadSchematicAndLibraries( unsigned aNetlistOptions
             }
         }
     }
-
-    // Directives may name components (for example, a K mutual-inductor statement).  Read them
-    // after every symbol has contributed its SPICE-safe reference mapping.
-    ReadDirectives( aNetlistOptions );
 
     return !aReporter.HasMessageOfSeverity( RPT_SEVERITY_UNDEFINED | RPT_SEVERITY_ERROR );
 }
@@ -450,8 +448,7 @@ void NETLIST_EXPORTER_SPICE::ReadDirectives( unsigned aNetlistOptions )
             }
 
             if( foundDirective )
-                m_directives.emplace_back(
-                        normalizeDirectiveReferences( text, m_spiceReferenceNames ) );
+                m_directives.emplace_back( text );
         }
     }
 }
@@ -974,8 +971,10 @@ void NETLIST_EXPORTER_SPICE::WriteDirectives( const wxString& aSimCommand, unsig
                 return candidate == dir || candidate.StartsWith( dir + wxS( " " ) );
             };
 
-    for( const wxString& directive : m_directives )
+    for( const wxString& sourceDirective : m_directives )
     {
+        const wxString directive = normalizeDirectiveReferences( sourceDirective,
+                                                                  m_spiceReferenceNames );
         bool simCommand = false;
 
         if( directive.StartsWith( "." ) )

@@ -28,6 +28,7 @@
 #include <sch_symbol.h>
 #include <sch_screen.h>
 #include <sch_sheet_path.h>
+#include <sch_text.h>
 
 #include <wx/tokenzr.h>
 #include <wx/filename.h>
@@ -178,6 +179,42 @@ BOOST_AUTO_TEST_CASE( Rectifier )
     TestTranPoint( 0, { { "V(/in)", 0 }, { "V(/out)", 0 } } );
     TestTranPoint( 9250e-6, { { "V(/in)", 5 }, { "V(/out)", 4.26 } } );
     TestTranPoint( 10e-3, { { "V(/in)", 0 }, { "V(/out)", 4.24 } } );
+}
+
+
+BOOST_AUTO_TEST_CASE( FormattedReferencesAreRewrittenInNetlistDirectives )
+{
+    LoadSchematic( SchematicQAPath( wxS( "directives" ) ) );
+
+    SCH_SHEET_PATH primarySheet;
+    SCH_SYMBOL*    primary = findPrimaryUnit( m_schematic.get(), wxS( "L1" ), primarySheet );
+    BOOST_REQUIRE( primary );
+
+    primary->SetRef( &primarySheet, wxS( "L_{prim}" ) );
+
+    bool directiveUpdated = false;
+
+    for( SCH_ITEM* item : primarySheet.LastScreen()->Items().OfType( SCH_TEXT_T ) )
+    {
+        SCH_TEXT* text = static_cast<SCH_TEXT*>( item );
+
+        if( text->GetText().Contains( wxS( "K12" ) ) )
+        {
+            text->SetText( wxS( ".param k=0\nK12 L_{prim} L2 {k}" ) );
+            directiveUpdated = true;
+            break;
+        }
+    }
+
+    BOOST_REQUIRE( directiveUpdated );
+    WriteNetlist();
+
+    wxFFile  netlistFile( GetNetlistPath( true ), wxS( "rt" ) );
+    wxString netlist;
+    BOOST_REQUIRE( netlistFile.IsOpened() );
+    netlistFile.ReadAll( &netlist );
+
+    BOOST_CHECK_NE( netlist.Find( wxS( "K12 L_prim-ref L2 {k}" ) ), wxNOT_FOUND );
 }
 
 // FIXME: Fails due to some nondeterminism, seems related to convergence problems.
