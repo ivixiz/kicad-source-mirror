@@ -2237,13 +2237,83 @@ SCH_SCOPE::CURSOR_LABEL_PLACEMENT SCH_SCOPE::PlaceCursorLabel(
         CURSOR_LABEL_ALIGNMENT::CENTER_LEFT,
         CURSOR_LABEL_ALIGNMENT::CENTER_CENTER
     };
-    const auto& candidates = aPreference == CURSOR_LABEL_PREFERENCE::TOP
-                                     ? topFirst
-                                     : aPreference == CURSOR_LABEL_PREFERENCE::BOTTOM
-                                               ? bottomFirst
-                                               : centerFirst;
+    const std::array<CURSOR_LABEL_ALIGNMENT, 9> topRightFirst = {
+        CURSOR_LABEL_ALIGNMENT::TOP_RIGHT,
+        CURSOR_LABEL_ALIGNMENT::BOTTOM_RIGHT,
+        CURSOR_LABEL_ALIGNMENT::TOP_LEFT,
+        CURSOR_LABEL_ALIGNMENT::BOTTOM_LEFT,
+        CURSOR_LABEL_ALIGNMENT::CENTER_RIGHT,
+        CURSOR_LABEL_ALIGNMENT::CENTER_LEFT,
+        CURSOR_LABEL_ALIGNMENT::TOP_CENTER,
+        CURSOR_LABEL_ALIGNMENT::BOTTOM_CENTER,
+        CURSOR_LABEL_ALIGNMENT::CENTER_CENTER
+    };
+    const std::array<CURSOR_LABEL_ALIGNMENT, 9> topLeftFirst = {
+        CURSOR_LABEL_ALIGNMENT::TOP_LEFT,
+        CURSOR_LABEL_ALIGNMENT::BOTTOM_LEFT,
+        CURSOR_LABEL_ALIGNMENT::TOP_RIGHT,
+        CURSOR_LABEL_ALIGNMENT::BOTTOM_RIGHT,
+        CURSOR_LABEL_ALIGNMENT::CENTER_LEFT,
+        CURSOR_LABEL_ALIGNMENT::CENTER_RIGHT,
+        CURSOR_LABEL_ALIGNMENT::TOP_CENTER,
+        CURSOR_LABEL_ALIGNMENT::BOTTOM_CENTER,
+        CURSOR_LABEL_ALIGNMENT::CENTER_CENTER
+    };
+    const std::array<CURSOR_LABEL_ALIGNMENT, 9> bottomRightFirst = {
+        CURSOR_LABEL_ALIGNMENT::BOTTOM_RIGHT,
+        CURSOR_LABEL_ALIGNMENT::TOP_RIGHT,
+        CURSOR_LABEL_ALIGNMENT::BOTTOM_LEFT,
+        CURSOR_LABEL_ALIGNMENT::TOP_LEFT,
+        CURSOR_LABEL_ALIGNMENT::CENTER_RIGHT,
+        CURSOR_LABEL_ALIGNMENT::CENTER_LEFT,
+        CURSOR_LABEL_ALIGNMENT::BOTTOM_CENTER,
+        CURSOR_LABEL_ALIGNMENT::TOP_CENTER,
+        CURSOR_LABEL_ALIGNMENT::CENTER_CENTER
+    };
+    const std::array<CURSOR_LABEL_ALIGNMENT, 9> bottomLeftFirst = {
+        CURSOR_LABEL_ALIGNMENT::BOTTOM_LEFT,
+        CURSOR_LABEL_ALIGNMENT::TOP_LEFT,
+        CURSOR_LABEL_ALIGNMENT::BOTTOM_RIGHT,
+        CURSOR_LABEL_ALIGNMENT::TOP_RIGHT,
+        CURSOR_LABEL_ALIGNMENT::CENTER_LEFT,
+        CURSOR_LABEL_ALIGNMENT::CENTER_RIGHT,
+        CURSOR_LABEL_ALIGNMENT::BOTTOM_CENTER,
+        CURSOR_LABEL_ALIGNMENT::TOP_CENTER,
+        CURSOR_LABEL_ALIGNMENT::CENTER_CENTER
+    };
+    const std::array<CURSOR_LABEL_ALIGNMENT, 9>* candidates = &centerFirst;
 
-    for( CURSOR_LABEL_ALIGNMENT alignment : candidates )
+    switch( aPreference )
+    {
+    case CURSOR_LABEL_PREFERENCE::TOP:
+        candidates = &topFirst;
+        break;
+
+    case CURSOR_LABEL_PREFERENCE::TOP_RIGHT:
+        candidates = &topRightFirst;
+        break;
+
+    case CURSOR_LABEL_PREFERENCE::TOP_LEFT:
+        candidates = &topLeftFirst;
+        break;
+
+    case CURSOR_LABEL_PREFERENCE::BOTTOM:
+        candidates = &bottomFirst;
+        break;
+
+    case CURSOR_LABEL_PREFERENCE::BOTTOM_RIGHT:
+        candidates = &bottomRightFirst;
+        break;
+
+    case CURSOR_LABEL_PREFERENCE::BOTTOM_LEFT:
+        candidates = &bottomLeftFirst;
+        break;
+
+    case CURSOR_LABEL_PREFERENCE::CENTER:
+        break;
+    }
+
+    for( CURSOR_LABEL_ALIGNMENT alignment : *candidates )
     {
         const CURSOR_LABEL_PLACEMENT placement = makePlacement( alignment );
 
@@ -2257,11 +2327,15 @@ SCH_SCOPE::CURSOR_LABEL_PLACEMENT SCH_SCOPE::PlaceCursorLabel(
                                         || alignment == CURSOR_LABEL_ALIGNMENT::CENTER_CENTER
                                         || alignment == CURSOR_LABEL_ALIGNMENT::CENTER_RIGHT;
 
+        // A label which only just fits still makes the arrow look broken.  Treat the label and
+        // one gap on either side as its minimum centered span, then prefer a side placement.
         if( ( horizontallyCentered
-              && ( placement.bounds.GetX() < referenceBox.GetX()
+              && ( referenceBox.GetWidth() < width + gap * 2
+                   || placement.bounds.GetX() < referenceBox.GetX()
                    || placement.bounds.GetEnd().x > referenceBox.GetEnd().x ) )
             || ( verticallyCentered
-                 && ( placement.bounds.GetY() < referenceBox.GetY()
+                 && ( referenceBox.GetHeight() < height + gap * 2
+                      || placement.bounds.GetY() < referenceBox.GetY()
                       || placement.bounds.GetEnd().y > referenceBox.GetEnd().y ) ) )
         {
             continue;
@@ -2950,15 +3024,30 @@ void SCH_SCOPE::PlotWaveforms( PLOTTER* aPlotter, const SCH_SYMBOL* aSymbol )
             const VECTOR2I periodExtent = font->StringBoundaryLimits(
                     measurement.periodLabel, textAttrs.m_Size, textAttrs.m_StrokeWidth,
                     false, false, KIFONT::METRICS::Default() );
-            const int textGap = std::max( cursorTextSize * 2 / 3, arrowWidth * 2 );
+            const int textGap = std::max( cursorTextSize / 3, arrowWidth );
             const BOX2I arrowSpan( VECTOR2I( x1, arrowY ), VECTOR2I( span, 0 ) );
             const VECTOR2I arrowAnchor( ( x1 + x2 ) / 2, arrowY );
+            const int widestLabel = std::max( frequencyExtent.x, periodExtent.x );
+            const bool narrowSpan = span < widestLabel + textGap * 2;
+            const bool placeLabelsRight =
+                    x2 + widestLabel + textGap <= layout.plotBox.GetEnd().x;
+            const VECTOR2I labelAnchor = narrowSpan
+                                                ? VECTOR2I( placeLabelsRight ? x2 : x1, arrowY )
+                                                : arrowAnchor;
+            const CURSOR_LABEL_PREFERENCE frequencyPreference = narrowSpan
+                    ? ( placeLabelsRight ? CURSOR_LABEL_PREFERENCE::TOP_RIGHT
+                                         : CURSOR_LABEL_PREFERENCE::TOP_LEFT )
+                    : CURSOR_LABEL_PREFERENCE::TOP;
+            const CURSOR_LABEL_PREFERENCE periodPreference = narrowSpan
+                    ? ( placeLabelsRight ? CURSOR_LABEL_PREFERENCE::BOTTOM_RIGHT
+                                         : CURSOR_LABEL_PREFERENCE::BOTTOM_LEFT )
+                    : CURSOR_LABEL_PREFERENCE::BOTTOM;
             const CURSOR_LABEL_PLACEMENT frequencyPlacement = PlaceCursorLabel(
-                    layout.plotBox, arrowSpan, arrowAnchor, frequencyExtent, textGap / 2,
-                    CURSOR_LABEL_PREFERENCE::TOP );
+                    layout.plotBox, arrowSpan, labelAnchor, frequencyExtent, textGap,
+                    frequencyPreference );
             const CURSOR_LABEL_PLACEMENT periodPlacement = PlaceCursorLabel(
-                    layout.plotBox, arrowSpan, arrowAnchor, periodExtent, textGap / 2,
-                    CURSOR_LABEL_PREFERENCE::BOTTOM );
+                    layout.plotBox, arrowSpan, labelAnchor, periodExtent, textGap,
+                    periodPreference );
 
             textAttrs.m_Angle = ANGLE_0;
             textAttrs.m_Halign = scopeCursorLabelHAlign( frequencyPlacement.alignment );
@@ -2998,10 +3087,16 @@ void SCH_SCOPE::PlotWaveforms( PLOTTER* aPlotter, const SCH_SYMBOL* aSymbol )
                 const int labelHeight = std::max( cursorTextSize, yDeltaExtent.y );
                 const BOX2I deltaSpan( VECTOR2I( layout.plotBox.GetX(), y1 ),
                                        VECTOR2I( layout.plotBox.GetWidth(), ySpan ) );
+                const bool narrowDelta = ySpan < labelHeight + textGap * 2;
+                const bool placeDeltaRight =
+                        yArrowX + labelWidth + textGap <= layout.plotBox.GetEnd().x;
+                const CURSOR_LABEL_PREFERENCE deltaPreference = narrowDelta
+                        ? ( placeDeltaRight ? CURSOR_LABEL_PREFERENCE::TOP_RIGHT
+                                            : CURSOR_LABEL_PREFERENCE::TOP_LEFT )
+                        : CURSOR_LABEL_PREFERENCE::CENTER;
                 const CURSOR_LABEL_PLACEMENT deltaPlacement = PlaceCursorLabel(
                         layout.plotBox, deltaSpan, VECTOR2I( yArrowX, ( y1 + y2 ) / 2 ),
-                        VECTOR2I( labelWidth, labelHeight ), textGap / 2,
-                        CURSOR_LABEL_PREFERENCE::CENTER );
+                        VECTOR2I( labelWidth, labelHeight ), textGap, deltaPreference );
                 const bool centeredLabel =
                         deltaPlacement.alignment == CURSOR_LABEL_ALIGNMENT::CENTER_CENTER;
 
@@ -3078,10 +3173,11 @@ void SCH_SCOPE::PlotWaveforms( PLOTTER* aPlotter, const SCH_SYMBOL* aSymbol )
                     false, false, KIFONT::METRICS::Default() );
             const int labelWidth = std::max( cursorTextSize, xExtent.x );
             const int labelHeight = std::max( cursorTextSize, xExtent.y );
+            // A zero-width reference prevents the X label from being centered on the vertical
+            // cursor line.  The common placement helper chooses the free left or right side.
             const BOX2I xLabelReference(
-                    VECTOR2I( layout.plotBox.GetX(), layout.plotBox.GetY() + labelHeight
-                                                    + textGap * 2 ),
-                    VECTOR2I( layout.plotBox.GetWidth(), 0 ) );
+                    VECTOR2I( cursorX, layout.plotBox.GetY() + labelHeight + textGap * 2 ),
+                    VECTOR2I( 0, 0 ) );
             const CURSOR_LABEL_PLACEMENT xPlacement = PlaceCursorLabel(
                     layout.plotBox, xLabelReference,
                     VECTOR2I( cursorX, xLabelReference.GetY() ),

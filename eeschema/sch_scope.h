@@ -229,8 +229,12 @@ public:
     enum class CURSOR_LABEL_PREFERENCE
     {
         TOP,
+        TOP_RIGHT,
+        TOP_LEFT,
         CENTER,
-        BOTTOM
+        BOTTOM,
+        BOTTOM_RIGHT,
+        BOTTOM_LEFT
     };
 
     /** Renderer-neutral result of cursor-label placement. */
