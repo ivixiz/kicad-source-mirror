@@ -801,17 +801,16 @@ void SCH_SELECTION_TOOL::Reset( RESET_REASON aReason )
 
 int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
 {
-    // TOOL_MANAGER restores VIEW_CONTROLS settings belonging to the active tool.  A picker
-    // started by the Simulator can therefore resume Selection with a stale drawing crosshair
-    // after Escape.  Selection has no interactive geometry of its own, so reset both cursor
-    // settings as soon as this state becomes active.
-    getViewControls()->ShowCursor( false );
-    getViewControls()->ForceCursorPosition( false );
-
     m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
 
     KIID lastRolloverItemId = niluuid;
     EE_GRID_HELPER grid( m_toolMgr );
+
+    // This helper only determines whether passive hover can auto-start a drawing tool.  Snap
+    // inference would otherwise display construction guides and snap markers before any tool is
+    // active, which makes the transient preview look like a stuck drawing crosshair.
+    grid.SetSnap( false );
+    grid.SetSnapLine( false );
 
     auto pinOrientation =
         []( EDA_ITEM* aItem )
