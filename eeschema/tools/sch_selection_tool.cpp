@@ -801,6 +801,13 @@ void SCH_SELECTION_TOOL::Reset( RESET_REASON aReason )
 
 int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
 {
+    // TOOL_MANAGER restores VIEW_CONTROLS settings belonging to the active tool.  A picker
+    // started by the Simulator can therefore resume Selection with a stale drawing crosshair
+    // after Escape.  Selection has no interactive geometry of its own, so reset both cursor
+    // settings as soon as this state becomes active.
+    getViewControls()->ShowCursor( false );
+    getViewControls()->ForceCursorPosition( false );
+
     m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
 
     KIID lastRolloverItemId = niluuid;
