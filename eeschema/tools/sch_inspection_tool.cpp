@@ -1269,7 +1269,6 @@ int SCH_INSPECTION_TOOL::RunSimulation( const TOOL_EVENT& aEvent )
     if( wxWindow* blocking_win = simFrame->Kiway().GetBlockingDialog() )
         blocking_win->Close( true );
 
-    simFrame->SuppressNextAutoProbe();
     simFrame->Show( true );
 
     // On Windows, Raise() does not bring the window on screen, when iconized
@@ -1311,7 +1310,6 @@ int SCH_INSPECTION_TOOL::ControlSimulation( const TOOL_EVENT& aEvent )
         if( wxWindow* blockingWindow = simFrame->Kiway().GetBlockingDialog() )
             blockingWindow->Close( true );
 
-        simFrame->SuppressNextAutoProbe();
         simFrame->Show( true );
 
         if( simFrame->IsIconized() )

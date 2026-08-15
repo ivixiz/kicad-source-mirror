@@ -148,9 +148,6 @@ public:
      */
     void AddUserDefinedTrace( const wxString& aExpression, bool aClearOthers = false );
 
-    /** Ignore the synthetic canvas-enter event produced while this window is being raised. */
-    void SuppressNextAutoProbe() { m_suppressNextAutoProbe = true; }
-
     /**
      * Add a voltage trace for a given net to the current plot.
      *
@@ -232,11 +229,7 @@ public:
     void SetAutoProbeTuneActive( bool aActive )
     {
         m_autoProbeTuneActive = aActive;
-
-        if( aActive )
-            m_autoProbeActive = false;
     }
-    void NotifySchematicProbeFinished();
     wxString TakeSimReportMessages();
 
     // Simulator doesn't host a canvas
@@ -265,12 +258,6 @@ private:
     bool canCloseWindow( wxCloseEvent& aEvent ) override;
     void doCloseWindow() override;
 
-    void bindSchematicCanvasHandlers();
-    void unbindSchematicCanvasHandlers();
-    void startAutoProbe();
-
-    void onSchematicCanvasEnter( wxMouseEvent& aEvent );
-
     void onUpdateSim( wxCommandEvent& aEvent );
     void onSimStarted( wxCommandEvent& aEvent );
     void onSimFinished( wxCommandEvent& aEvent );
@@ -289,10 +276,7 @@ private:
 
     bool                                 m_simFinished;
     bool                                 m_workbookModified;
-    bool                                 m_autoProbeActive;
     bool                                 m_autoProbeTuneActive;
-    bool                                 m_autoProbeHandlersBound;
-    bool                                 m_suppressNextAutoProbe = false;
 };
 
 // Commands

@@ -1135,8 +1135,6 @@ int SCH_EDITOR_CONTROL::SimProbe( const TOOL_EVENT& aEvent )
                 selectionTool->ClearSelection();
                 m_toolMgr->PostAction( ACTIONS::selectionActivate );
 
-                if( KIWAY_PLAYER* simFrame = m_frame->Kiway().Player( FRAME_SIMULATOR, false ) )
-                    static_cast<SIMULATOR_FRAME*>( simFrame )->NotifySchematicProbeFinished();
             } );
 
     m_toolMgr->RunAction( ACTIONS::pickerTool, &aEvent );
