@@ -789,6 +789,25 @@ int SCH_EDITOR_CONTROL::SimProbe( const TOOL_EVENT& aEvent )
 
     auto lastDiffSignal = std::make_shared<wxString>();
 
+    // PICKER_TOOL invokes its finalizer before it pops itself from the user tool stack.  Defer
+    // restoring Selection until that pop is complete; otherwise the reactivated tool can restore
+    // a stale forced canvas cursor after Escape.
+    auto restoreSelectionCursor = [this]()
+            {
+                m_frame->CallAfter(
+                        [this]()
+                        {
+                            if( !m_frame->ToolStackIsEmpty() )
+                                return;
+
+                            KIGFX::VIEW_CONTROLS* controls = getViewControls();
+                            controls->ForceCursorPosition( false );
+                            controls->ShowCursor( false );
+                            m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
+                            m_toolMgr->PostAction( ACTIONS::selectionActivate );
+                        } );
+            };
+
     auto spiceNetAt =
             [this]( const VECTOR2D& aPosition, wxString& aSpiceNet ) -> bool
             {
@@ -1119,7 +1138,7 @@ int SCH_EDITOR_CONTROL::SimProbe( const TOOL_EVENT& aEvent )
             } );
 
     picker->SetFinalizeHandler(
-            [this]( const int& aFinalState )
+            [this, restoreSelectionCursor]( const int& aFinalState )
             {
                 if( m_pickerItem )
                     m_toolMgr->GetTool<SCH_SELECTION_TOOL>()->UnbrightenItem( m_pickerItem );
@@ -1137,8 +1156,7 @@ int SCH_EDITOR_CONTROL::SimProbe( const TOOL_EVENT& aEvent )
                 // ( avoid crash in some cases when the SimProbe tool is deselected )
                 SCH_SELECTION_TOOL* selectionTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
                 selectionTool->ClearSelection();
-                m_toolMgr->PostAction( ACTIONS::selectionActivate );
-                getViewControls()->ShowCursor( false );
+                restoreSelectionCursor();
 
                 if( KIWAY_PLAYER* simFrame = m_frame->Kiway().Player( FRAME_SIMULATOR, false ) )
                     static_cast<SIMULATOR_FRAME*>( simFrame )->NotifySchematicProbeFinished();
@@ -1162,6 +1180,22 @@ int SCH_EDITOR_CONTROL::SimTune( const TOOL_EVENT& aEvent )
     picker->SetCursor( KICURSOR::TUNE );
     picker->SetSnapping( false );
     picker->ClearHandlers();
+
+    auto restoreSelectionCursor = [this]()
+            {
+                m_frame->CallAfter(
+                        [this]()
+                        {
+                            if( !m_frame->ToolStackIsEmpty() )
+                                return;
+
+                            KIGFX::VIEW_CONTROLS* controls = getViewControls();
+                            controls->ForceCursorPosition( false );
+                            controls->ShowCursor( false );
+                            m_frame->GetCanvas()->SetCurrentCursor( KICURSOR::ARROW );
+                            m_toolMgr->PostAction( ACTIONS::selectionActivate );
+                        } );
+            };
 
     picker->SetClickHandler(
             [this]( const VECTOR2D& aPosition )
@@ -1227,7 +1261,7 @@ int SCH_EDITOR_CONTROL::SimTune( const TOOL_EVENT& aEvent )
             } );
 
     picker->SetFinalizeHandler(
-            [this]( const int& aFinalState )
+            [this, restoreSelectionCursor]( const int& aFinalState )
             {
                 if( m_pickerItem )
                     m_toolMgr->GetTool<SCH_SELECTION_TOOL>()->UnbrightenItem( m_pickerItem );
@@ -1237,8 +1271,7 @@ int SCH_EDITOR_CONTROL::SimTune( const TOOL_EVENT& aEvent )
                 // ( avoid crash in some cases when the SimTune tool is deselected )
                 SCH_SELECTION_TOOL* selectionTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
                 selectionTool->ClearSelection();
-                m_toolMgr->PostAction( ACTIONS::selectionActivate );
-                getViewControls()->ShowCursor( false );
+                restoreSelectionCursor();
 
                 if( KIWAY_PLAYER* simFrame = m_frame->Kiway().Player( FRAME_SIMULATOR, false ) )
                     static_cast<SIMULATOR_FRAME*>( simFrame )->SetAutoProbeTuneActive( false );
