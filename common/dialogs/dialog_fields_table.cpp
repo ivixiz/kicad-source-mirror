@@ -90,6 +90,9 @@ void DIALOG_FIELDS_TABLE::OnTableColSize( wxGridSizeEvent& aEvent )
 {
     aEvent.Skip();
 
+    // Native wxGrid headers are separate controls and may lag one layout behind after a resize.
+    // Coalesce their update to avoid doing work for every intermediate drag position.
+    m_grid->ScheduleNativeHeaderRefresh();
     m_grid->ForceRefresh();
 }
 

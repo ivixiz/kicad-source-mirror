@@ -22,6 +22,7 @@
 #include <wx/dc.h>
 #include <wx/settings.h>
 #include <wx/event.h> // Needed for textentry.h on MSW
+#include <wx/headerctrl.h>
 #include <wx/textentry.h>
 
 #include <widgets/indicator_icon.h>
@@ -608,6 +609,34 @@ void WX_GRID::ShowHideColumns( const wxString& shownColumns )
         if( colNumber >= 0 && colNumber < GetNumberCols() )
             ShowCol( (int) colNumber );
     }
+}
+
+
+void WX_GRID::ScheduleNativeHeaderRefresh()
+{
+    if( !IsUsingNativeHeader() || m_nativeHeaderRefreshPending )
+        return;
+
+    m_nativeHeaderRefreshPending = true;
+
+    // Let wxGrid finish its current geometry update before synchronizing the separate header
+    // control.  This also folds a batch of ShowCol(), HideCol(), and SetColSize() calls into one
+    // inexpensive header update.
+    CallAfter(
+            [this]()
+            {
+                m_nativeHeaderRefreshPending = false;
+
+                if( !IsUsingNativeHeader() )
+                    return;
+
+                wxHeaderCtrl* header = GetGridColHeader();
+
+                for( int col = 0; col < GetNumberCols(); ++col )
+                    header->UpdateColumn( col );
+
+                header->Refresh();
+            } );
 }
 
 

@@ -342,6 +342,15 @@ public:
      */
     void SetupColumnAutosizer( int aFlexibleCol );
 
+    /**
+     * Queue a refresh of the native column header after a batch of programmatic column changes.
+     *
+     * wxGrid keeps a separate wxHeaderCtrl for native headers.  Updating column visibility,
+     * widths, or order in a batch can otherwise leave its cached geometry one update behind the
+     * grid body.
+     */
+    void ScheduleNativeHeaderRefresh();
+
     void SetGridWidthsDirty() { m_gridWidthsDirty = true; }
 
     ROW_ICON_PROVIDER* GetRowIconProvider() const { return m_rowIconProvider; }
@@ -408,6 +417,7 @@ protected:
     int                        m_flexibleCol;
 
     bool                       m_gridWidthsDirty = true;
+    bool                       m_nativeHeaderRefreshPending = false;
     int                        m_gridWidth = 0;
 
     ROW_ICON_PROVIDER*         m_rowIconProvider;

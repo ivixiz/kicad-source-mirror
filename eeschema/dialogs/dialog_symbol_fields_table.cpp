@@ -567,6 +567,7 @@ void DIALOG_SYMBOL_FIELDS_TABLE::SetupAllColumnProperties()
 
     m_dataModel->SetSorting( sortCol, sortAscending );
     m_grid->SetSortingColumn( sortCol, sortAscending );
+    m_grid->ScheduleNativeHeaderRefresh();
 }
 
 
@@ -1144,6 +1145,7 @@ void DIALOG_SYMBOL_FIELDS_TABLE::ShowHideColumn( int aCol, bool aShow )
     else
         m_grid->HideCol( aCol );
 
+    m_grid->ScheduleNativeHeaderRefresh();
     m_dataModel->SetShowColumn( aCol, aShow );
 
     syncBomPresetSelection();
