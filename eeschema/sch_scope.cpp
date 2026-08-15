@@ -502,7 +502,7 @@ void removePinsByNumber( LIB_SYMBOL* aSymbol, const wxString& aNumber )
 
 // Scope configuration is a hidden field on the placed symbol so it travels with the schematic.
 const wxString SCOPE_WAVEFORMS_FIELD = wxS( "__ScopeWaveforms" );
-constexpr int  SCOPE_SETTINGS_VERSION = 3;
+constexpr int  SCOPE_SETTINGS_VERSION = 4;
 
 // Drop numerical residue from adaptive simulation steps before calculating visible bounds.
 constexpr double SCOPE_ZERO_CLIP = 1e-18;
@@ -715,6 +715,8 @@ SCH_SCOPE::SETTINGS parseSettings( const wxString& aSerialized )
         settings.axisTextSize = axis.value( "text_size", settings.axisTextSize );
     }
 
+    settings.viewLocked = root.value( "view_locked", settings.viewLocked );
+
     settings.sources.clear();
 
     if( root.contains( "sources" ) && root["sources"].is_array() )
@@ -762,6 +764,7 @@ wxString serializeSettings( const SCH_SCOPE::SETTINGS& aSettings )
         { "font", std::string( aSettings.axisFontName.ToUTF8() ) },
         { "text_size", aSettings.axisTextSize }
     };
+    root["view_locked"] = aSettings.viewLocked;
     root["sources"] = nlohmann::json::array();
 
     for( const SCH_SCOPE::WAVEFORM_SOURCE& source : aSettings.sources )
@@ -1180,7 +1183,8 @@ bool SCH_SCOPE::SETTINGS::operator==( const SETTINGS& aOther ) const
            && minorGridStyle == aOther.minorGridStyle
            && minorGridColor == aOther.minorGridColor
            && minorGridWidth == aOther.minorGridWidth
-           && axisFontName == aOther.axisFontName && axisTextSize == aOther.axisTextSize;
+           && axisFontName == aOther.axisFontName && axisTextSize == aOther.axisTextSize
+           && viewLocked == aOther.viewLocked;
 }
 
 
@@ -1582,6 +1586,7 @@ SCH_SCOPE::SETTINGS SCH_SCOPE::DefaultSettings()
     settings.minorGridWidth = schIUScale.mmToIU( 0.05 );
     settings.axisFontName = wxEmptyString;
     settings.axisTextSize = schIUScale.mmToIU( 0.8 );
+    settings.viewLocked = false;
     return settings;
 }
 

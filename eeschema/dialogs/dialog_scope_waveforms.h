@@ -27,6 +27,7 @@ class STD_BITMAP_BUTTON;
 class UNIT_BINDER;
 class WX_GRID;
 class wxBitmapComboBox;
+class wxCheckBox;
 class wxListBox;
 class wxSearchCtrl;
 class wxStaticText;
@@ -96,6 +97,7 @@ private:
     wxTextCtrl*           m_gridWidthCtrl;
     wxTextCtrl*           m_minorGridWidthCtrl;
     wxTextCtrl*           m_axisTextSizeCtrl;
+    wxCheckBox*           m_lockView;
     std::unique_ptr<UNIT_BINDER> m_borderWidth;
     std::unique_ptr<UNIT_BINDER> m_gridWidth;
     std::unique_ptr<UNIT_BINDER> m_minorGridWidth;

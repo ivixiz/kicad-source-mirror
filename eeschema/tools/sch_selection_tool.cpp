@@ -1523,6 +1523,7 @@ int SCH_SELECTION_TOOL::Main( const TOOL_EVENT& aEvent )
                 // Use the scope cursor only over the plot.  Its border and legend must retain
                 // ordinary selection and Ctrl+click removal behaviour.
                 if( SCH_SCOPE::IsScopeSymbol( symbol )
+                    && !SCH_SCOPE::GetSettings( symbol ).viewLocked
                     && SCH_SCOPE::GetLayout( symbol ).plotBox.Contains(
                             KiROUND( evt->Position() ) ) )
                 {
@@ -3483,7 +3484,7 @@ bool SCH_SELECTION_TOOL::removeScopeWaveformAt( const VECTOR2I& aWhere )
 
         SCH_SCOPE::SETTINGS settings = SCH_SCOPE::GetSettings( symbol );
 
-        if( sourceIndex >= static_cast<int>( settings.sources.size() ) )
+        if( settings.viewLocked || sourceIndex >= static_cast<int>( settings.sources.size() ) )
             return false;
 
         SCH_COMMIT commit( m_toolMgr );

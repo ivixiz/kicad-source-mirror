@@ -158,7 +158,7 @@ bool SCH_DRAW_PANEL::scopeCursorAddEdgeAt( const wxPoint& aPosition,
 
     const SCH_SCOPE::SETTINGS settings = SCH_SCOPE::GetSettings( scope );
 
-    if( settings.sources.empty() )
+    if( settings.viewLocked || settings.sources.empty() )
         return false;
 
     const SCH_SCOPE::LAYOUT layout = SCH_SCOPE::GetLayout( scope );
@@ -238,7 +238,7 @@ void SCH_DRAW_PANEL::onScopeMouseWheel( wxMouseEvent& aEvent )
 {
     SCH_SYMBOL* scope = scopeAt( aEvent.GetPosition() );
 
-    if( !scope || aEvent.AltDown()
+    if( !scope || SCH_SCOPE::GetSettings( scope ).viewLocked || aEvent.AltDown()
         || ( aEvent.ControlDown() && aEvent.ShiftDown() ) )
     {
         aEvent.Skip();
@@ -282,6 +282,13 @@ void SCH_DRAW_PANEL::onScopeLeftDown( wxMouseEvent& aEvent )
     SCH_SYMBOL* scope = scopeAt( aEvent.GetPosition() );
 
     if( !scope )
+    {
+        aEvent.Skip();
+        return;
+    }
+
+    // Let selection tools handle a locked scope; no canvas gesture may change its view state.
+    if( SCH_SCOPE::GetSettings( scope ).viewLocked )
     {
         aEvent.Skip();
         return;
@@ -474,6 +481,13 @@ void SCH_DRAW_PANEL::onScopeMiddleDown( wxMouseEvent& aEvent )
 
     if( !m_scopePanTarget )
     {
+        aEvent.Skip();
+        return;
+    }
+
+    if( SCH_SCOPE::GetSettings( m_scopePanTarget ).viewLocked )
+    {
+        m_scopePanTarget = nullptr;
         aEvent.Skip();
         return;
     }

@@ -26,6 +26,7 @@
 #include <set>
 #include <wx/bmpcbox.h>
 #include <wx/button.h>
+#include <wx/checkbox.h>
 #include <wx/listbox.h>
 #include <wx/msgdlg.h>
 #include <wx/sizer.h>
@@ -154,6 +155,19 @@ DIALOG_SCOPE_WAVEFORMS::DIALOG_SCOPE_WAVEFORMS( SCH_EDIT_FRAME* aParent,
                                             m_settings.backgroundColor, wxID_ANY, canvasColor,
                                             defaults.backgroundColor, SWATCH_MEDIUM, true );
     appearanceGrid->Add( m_backgroundSwatch, 0, wxALIGN_CENTER_VERTICAL );
+    appearanceGrid->AddSpacer( 1 );
+    appearanceGrid->AddSpacer( 1 );
+    appearanceGrid->AddSpacer( 1 );
+    appearanceGrid->AddSpacer( 1 );
+
+    appearanceGrid->Add( new wxStaticText( appearanceSizer->GetStaticBox(), wxID_ANY,
+                                           _( "Graph view:" ) ),
+                         0, wxALIGN_CENTER_VERTICAL );
+    m_lockView = new wxCheckBox( appearanceSizer->GetStaticBox(), wxID_ANY,
+                                 _( "Lock graph view" ) );
+    m_lockView->SetValue( m_settings.viewLocked );
+    m_lockView->SetToolTip( _( "Prevent pan, zoom, cursor changes, and waveform removal on the canvas" ) );
+    appearanceGrid->Add( m_lockView, 0, wxALIGN_CENTER_VERTICAL );
     appearanceGrid->AddSpacer( 1 );
     appearanceGrid->AddSpacer( 1 );
     appearanceGrid->AddSpacer( 1 );
@@ -334,6 +348,7 @@ bool DIALOG_SCOPE_WAVEFORMS::TransferDataFromWindow()
     KIFONT::FONT* axisFont = m_axisFont->GetFontSelection( false, false );
     m_settings.axisFontName = axisFont ? axisFont->GetName() : wxString();
     m_settings.axisTextSize = m_axisTextSize->GetIntValue();
+    m_settings.viewLocked = m_lockView->GetValue();
     return DIALOG_SHIM::TransferDataFromWindow();
 }
 

@@ -119,6 +119,8 @@ public:
         int                          minorGridWidth = 0;
         wxString                     axisFontName;
         int                          axisTextSize = 0;
+        // Persisted with the scope so accidental canvas gestures cannot alter its inspection view.
+        bool                         viewLocked = false;
 
         bool operator==( const SETTINGS& aOther ) const;
         bool operator!=( const SETTINGS& aOther ) const { return !( *this == aOther ); }
