@@ -19,6 +19,9 @@
  */
 
 #include <pgm_base.h>
+#include <eda_base_frame.h>
+#include <kiway.h>
+#include <sch_edit_frame.h>
 #include <widgets/ui_common.h>
 #include <settings/settings_manager.h>
 #include <symbol_editor/symbol_editor_settings.h>
@@ -43,7 +46,8 @@ PANEL_SYM_EDITING_OPTIONS::PANEL_SYM_EDITING_OPTIONS( wxWindow* aWindow,
                        m_pinNameSizeUnits ),
         m_pinNumberSize( aUnitsProvider, aEventSource, m_pinNumSizeLabel, m_pinNumSizeCtrl,
                          m_pinNumSizeUnits ),
-        m_pinPitch( aUnitsProvider, aEventSource, m_pinPitchLabel, m_pinPitchCtrl, m_pinPitchUnits )
+        m_pinPitch( aUnitsProvider, aEventSource, m_pinPitchLabel, m_pinPitchCtrl, m_pinPitchUnits ),
+        m_eventSource( aEventSource )
 {
     // These defaults are persisted in IU so metric values do not round through whole mils.
     m_textSize.SetUnits( EDA_UNITS::MM );
@@ -80,6 +84,8 @@ bool PANEL_SYM_EDITING_OPTIONS::TransferDataFromWindow()
 {
     if( SYMBOL_EDITOR_SETTINGS* cfg = GetAppSettings<SYMBOL_EDITOR_SETTINGS>( "symbol_editor" ) )
     {
+        const int previousJunctionSize = cfg->m_Defaults.junction_size_iu;
+
         cfg->m_Defaults.line_width = schIUScale.IUToMils( m_lineWidth.GetIntValue() );
         cfg->m_Defaults.text_size = schIUScale.IUToMils( m_textSize.GetIntValue() );
         cfg->m_Defaults.text_size_iu = m_textSize.GetIntValue();
@@ -95,9 +101,35 @@ bool PANEL_SYM_EDITING_OPTIONS::TransferDataFromWindow()
 
         // Force pin_step to a grid multiple
         cfg->m_Repeat.pin_step = KiROUND( double( cfg->m_Repeat.pin_step ) / MIN_GRID ) * MIN_GRID;
+
+        if( previousJunctionSize != cfg->m_Defaults.junction_size_iu )
+            refreshSchematicJunctions();
     }
 
     return true;
+}
+
+
+void PANEL_SYM_EDITING_OPTIONS::refreshSchematicJunctions()
+{
+    EDA_BASE_FRAME* eventFrame = dynamic_cast<EDA_BASE_FRAME*>( m_eventSource );
+
+    if( !eventFrame )
+        return;
+
+    SCH_EDIT_FRAME* schematicFrame = dynamic_cast<SCH_EDIT_FRAME*>( eventFrame );
+
+    if( !schematicFrame )
+        schematicFrame = dynamic_cast<SCH_EDIT_FRAME*>(
+                eventFrame->Kiway().Player( FRAME_SCH, false ) );
+
+    if( schematicFrame && schematicFrame->GetCanvas() )
+    {
+        // Junction bounds depend on the default.  Rebuild the cached view bounds once, rather
+        // than touching every junction or changing the schematic file.
+        schematicFrame->GetCanvas()->GetView()->UpdateAllItems( KIGFX::ALL );
+        schematicFrame->GetCanvas()->ForceRefresh();
+    }
 }
 
 

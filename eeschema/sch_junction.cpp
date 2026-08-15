@@ -127,10 +127,13 @@ SHAPE_CIRCLE SCH_JUNCTION::getEffectiveShape() const
 {
     if( m_diameter != 0 )
         m_lastResolvedDiameter = m_diameter;
+    // An explicitly configured editor default is shared by all schematic junctions.  Leave
+    // existing projects that have no such setting on their project-level fallback.
+    else if( SYMBOL_EDITOR_SETTINGS* cfg = GetAppSettings<SYMBOL_EDITOR_SETTINGS>( "symbol_editor" );
+             cfg && cfg->m_Defaults.junction_size_iu > 0 )
+        m_lastResolvedDiameter = cfg->GetDefaultJunctionSize();
     else if( Schematic() )
         m_lastResolvedDiameter = Schematic()->Settings().GetJunctionSize();
-    else if( SYMBOL_EDITOR_SETTINGS* cfg = GetAppSettings<SYMBOL_EDITOR_SETTINGS>( "symbol_editor" ) )
-        m_lastResolvedDiameter = cfg->GetDefaultJunctionSize();
     else
         m_lastResolvedDiameter = schIUScale.MilsToIU( DEFAULT_JUNCTION_DIAM );
 

@@ -39,6 +39,7 @@ public:
 
 private:
     void loadSymEditorSettings( SYMBOL_EDITOR_SETTINGS* aCfg );
+    void refreshSchematicJunctions();
 
     void onKillFocusPinPitch( wxFocusEvent& aEvent ) override;
 
@@ -52,6 +53,8 @@ private:
     UNIT_BINDER        m_pinNumberSize;
 
     UNIT_BINDER        m_pinPitch;
+
+    wxWindow*          m_eventSource;
 };
 
 
