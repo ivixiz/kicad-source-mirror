@@ -508,7 +508,8 @@ void SCH_EDIT_FRAME::AnnotateSymbols( SCH_COMMIT* aCommit, ANNOTATE_SCOPE_T aAnn
 
 
 int SCH_EDIT_FRAME::CheckAnnotate( ANNOTATION_ERROR_HANDLER aErrorHandler, ANNOTATE_SCOPE_T aAnnotateScope,
-                                   bool aRecursive, SYMBOL_FILTER aSymbolFilter )
+                                   bool aRecursive, SYMBOL_FILTER aSymbolFilter,
+                                   bool aAllowFormattedReferences )
 {
     SCH_REFERENCE_LIST  referenceList;
     SCH_SHEET_LIST      sheets = Schematic().Hierarchy();
@@ -578,5 +579,5 @@ int SCH_EDIT_FRAME::CheckAnnotate( ANNOTATION_ERROR_HANDLER aErrorHandler, ANNOT
     if( referenceList.GetCount() == 0 )
         return 0;
 
-    return referenceList.CheckAnnotation( aErrorHandler );
+    return referenceList.CheckAnnotation( aErrorHandler, aAllowFormattedReferences );
 }

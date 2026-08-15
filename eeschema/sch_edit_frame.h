@@ -349,9 +349,12 @@ public:
      * @param aUserCancelled if non-null, set to true when the failure is a deliberate user
      *                       cancel (answering No to the duplicate-sheet-names prompt) rather
      *                       than an unresolved annotation problem.
+     * @param aAllowFormattedReferences permit non-numeric KiCad-markup references for the
+     *                                   SPICE simulator only.
      * @return true if all is well (i.e. you can call WriteNetListFile next).
      */
-    bool ReadyToNetlist( const wxString& aAnnotateMessage, bool* aUserCancelled = nullptr );
+    bool ReadyToNetlist( const wxString& aAnnotateMessage, bool* aUserCancelled = nullptr,
+                         bool aAllowFormattedReferences = false );
 
     /**
      * Create a netlist file.
@@ -427,7 +430,8 @@ public:
      *                       Otherwise check the entire schematic.
      */
     int CheckAnnotate( ANNOTATION_ERROR_HANDLER aErrorHandler, ANNOTATE_SCOPE_T aAnnotateScope,
-                       bool aRecursive, SYMBOL_FILTER aSymbolFilter );
+                       bool aRecursive, SYMBOL_FILTER aSymbolFilter,
+                       bool aAllowFormattedReferences = false );
 
     /**
      * Run a modal version of the annotate dialog for a specific purpose.

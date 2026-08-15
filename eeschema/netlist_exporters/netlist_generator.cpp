@@ -195,7 +195,8 @@ bool SCH_EDIT_FRAME::WriteNetListFile( int aFormat, const wxString& aFullFileNam
 }
 
 
-bool SCH_EDIT_FRAME::ReadyToNetlist( const wxString& aAnnotateMessage, bool* aUserCancelled )
+bool SCH_EDIT_FRAME::ReadyToNetlist( const wxString& aAnnotateMessage, bool* aUserCancelled,
+                                     bool aAllowFormattedReferences )
 {
     if( aUserCancelled )
         *aUserCancelled = false;
@@ -205,13 +206,15 @@ bool SCH_EDIT_FRAME::ReadyToNetlist( const wxString& aAnnotateMessage, bool* aUs
 
     // Symbols must be annotated
     if( CheckAnnotate( []( ERCE_T, const wxString&, SCH_REFERENCE*, SCH_REFERENCE* ) {},
-                       ANNOTATE_ALL, true, SYMBOL_FILTER_NON_POWER ) )
+                       ANNOTATE_ALL, true, SYMBOL_FILTER_NON_POWER,
+                       aAllowFormattedReferences ) )
     {
         // Schematic must be annotated: call Annotate dialog and tell the user why.
         ModalAnnotate( aAnnotateMessage );
 
         if( CheckAnnotate( []( ERCE_T, const wxString&, SCH_REFERENCE*, SCH_REFERENCE* ) {},
-                           ANNOTATE_ALL, true, SYMBOL_FILTER_NON_POWER ) )
+                           ANNOTATE_ALL, true, SYMBOL_FILTER_NON_POWER,
+                           aAllowFormattedReferences ) )
             return false;
     }
 

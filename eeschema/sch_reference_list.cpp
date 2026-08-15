@@ -605,7 +605,24 @@ void SCH_REFERENCE_LIST::Annotate( bool aUseSheetNum, int aSheetIntervalId, int 
 }
 
 
-int SCH_REFERENCE_LIST::CheckAnnotation( ANNOTATION_ERROR_HANDLER aHandler )
+namespace
+{
+
+bool isFormattedReference( const SCH_REFERENCE& aReference )
+{
+    const wxString ref = aReference.GetSymbol()->GetRef( &aReference.GetSheetPath() );
+
+    // A trailing '?' remains an unannotated reference even if its visible prefix uses markup.
+    return !ref.EndsWith( '?' )
+        && ( ref.Contains( wxS( "_{" ) ) || ref.Contains( wxS( "^{" ) )
+             || ref.Contains( wxS( "~{" ) ) );
+}
+
+} // namespace
+
+
+int SCH_REFERENCE_LIST::CheckAnnotation( ANNOTATION_ERROR_HANDLER aHandler,
+                                         bool aAllowFormattedReferences )
 {
     int            error = 0;
     wxString       tmp;
@@ -623,7 +640,8 @@ int SCH_REFERENCE_LIST::CheckAnnotation( ANNOTATION_ERROR_HANDLER aHandler )
         msg.Empty();
         tmp.Empty();
 
-        if( m_flatList[ii].m_isNew )    // Not yet annotated
+        if( m_flatList[ii].m_isNew && !( aAllowFormattedReferences
+                                         && isFormattedReference( m_flatList[ii] ) ) )
         {
             if( m_flatList[ii].m_numRef >= 0 )
                 tmp << m_flatList[ii].m_numRefStr;

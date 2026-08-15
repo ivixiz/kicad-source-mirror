@@ -465,7 +465,8 @@ public:
      * @param aErrorHandler A handler for errors.
      * @return The number of errors found.
      */
-    int CheckAnnotation( ANNOTATION_ERROR_HANDLER aErrorHandler );
+    int CheckAnnotation( ANNOTATION_ERROR_HANDLER aErrorHandler,
+                         bool aAllowFormattedReferences = false );
 
     /**
      * Sort the list of references by X position.

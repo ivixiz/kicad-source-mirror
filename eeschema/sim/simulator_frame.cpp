@@ -397,7 +397,8 @@ bool SIMULATOR_FRAME::LoadSimulator( const wxString& aSimCommand, unsigned aSimO
 {
     s_reporter.Clear();
 
-    if( !m_schematicFrame->ReadyToNetlist( _( "Simulator requires a fully annotated schematic." ) ) )
+    if( !m_schematicFrame->ReadyToNetlist( _( "Simulator requires a fully annotated schematic." ),
+                                           nullptr, true ) )
         return false;
 
     // If we are using the new connectivity, make sure that we do a full-rebuild

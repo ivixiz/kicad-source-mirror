@@ -227,9 +227,12 @@ bool NETLIST_EXPORTER_SPICE::ReadSchematicAndLibraries( unsigned aNetlistOptions
 }
 
 
-void NETLIST_EXPORTER_SPICE::ConvertToSpiceMarkup( wxString* aNetName )
+namespace
 {
-    MARKUP::MARKUP_PARSER         markupParser( aNetName->ToStdString() );
+
+void convertToSpiceMarkup( wxString* aName, const wxString& aMarkupSuffix )
+{
+    MARKUP::MARKUP_PARSER         markupParser( aName->ToStdString() );
     std::unique_ptr<MARKUP::NODE> root = markupParser.Parse();
     bool                           hadMarkup = false;
 
@@ -246,12 +249,12 @@ void NETLIST_EXPORTER_SPICE::ConvertToSpiceMarkup( wxString* aNetName )
                             // Formatting is part of the schematic net identity.  Preserve an
                             // explicit separator and a suffix below so a formatted name does
                             // not collapse onto an otherwise identical literal ngspice node.
-                            *aNetName += '_';
+                            *aName += '_';
                             hadMarkup = true;
                         }
 
                         if( aNode->has_content() )
-                            *aNetName += aNode->string();
+                            *aName += aNode->string();
                     }
 
                     for( const std::unique_ptr<MARKUP::NODE>& child : aNode->children )
@@ -259,38 +262,52 @@ void NETLIST_EXPORTER_SPICE::ConvertToSpiceMarkup( wxString* aNetName )
                 }
             };
 
-    *aNetName = wxEmptyString;
+    *aName = wxEmptyString;
     convertMarkup( root );
 
     // Replace all ngspice-disallowed chars in netnames by a '_'
-    aNetName->Replace( '%', '_' );
-    aNetName->Replace( '(', '_' );
-    aNetName->Replace( ')', '_' );
-    aNetName->Replace( ',', '_' );
-    aNetName->Replace( '[', '_' );
-    aNetName->Replace( ']', '_' );
-    aNetName->Replace( '<', '_' );
-    aNetName->Replace( '>', '_' );
-    aNetName->Replace( '~', '_' );
-    aNetName->Replace( ' ', '_' );
+    aName->Replace( '%', '_' );
+    aName->Replace( '(', '_' );
+    aName->Replace( ')', '_' );
+    aName->Replace( ',', '_' );
+    aName->Replace( '[', '_' );
+    aName->Replace( ']', '_' );
+    aName->Replace( '<', '_' );
+    aName->Replace( '>', '_' );
+    aName->Replace( '~', '_' );
+    aName->Replace( ' ', '_' );
 
     // Make sure that SPICE zero should be zero anywhere, independent if it is local or not.
     // Therefore any signal ending with '/0' is rewritten as '0' to be recognized by SPICE.
-    if( aNetName->EndsWith( wxS( "/0" ) ) && !aNetName->EndsWith( wxS( "//0" ) ) )
-        aNetName->assign( wxS( "0" ) );
+    if( aMarkupSuffix == wxS( "-net" ) && aName->EndsWith( wxS( "/0" ) )
+        && !aName->EndsWith( wxS( "//0" ) ) )
+    {
+        aName->assign( wxS( "0" ) );
+    }
 
     // Make sure that local ground signals with leading slash ('/gnd') are rewritten as gloabal gnd to be recognized
     // by SPICE as zero.
-    if( aNetName->IsSameAs( wxS( "/gnd" ), false /* caseSensitive=false */ ) )
-        aNetName->assign( aNetName->Mid( 1 ) );
+    if( aMarkupSuffix == wxS( "-net" )
+        && aName->IsSameAs( wxS( "/gnd" ), false /* caseSensitive=false */ ) )
+    {
+        aName->assign( aName->Mid( 1 ) );
+    }
 
     // A net name on the root sheet with a label '/foo' is going to get titled "//foo".  This
     // will trip up ngspice as "//" opens a line comment.
-    if( aNetName->StartsWith( wxS( "//" ) ) )
-        aNetName->Replace( wxS( "//" ), wxS( "/root/" ), false /* replace all */ );
+    if( aMarkupSuffix == wxS( "-net" ) && aName->StartsWith( wxS( "//" ) ) )
+        aName->Replace( wxS( "//" ), wxS( "/root/" ), false /* replace all */ );
 
     if( hadMarkup )
-        *aNetName += wxS( "-net" );
+        *aName += aMarkupSuffix;
+}
+
+} // namespace
+
+
+void NETLIST_EXPORTER_SPICE::ConvertToSpiceMarkup( wxString* aNetName )
+{
+    convertToSpiceMarkup( aNetName, wxS( "-net" ) );
 }
 
 
@@ -305,7 +322,9 @@ wxString NETLIST_EXPORTER_SPICE::GetItemName( const wxString& aRefName ) const
 
 const SPICE_ITEM* NETLIST_EXPORTER_SPICE::FindItem( const wxString& aRefName ) const
 {
-    const std::string            refName = aRefName.ToStdString();
+    wxString                     spiceRefName = aRefName;
+    convertToSpiceMarkup( &spiceRefName, wxS( "-ref" ) );
+    const std::string            refName = spiceRefName.ToStdString();
     const std::list<SPICE_ITEM>& spiceItems = GetItems();
 
     auto it = std::find_if( spiceItems.begin(), spiceItems.end(),
@@ -622,7 +641,12 @@ SIM_DECOMPOSITION NETLIST_EXPORTER_SPICE::getDecomposition( SCH_SYMBOL& aSymbol,
 void NETLIST_EXPORTER_SPICE::readRefName( SCH_SHEET_PATH& aSheet, SCH_SYMBOL& aSymbol,
                                           SPICE_ITEM& aItem, std::set<std::string>& aRefNames )
 {
-    aItem.refName = aSymbol.GetRef( &aSheet );
+    wxString spiceRefName = aSymbol.GetRef( &aSheet );
+
+    // References with formatted text are valid SPICE instance identifiers after flattening.
+    // Keep a distinct suffix so L_{prim} cannot collide with literal L_prim in the same design.
+    convertToSpiceMarkup( &spiceRefName, wxS( "-ref" ) );
+    aItem.refName = spiceRefName.ToStdString();
 
     [[maybe_unused]] bool inserted = aRefNames.insert( aItem.refName ).second;
     wxASSERT_MSG( inserted, wxT( "Duplicate refdes encountered; what happened to ReadyToNetlist()?" ) );
