@@ -415,6 +415,7 @@ set( EESCHEMA_SRCS
     autoplace_fields.cpp
     bom_plugins.cpp
     bus-wire-junction.cpp
+    commands/schematic_commands.cpp
     connection_graph.cpp
     cross-probing.cpp
     sch_design_block_utils.cpp
