@@ -807,6 +807,7 @@ set( COMMON_SRCS
     board_printout.cpp
     clipboard.cpp
     commit.cpp
+    command/command.cpp
     draw_panel_gal.cpp
     gal_display_options_common.cpp
     gr_text.cpp

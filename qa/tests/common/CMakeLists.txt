@@ -40,6 +40,7 @@ set( QA_COMMON_SRCS
     test_collector.cpp
     test_color4d.cpp
     test_commit.cpp
+    test_command.cpp
     test_coroutine.cpp
     test_design_block_io.cpp
     test_desktop_app_id.cpp
