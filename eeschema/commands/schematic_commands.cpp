@@ -112,7 +112,8 @@ JSON describeSymbol( const SCH_SYMBOL& aSymbol, const SCH_SHEET_PATH& aSheet,
              { "unit", aSymbol.GetUnitSelection( &aSheet ) },
              { "value", aSymbol.GetValue( false, &aSheet, false, aVariant ).ToStdString( wxConvUTF8 ) },
              { "library_id", aSymbol.GetSymbolIDAsString().ToStdString( wxConvUTF8 ) },
-             { "footprint", aSymbol.GetFootprintFieldText( false, &aSheet, false, aVariant )
+             { "footprint", aSymbol.GetFieldText( aSymbol.GetField( FIELD_T::FOOTPRINT )->GetName(),
+                                               &aSheet, aVariant )
                                     .ToStdString( wxConvUTF8 ) },
              { "sheet_path", aSheet.PathAsString().ToStdString( wxConvUTF8 ) },
              { "sheet_name", aSheet.PathHumanReadable().ToStdString( wxConvUTF8 ) },

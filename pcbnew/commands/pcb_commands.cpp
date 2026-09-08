@@ -210,20 +210,23 @@ RESULT moveFootprint( CONTEXT& aContext, const ARGS& aArgs )
 
     BOARD_COMMIT commit( &context.Frame() );
     commit.Modify( footprint );
+    RESULT result;
 
     try
     {
         footprint->SetPosition( position );
         footprint->InvalidateComponentClassCache();
-        RESULT result = RESULT::Ok( _( "Footprint moved." ), footprintData( *footprint ), true );
-        commit.Push( _( "Move Footprint via Command Window" ) );
-        return result;
+        result = RESULT::Ok( _( "Footprint moved." ), footprintData( *footprint ), true );
     }
     catch( ... )
     {
         commit.Revert();
         throw;
     }
+
+    // Push transfers the saved copies to undo; they must not be reverted after that handoff.
+    commit.Push( _( "Move Footprint via Command Window" ) );
+    return result;
 }
 
 
@@ -262,20 +265,23 @@ RESULT rotateFootprint( CONTEXT& aContext, const ARGS& aArgs )
 
     BOARD_COMMIT commit( &context.Frame() );
     commit.Modify( footprint );
+    RESULT result;
 
     try
     {
         footprint->Rotate( center, angle );
         footprint->InvalidateComponentClassCache();
-        RESULT result = RESULT::Ok( _( "Footprint rotated." ), footprintData( *footprint ), true );
-        commit.Push( _( "Rotate Footprint via Command Window" ) );
-        return result;
+        result = RESULT::Ok( _( "Footprint rotated." ), footprintData( *footprint ), true );
     }
     catch( ... )
     {
         commit.Revert();
         throw;
     }
+
+    // Push transfers the saved copies to undo; they must not be reverted after that handoff.
+    commit.Push( _( "Rotate Footprint via Command Window" ) );
+    return result;
 }
 
 
