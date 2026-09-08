@@ -192,6 +192,12 @@ public:
         bool             as_item_checkboxes;     ///< Honor checkboxes in appearance manager.
     };
 
+    struct COMMAND_WINDOW_SETTINGS
+    {
+        bool show;
+        int  height; ///< Height in device-independent pixels.
+    };
+
     struct SYSTEM
     {
         bool                  first_run_shown; //@todo RFB remove? - not used
@@ -238,6 +244,8 @@ public:
     PRINTING m_Printing;
 
     SEARCH_PANE m_SearchPane;
+
+    COMMAND_WINDOW_SETTINGS m_CommandWindow;
 
     SYSTEM m_System;
 

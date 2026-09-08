@@ -190,6 +190,7 @@ void SCH_EDIT_FRAME::doReCreateMenuBar()
 
     showHidePanels->Add( ACTIONS::showProperties,    ACTION_MENU::CHECK );
     showHidePanels->Add( ACTIONS::showSearch,        ACTION_MENU::CHECK );
+    showHidePanels->Add( ACTIONS::showCommandWindow, ACTION_MENU::CHECK );
     showHidePanels->Add( SCH_ACTIONS::showHierarchy, ACTION_MENU::CHECK );
 
     if( ADVANCED_CFG::GetCfg().m_IncrementalConnectivity )

@@ -110,6 +110,7 @@ public:
 
     // Find and Replace
     static TOOL_ACTION showSearch;
+    static TOOL_ACTION showCommandWindow;
     static TOOL_ACTION find;
     static TOOL_ACTION findAndReplace;
     static TOOL_ACTION findNext;

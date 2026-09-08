@@ -171,17 +171,21 @@ BOOST_AUTO_TEST_CASE( ReentrancyAndExceptionRecovery )
 BOOST_AUTO_TEST_CASE( BoundedHistoryRestoresDraftAndSuppressesDuplicates )
 {
     HISTORY history( 2 );
+    BOOST_CHECK( !history.IsBrowsing() );
     BOOST_CHECK_EQUAL( history.Previous( "draft" ), "draft" );
+    BOOST_CHECK( !history.IsBrowsing() );
     history.Add( "discarded" );
     history.Add( "context" );
     history.Add( "help" );
     history.Add( "help" );
     BOOST_CHECK_EQUAL( history.Previous( "unfinished command" ), "help" );
+    BOOST_CHECK( history.IsBrowsing() );
     BOOST_CHECK_EQUAL( history.Previous( "ignored" ), "context" );
     BOOST_CHECK_EQUAL( history.Previous( "ignored" ), "context" );
     BOOST_CHECK_EQUAL( history.Next(), "help" );
     BOOST_CHECK_EQUAL( history.Next(), "unfinished command" );
     BOOST_CHECK_EQUAL( history.Next(), "unfinished command" );
+    BOOST_CHECK( !history.IsBrowsing() );
     history.Add( "pcb.list_nets" );
     BOOST_CHECK_EQUAL( history.Previous( "new draft" ), "pcb.list_nets" );
 

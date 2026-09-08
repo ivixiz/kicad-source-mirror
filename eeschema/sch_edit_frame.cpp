@@ -58,6 +58,8 @@
 #include <project/project_file.h>
 #include <project/net_settings.h>
 #include <sch_edit_frame.h>
+#include <commands/schematic_commands.h>
+#include <widgets/command_window.h>
 #include <symbol_chooser_frame.h>
 #include <sch_painter.h>
 #include <sch_marker.h>
@@ -293,7 +295,10 @@ SCH_EDIT_FRAME::SCH_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
                       .DestroyOnClose( false )
                       .Show( m_show_search ) );
 
+    COMMAND_WINDOW::Install( this, KICAD_COMMAND::CreateSchematicCommandExecutor( *this ) );
+
     RestoreAuiLayout();
+    COMMAND_WINDOW::RestoreSettings( this );
     FinishAUIInitialization();
 
     wxAuiPaneInfo& hierarchy_pane = m_auimgr.GetPane( SchematicHierarchyPaneName() );
@@ -752,6 +757,12 @@ void SCH_EDIT_FRAME::setupUIConditions()
                 return m_auimgr.GetPane( SearchPaneName() ).IsShown();
             };
 
+    auto commandWindowCond =
+            [this] ( const SELECTION& )
+            {
+                return COMMAND_WINDOW::IsShown( this );
+            };
+
     auto propertiesCond =
             [this] ( const SELECTION& )
             {
@@ -813,6 +824,7 @@ void SCH_EDIT_FRAME::setupUIConditions()
     mgr->SetConditions( ACTIONS::redo,                ENABLE( cond.RedoAvailable() ) );
 
     mgr->SetConditions( SCH_ACTIONS::showSearch,           CHECK( searchPaneCond ) );
+    mgr->SetConditions( ACTIONS::showCommandWindow,        CHECK( commandWindowCond ) );
     mgr->SetConditions( SCH_ACTIONS::showHierarchy,        CHECK( hierarchyNavigatorCond ) );
     mgr->SetConditions( SCH_ACTIONS::showNetNavigator,     CHECK( netNavigatorCond ) );
     mgr->SetConditions( ACTIONS::showProperties,           CHECK( propertiesCond ) );

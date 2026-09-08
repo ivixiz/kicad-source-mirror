@@ -40,6 +40,7 @@
 #include <widgets/hierarchy_pane.h>
 #include <widgets/sch_design_block_pane.h>
 #include <widgets/sch_search_pane.h>
+#include <widgets/command_window.h>
 #include <widgets/panel_remote_symbol.h>
 #include <widgets/panel_sch_selection_filter.h>
 #include <widgets/properties_panel.h>
@@ -323,6 +324,7 @@ void SCH_EDIT_FRAME::SaveSettings( APP_SETTINGS_BASE* aCfg )
 {
     EESCHEMA_SETTINGS* cfg = eeconfig();
     SCH_BASE_FRAME::SaveSettings( cfg );
+    COMMAND_WINDOW::SaveSettings( this );
     wxAuiPaneInfo& hierarchy_pane = m_auimgr.GetPane( SchematicHierarchyPaneName() );
 
     if( cfg )

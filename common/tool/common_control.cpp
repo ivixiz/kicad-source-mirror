@@ -46,6 +46,7 @@
 #include <confirm.h>
 #include <reporter.h>
 #include <widgets/kistatusbar.h>
+#include <widgets/command_window.h>
 
 #define URL_GET_INVOLVED wxS( "https://go.kicad.org/contribute/" )
 #define URL_DONATE wxS( "https://go.kicad.org/app-donate" )
@@ -440,6 +441,13 @@ int COMMON_CONTROL::ReloadPlugins( const TOOL_EVENT& aEvent )
 }
 
 
+int COMMON_CONTROL::ShowCommandWindow( const TOOL_EVENT& aEvent )
+{
+    COMMAND_WINDOW::Toggle( m_frame );
+    return 0;
+}
+
+
 void COMMON_CONTROL::setTransitions()
 {
     Go( &COMMON_CONTROL::Quit,               ACTIONS::quit.MakeEvent() );
@@ -455,6 +463,7 @@ void COMMON_CONTROL::setTransitions()
     Go( &COMMON_CONTROL::ShowPlayer,         ACTIONS::showFootprintEditor.MakeEvent() );
     Go( &COMMON_CONTROL::Execute,            ACTIONS::showCalculatorTools.MakeEvent() );
     Go( &COMMON_CONTROL::ShowProjectManager, ACTIONS::showProjectManager.MakeEvent() );
+    Go( &COMMON_CONTROL::ShowCommandWindow,  ACTIONS::showCommandWindow.MakeEvent() );
 
     Go( &COMMON_CONTROL::ShowHelp,           ACTIONS::gettingStarted.MakeEvent() );
     Go( &COMMON_CONTROL::ShowHelp,           ACTIONS::help.MakeEvent() );

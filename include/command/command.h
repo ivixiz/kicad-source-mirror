@@ -148,6 +148,7 @@ public:
     wxString Previous( const wxString& aDraft );
     wxString Next();
     void ResetNavigation();
+    bool IsBrowsing() const { return m_position < m_entries.size(); }
 
 private:
     std::vector<wxString> m_entries;

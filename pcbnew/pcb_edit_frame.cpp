@@ -41,6 +41,8 @@
 #include <settings/color_settings.h>
 #include <pgm_base.h>
 #include <pcb_edit_frame.h>
+#include <commands/pcb_commands.h>
+#include <widgets/command_window.h>
 #include <3d_viewer/eda_3d_viewer_frame.h>
 #include <api/api_handler_common.h>
 #include <api/api_handler_pcb.h>
@@ -424,7 +426,10 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
                       .CloseButton( true )
                       .Hide() );
 
+    COMMAND_WINDOW::Install( this, KICAD_COMMAND::CreatePcbCommandExecutor( *this ) );
+
     RestoreAuiLayout();
+    COMMAND_WINDOW::RestoreSettings( this );
 
     m_auimgr.GetPane( "LayersManager" ).Show( m_ShowLayerManagerTools );
     m_auimgr.GetPane( "SelectionFilter" ).Show( m_ShowLayerManagerTools );
@@ -1241,6 +1246,12 @@ void PCB_EDIT_FRAME::setupUIConditions()
                 return m_auimgr.GetPane( SearchPaneName() ).IsShown();
             };
 
+    auto commandWindowCond =
+            [this] ( const SELECTION& )
+            {
+                return COMMAND_WINDOW::IsShown( this );
+            };
+
     auto constraintsPaneCond =
             [this] ( const SELECTION& )
             {
@@ -1308,6 +1319,7 @@ void PCB_EDIT_FRAME::setupUIConditions()
     mgr->SetConditions( ACTIONS::showProperties,           CHECK( propertiesCond ) );
     mgr->SetConditions( PCB_ACTIONS::showNetInspector,     CHECK( netInspectorCond ) );
     mgr->SetConditions( PCB_ACTIONS::showSearch,           CHECK( searchPaneCond ) );
+    mgr->SetConditions( ACTIONS::showCommandWindow,        CHECK( commandWindowCond ) );
     mgr->SetConditions( PCB_ACTIONS::showConstraintsPanel, CHECK( constraintsPaneCond ) );
     mgr->SetConditions( PCB_ACTIONS::showDesignBlockPanel, CHECK( designBlockCond ) );
 
@@ -1923,6 +1935,7 @@ void PCB_EDIT_FRAME::LoadSettings( APP_SETTINGS_BASE* aCfg )
 void PCB_EDIT_FRAME::SaveSettings( APP_SETTINGS_BASE* aCfg )
 {
     PCB_BASE_FRAME::SaveSettings( aCfg );
+    COMMAND_WINDOW::SaveSettings( this );
 
     PCBNEW_SETTINGS* cfg = dynamic_cast<PCBNEW_SETTINGS*>( aCfg );
     wxASSERT( cfg );

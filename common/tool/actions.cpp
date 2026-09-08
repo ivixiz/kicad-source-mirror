@@ -632,6 +632,12 @@ TOOL_ACTION ACTIONS::showSearch( TOOL_ACTION_ARGS()
         .Tooltip( _( "Show/hide the search panel" ) )
         .Icon( BITMAPS::find ) );
 
+TOOL_ACTION ACTIONS::showCommandWindow( TOOL_ACTION_ARGS()
+        .Name( "common.Control.showCommandWindow" )
+        .Scope( AS_GLOBAL )
+        .FriendlyName( _( "Command Window" ) )
+        .Tooltip( _( "Show or hide the textual command interface" ) ) );
+
 TOOL_ACTION ACTIONS::find( TOOL_ACTION_ARGS()
         .Name( "common.Interactive.find" )
         .Scope( AS_GLOBAL )

@@ -629,6 +629,7 @@ if( KICAD_USE_SENTRY )
 endif()
 
 set( COMMON_WIDGET_SRCS
+    widgets/command_window.cpp
     widgets/app_progress_dialog.cpp
     widgets/wx_bitmap_combobox.cpp
     widgets/bitmap_toggle.cpp

@@ -45,6 +45,7 @@ APP_SETTINGS_BASE::APP_SETTINGS_BASE( const std::string& aFilename, int aSchemaV
         m_LibTree(),
         m_Printing(),
         m_SearchPane(),
+        m_CommandWindow(),
         m_System(),
         m_Plugins(),
         m_Window(),
@@ -214,6 +215,11 @@ APP_SETTINGS_BASE::APP_SETTINGS_BASE( const std::string& aFilename, int aSchemaV
 
     m_params.emplace_back( new PARAM<bool>( "search_pane.search_metadata",
             &m_SearchPane.search_metadata, false ) );
+
+    m_params.emplace_back( new PARAM<bool>( "command_window.show", &m_CommandWindow.show, false ) );
+
+    m_params.emplace_back( new PARAM<int>( "command_window.height", &m_CommandWindow.height,
+                                         240, 120, 1200 ) );
 
     m_params.emplace_back( new PARAM<bool>( "system.first_run_shown",
             &m_System.first_run_shown, false ) ); //@todo RFB remove? - not used

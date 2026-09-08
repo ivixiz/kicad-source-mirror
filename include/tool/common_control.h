@@ -49,6 +49,7 @@ public:
     int Quit( const TOOL_EVENT& aEvent );
     int Execute( const TOOL_EVENT& aEvent );
     int ShowProjectManager( const TOOL_EVENT& aEvent );
+    int ShowCommandWindow( const TOOL_EVENT& aEvent );
 
     int ShowHelp( const TOOL_EVENT& aEvent );
     int About( const TOOL_EVENT& aEvent );
