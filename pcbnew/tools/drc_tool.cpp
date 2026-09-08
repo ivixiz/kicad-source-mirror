@@ -32,6 +32,7 @@
 #include <board_commit.h>
 #include <board_design_settings.h>
 #include <progress_reporter.h>
+#include <scoped_set_reset.h>
 #include <drc/drc_engine.h>
 #include <drc/drc_item.h>
 #include <netlist_reader/pcb_netlist.h>
@@ -113,6 +114,31 @@ int DRC_TOOL::ShowDRCDialog( const TOOL_EVENT& aEvent )
 }
 
 
+DRC_RUN_RESULT DRC_TOOL::RunTestsFromCommand()
+{
+    if( IsDRCRunning() || m_toolMgr->GetTool<ZONE_FILLER_TOOL>()->IsBusy() )
+        return DRC_RUN_RESULT::BUSY;
+
+    if( !m_toolMgr->RunAction( PCB_ACTIONS::runDRC ) || !m_drcDialog )
+        return DRC_RUN_RESULT::FAILED;
+
+    return m_drcDialog->RunTests();
+}
+
+
+bool DRC_TOOL::IsDRCRunning() const
+{
+    return m_drcRunning || ( m_drcDialog && m_drcDialog->IsRunning() );
+}
+
+
+void DRC_TOOL::CancelTests()
+{
+    if( m_drcDialog )
+        m_drcDialog->CancelTests();
+}
+
+
 bool DRC_TOOL::IsDRCDialogShown()
 {
     if( m_drcDialog )
@@ -124,6 +150,12 @@ bool DRC_TOOL::IsDRCDialogShown()
 
 void DRC_TOOL::DestroyDRCDialog()
 {
+    if( IsDRCRunning() )
+    {
+        CancelTests();
+        return;
+    }
+
     if( m_drcDialog )
     {
         m_drcDialog->Destroy();
@@ -154,7 +186,15 @@ void DRC_TOOL::RunTests( PROGRESS_REPORTER* aProgressReporter, bool aRefillZones
     if( m_drcDialog )
         disabler = std::make_unique<wxWindowDisabler>( /* except: */ m_drcDialog );
 
-    m_drcRunning = true;
+    SCOPED_EXECUTION<std::function<void()>> runningGuard(
+            [this]() { m_drcRunning = true; },
+            [this]()
+            {
+                m_drcEngine->SetProgressReporter( nullptr );
+                m_drcEngine->ClearViolationHandler();
+                m_drcEngine->SetSchematicNetlist( nullptr );
+                m_drcRunning = false;
+            } );
 
     if( m_drcDialog )
     {
@@ -194,8 +234,16 @@ void DRC_TOOL::RunTests( PROGRESS_REPORTER* aProgressReporter, bool aRefillZones
                 commit.Add( marker );
             } );
 
-    m_drcEngine->RunTests( m_editFrame->GetUserUnits(), aReportAllTrackErrors, aTestFootprints,
-                           &commit );
+    try
+    {
+        m_drcEngine->RunTests( m_editFrame->GetUserUnits(), aReportAllTrackErrors, aTestFootprints,
+                              &commit );
+    }
+    catch( ... )
+    {
+        commit.Revert();
+        throw;
+    }
 
     m_drcEngine->SetProgressReporter( nullptr );
     m_drcEngine->ClearViolationHandler();
@@ -209,8 +257,6 @@ void DRC_TOOL::RunTests( PROGRESS_REPORTER* aProgressReporter, bool aRefillZones
     }
 
     commit.Push( _( "DRC" ), SKIP_UNDO | SKIP_SET_DIRTY );
-
-    m_drcRunning = false;
 
     m_editFrame->ShowSolderMask();
 

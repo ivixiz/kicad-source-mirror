@@ -38,6 +38,12 @@ class WX_PROGRESS_REPORTER;
 class DRC_ENGINE;
 
 
+enum class DRC_RUN_RESULT
+{
+    COMPLETED, CANCELLED, BUSY, INVALID_RULES, FAILED
+};
+
+
 class DRC_TOOL : public PCB_TOOL_BASE
 {
 public:
@@ -57,6 +63,9 @@ public:
 
     int ShowDRCDialog( const TOOL_EVENT& aEvent );
 
+    /** Run the full interactive check lifecycle, including progress and cancellation. */
+    DRC_RUN_RESULT RunTestsFromCommand();
+
     DIALOG_DRC* GetDRCDialog() { return m_drcDialog; }
 
     /**
@@ -67,7 +76,10 @@ public:
     /**
      * Check to see if the DRC engine is running the tests
      */
-    bool IsDRCRunning() const { return m_drcRunning; }
+    bool IsDRCRunning() const;
+
+    /** Request cancellation without destroying the dialog while its check is on the stack. */
+    void CancelTests();
 
     /**
      * Close and free the DRC dialog.

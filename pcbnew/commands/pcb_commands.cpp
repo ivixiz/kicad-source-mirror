@@ -13,6 +13,8 @@
 #include <footprint.h>
 #include <netinfo.h>
 #include <pcb_edit_frame.h>
+#include <pcb_marker.h>
+#include <rc_item.h>
 #include <tool/tool_manager.h>
 #include <tools/drc_tool.h>
 #include <trigo.h>
@@ -275,6 +277,82 @@ RESULT rotateFootprint( CONTEXT& aContext, const ARGS& aArgs )
         throw;
     }
 }
+
+
+RESULT runDrc( CONTEXT& aContext, const ARGS& )
+{
+    PCB_CONTEXT& context = pcbContext( aContext );
+    DRC_TOOL* tool = context.Frame().GetToolManager()->GetTool<DRC_TOOL>();
+
+    if( !tool )
+        return RESULT::Error( STATUS::FAILED, _( "The design rule checker is unavailable." ) );
+
+    const DRC_RUN_RESULT outcome = tool->RunTestsFromCommand();
+
+    switch( outcome )
+    {
+    case DRC_RUN_RESULT::BUSY:
+        return RESULT::Error( STATUS::BUSY, _( "The design rule checker is busy." ) );
+    case DRC_RUN_RESULT::INVALID_RULES:
+        return RESULT::Error( STATUS::FAILED, _( "DRC could not compile the custom design rules." ) );
+    case DRC_RUN_RESULT::FAILED:
+        return RESULT::Error( STATUS::FAILED, _( "DRC failed before completing the checks." ) );
+    default:
+        break;
+    }
+
+    const bool completed = outcome == DRC_RUN_RESULT::COMPLETED;
+    JSON violations = JSON::array();
+    size_t errors = 0;
+    size_t warnings = 0;
+    size_t exclusions = 0;
+
+    for( const PCB_MARKER* marker : context.Board().Markers() )
+    {
+        const std::shared_ptr<RC_ITEM> item = marker->GetRCItem();
+        const SEVERITY severity = marker->GetSeverity();
+        const char* severityName = "info";
+
+        if( marker->IsExcluded() || severity == RPT_SEVERITY_EXCLUSION )
+        {
+            ++exclusions;
+            severityName = "excluded";
+        }
+        else if( severity == RPT_SEVERITY_ERROR )
+        {
+            ++errors;
+            severityName = "error";
+        }
+        else if( severity == RPT_SEVERITY_WARNING )
+        {
+            ++warnings;
+            severityName = "warning";
+        }
+
+        JSON ids = JSON::array();
+
+        for( const KIID& id : item->GetIDs() )
+        {
+            if( id != niluuid )
+                ids.push_back( id.AsString().ToStdString() );
+        }
+
+        violations.push_back( { { "id", marker->m_Uuid.AsString().ToStdString() },
+                                { "code", item->GetErrorCode() }, { "severity", severityName },
+                                { "message", item->GetErrorMessage( false ).ToStdString( wxConvUTF8 ) },
+                                { "x_mm", pcbIUScale.IUTomm( marker->GetPos().x ) },
+                                { "y_mm", pcbIUScale.IUTomm( marker->GetPos().y ) },
+                                { "items", std::move( ids ) } } );
+    }
+
+    RESULT result = completed
+                            ? RESULT::Ok( _( "DRC completed. Results use the current DRC dialog options." ) )
+                            : RESULT::Error( STATUS::CANCELLED, _( "DRC cancelled; results are incomplete." ) );
+    result.data = { { "completed", completed }, { "errors", errors }, { "warnings", warnings },
+                    { "excluded", exclusions }, { "violations", std::move( violations ) } };
+    result.changed = true; // The live check markers were replaced; document content is not saved.
+    return result;
+}
 } // namespace
 
 
@@ -333,6 +411,10 @@ std::unique_ptr<EXECUTOR> CreatePcbCommandExecutor( PCB_EDIT_FRAME& aFrame )
 
                              return RESULT::Ok( _( "PCB nets." ), { { "nets", std::move( nets ) } } );
                          } } );
+
+    registry.Register( { wxS( "drc.run" ), wxS( "drc.run" ),
+                         _( "Run DRC on the live board with the current dialog options and cancellation UI." ),
+                         EDITOR::PCB, EFFECT::CHECK, 0, 0, runDrc } );
 
     return executor;
 }

@@ -35,6 +35,7 @@ class wxStatusBar;
 
 
 class BOARD_DESIGN_SETTINGS;
+enum class DRC_RUN_RESULT;
 
 
 #define DIALOG_DRC_WINDOW_NAME wxT( "DialogDrcWindowName" )
@@ -69,6 +70,11 @@ public:
     void SelectMarker( const PCB_MARKER* aMarker );
 
     void ExcludeMarker();
+
+    /** Run with the current dialog options and return the actual completion status. */
+    DRC_RUN_RESULT RunTests();
+    bool IsRunning() const { return m_running; }
+    void CancelTests() { m_cancelled = true; }
 
 private:
     int getSeverities();

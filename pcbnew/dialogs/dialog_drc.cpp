@@ -32,6 +32,7 @@
 #include <connectivity/connectivity_algo.h>
 #include <drawing_sheet/ds_proxy_view_item.h>
 #include <pcb_edit_frame.h>
+#include <scoped_set_reset.h>
 #include <tool/tool_manager.h>
 #include <tools/pcb_actions.h>
 #include <wildcards_and_files_ext.h>
@@ -436,23 +437,38 @@ void DIALOG_DRC::OnCharHook( wxKeyEvent& aEvt )
 
 void DIALOG_DRC::OnRunDRCClick( wxCommandEvent& aEvent )
 {
+    RunTests();
+}
+
+
+DRC_RUN_RESULT DIALOG_DRC::RunTests()
+{
     TOOL_MANAGER*     toolMgr              = m_frame->GetToolManager();
     DRC_TOOL*         drcTool              = toolMgr->GetTool<DRC_TOOL>();
     ZONE_FILLER_TOOL* zoneFillerTool       = toolMgr->GetTool<ZONE_FILLER_TOOL>();
     bool              refillZones          = m_cbRefillZones->GetValue();
     bool              testFootprints       = m_cbTestFootprints->GetValue();
 
-    if( zoneFillerTool->IsBusy() )
+    if( m_running || drcTool->IsDRCRunning() || zoneFillerTool->IsBusy() )
     {
         wxBell();
-        return;
+        return DRC_RUN_RESULT::BUSY;
     }
+
+    SCOPED_EXECUTION<std::function<void()>> runningGuard(
+            [this]() { m_running = true; },
+            [this]()
+            {
+                m_running = false;
+                m_sdbSizerCancel->SetLabel( _( "Close" ) );
+                m_sdbSizerOK->Enable( true );
+                m_DeleteCurrentMarkerButton->Enable( true );
+                m_DeleteAllMarkersButton->Enable( true );
+                m_saveReport->Enable( true );
+            } );
 
     m_footprintTestsRun = false;
     m_cancelled = false;
-
-    m_frame->GetBoard()->RecordDRCExclusions();
-    deleteAllMarkers( true );
 
     // This is not the time to have stale or buggy rules.  Ensure they're up-to-date
     // and that they at least parse.
@@ -477,8 +493,12 @@ void DIALOG_DRC::OnRunDRCClick( wxCommandEvent& aEvent )
 
         // set float level again, it can be lost due to window events during test run
         KIPLATFORM::UI::SetFloatLevel( this );
-        return;
+        return DRC_RUN_RESULT::INVALID_RULES;
     }
+
+    // Retain the previous results if rule compilation failed.
+    m_frame->GetBoard()->RecordDRCExclusions();
+    deleteAllMarkers( true );
 
     std::vector<std::reference_wrapper<RC_ITEM>> violations = DRC_ITEM::GetItemsWithSeverities();
     m_ignoredList->DeleteAllItems();
@@ -504,7 +524,6 @@ void DIALOG_DRC::OnRunDRCClick( wxCommandEvent& aEvent )
     m_messages->Clear();
     Update();                                     // Repaint only, don't enter the full event loop
 
-    m_running = true;
     m_sdbSizerCancel->SetLabel( _( "Cancel" ) );
     m_sdbSizerOK->Enable( false );
     m_DeleteCurrentMarkerButton->Enable( false );
@@ -517,9 +536,16 @@ void DIALOG_DRC::OnRunDRCClick( wxCommandEvent& aEvent )
     if( m_drcStatusBar )
         m_drcStatusBar->SetStatusText( _( "Elapsed: 0 s" ), 1 );
 
+    try
     {
-    wxBusyCursor dummy;
-    drcTool->RunTests( this, refillZones, m_report_all_track_errors, testFootprints );
+        wxBusyCursor dummy;
+        drcTool->RunTests( this, refillZones, m_report_all_track_errors, testFootprints );
+    }
+    catch( ... )
+    {
+        m_messages->Report( _( "DRC failed before completing the checks." ) );
+        m_messages->Flush();
+        return DRC_RUN_RESULT::FAILED;
     }
 
     double elapsedMs =
@@ -554,30 +580,17 @@ void DIALOG_DRC::OnRunDRCClick( wxCommandEvent& aEvent )
     Raise();
     Update();                                     // Repaint only, don't enter the full event loop
 
-    m_running = false;
-    m_sdbSizerCancel->SetLabel( _( "Close" ) );
-    m_sdbSizerOK->Enable( true );
-    m_DeleteCurrentMarkerButton->Enable( true );
-    m_DeleteAllMarkersButton->Enable( true );
-    m_saveReport->Enable( true );
-
     if( !m_cancelled )
     {
         m_sdbSizerCancel->SetDefault();
-        // wxWidgets has a tendency to keep both buttons highlighted without the following:
-        m_sdbSizerOK->Enable( false );
-
-        wxMilliSleep( 500 );
         m_runningResultsBook->ChangeSelection( 1 );
         KIPLATFORM::UI::ForceFocus( m_Notebook );
-
-        // now re-enable m_sdbSizerOK button
-        m_sdbSizerOK->Enable( true );
     }
 
     // set float level again, it can be lost due to window events during test run
     KIPLATFORM::UI::SetFloatLevel( this );
     refreshEditor();
+    return m_cancelled ? DRC_RUN_RESULT::CANCELLED : DRC_RUN_RESULT::COMPLETED;
 }
 
 

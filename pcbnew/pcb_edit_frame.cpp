@@ -1575,6 +1575,12 @@ void PCB_EDIT_FRAME::ResolveDRCExclusions( bool aCreateMarkers )
 
 bool PCB_EDIT_FRAME::canCloseWindow( wxCloseEvent& aEvent )
 {
+    if( DRC_TOOL* drc = m_toolManager->GetTool<DRC_TOOL>(); drc && drc->IsDRCRunning() )
+    {
+        drc->CancelTests();
+        return false;
+    }
+
     // Shutdown blocks must be determined and vetoed as early as possible
     if( KIPLATFORM::APP::SupportsShutdownBlockReason()
             && aEvent.GetId() == wxEVT_QUERY_END_SESSION
