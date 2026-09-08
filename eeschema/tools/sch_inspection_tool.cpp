@@ -131,6 +131,37 @@ void SCH_INSPECTION_TOOL::ShowERCDialog()
 }
 
 
+ERC_RUN_REPORT SCH_INSPECTION_TOOL::RunTestsFromCommand()
+{
+    SCH_EDIT_FRAME* frame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
+
+    wxCHECK( frame, ERC_RUN_REPORT{} );
+
+    // The action owns dialog creation and activation. RunTests performs the checks rather
+    // than merely reporting that the dialog was opened.
+    if( !m_toolMgr->RunAction( SCH_ACTIONS::runERC ) )
+        return {};
+
+    DIALOG_ERC* dialog = frame->GetErcDialog();
+
+    if( !dialog )
+        return {};
+
+    ERC_RUN_REPORT report;
+    report.status = dialog->RunTests();
+
+    if( report.status == ERC_RUN_RESULT::COMPLETED || report.status == ERC_RUN_RESULT::CANCELLED )
+    {
+        report.errors = dialog->GetViolationCount( RPT_SEVERITY_ERROR );
+        report.warnings = dialog->GetViolationCount( RPT_SEVERITY_WARNING );
+        report.excluded = dialog->GetViolationCount( RPT_SEVERITY_EXCLUSION );
+        report.annotationRequired = dialog->GetUnannotatedCount();
+    }
+
+    return report;
+}
+
+
 int SCH_INSPECTION_TOOL::PrevMarker( const TOOL_EVENT& aEvent )
 {
     SCH_EDIT_FRAME* frame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );

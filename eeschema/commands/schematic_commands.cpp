@@ -26,6 +26,7 @@
 #include <sch_symbol.h>
 #include <schematic.h>
 #include <tool/tool_manager.h>
+#include <tools/sch_inspection_tool.h>
 #include <tools/sch_point_editor.h>
 #include <tools/sch_selection_tool.h>
 
@@ -166,6 +167,41 @@ RESULT querySymbols( CONTEXT& aContext, const std::vector<wxString>& aArgs )
                        { { "symbols", std::move( symbols ) }, { "count", count },
                          { "units", "mm" }, { "variant", variant.ToStdString( wxConvUTF8 ) } } );
 }
+
+
+RESULT runErc( CONTEXT& aContext, const std::vector<wxString>& )
+{
+    SCH_EDIT_FRAME& frame = static_cast<SCHEMATIC_CONTEXT&>( aContext ).Frame();
+    SCH_INSPECTION_TOOL* tool = frame.GetToolManager()->GetTool<SCH_INSPECTION_TOOL>();
+
+    if( !tool )
+        return RESULT::Error( STATUS::FAILED, _( "The ERC inspection tool is unavailable." ) );
+
+    ERC_RUN_REPORT report = tool->RunTestsFromCommand();
+
+    if( report.status == ERC_RUN_RESULT::BUSY )
+        return RESULT::Error( STATUS::BUSY, _( "ERC or another editor operation is already running." ) );
+
+    if( report.status == ERC_RUN_RESULT::FAILED )
+        return RESULT::Error( STATUS::FAILED, _( "The ERC workflow could not be started." ) );
+
+    bool completed = report.status == ERC_RUN_RESULT::COMPLETED;
+
+    RESULT result = RESULT::Ok(
+            wxString::Format( _( "ERC: %d error(s), %d warning(s), %d excluded." ),
+                              report.errors, report.warnings, report.excluded ),
+            { { "completed", completed }, { "errors", report.errors },
+              { "warnings", report.warnings }, { "excluded", report.excluded },
+              { "annotation_required", report.annotationRequired } }, true );
+
+    if( !completed )
+    {
+        result.status = STATUS::CANCELLED;
+        result.message = _( "ERC was cancelled; reported counts are partial." );
+    }
+
+    return result;
+}
 } // namespace
 
 
@@ -181,6 +217,10 @@ std::unique_ptr<EXECUTOR> CreateSchematicCommandExecutor( SCH_EDIT_FRAME& aFrame
             { "schematic.get", "schematic.get <reference>",
               _( "Get every matching symbol instance; a unit suffix such as U1A narrows the result." ),
               EDITOR::SCHEMATIC, EFFECT::QUERY, 1, 1, querySymbols } );
+    executor->Registry().Register(
+            { "erc.run", "erc.run",
+              _( "Run ERC on the live schematic using the editor's checks and results dialog." ),
+              EDITOR::SCHEMATIC, EFFECT::CHECK, 0, 0, runErc } );
 
     return executor;
 }

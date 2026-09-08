@@ -1173,6 +1173,12 @@ void SCH_EDIT_FRAME::HardRedraw()
 
 bool SCH_EDIT_FRAME::canCloseWindow( wxCloseEvent& aEvent )
 {
+    if( m_ercDialog && m_ercDialog->IsRunning() )
+    {
+        m_ercDialog->CancelTests();
+        return false;
+    }
+
     // Exit interactive editing
     // Note this this will commit *some* pending changes.  For instance, the SCH_POINT_EDITOR
     // will cancel any drag currently in progress, but commit all changes from previous drags.
@@ -2546,6 +2552,12 @@ DIALOG_ERC* SCH_EDIT_FRAME::GetErcDialog()
 
 void SCH_EDIT_FRAME::onCloseErcDialog( wxCommandEvent& aEvent )
 {
+    if( m_ercDialog && m_ercDialog->IsRunning() )
+    {
+        m_ercDialog->CancelTests();
+        return;
+    }
+
     if( m_ercDialog )
     {
         m_ercDialog->Destroy();

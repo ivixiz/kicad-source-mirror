@@ -36,6 +36,7 @@ wxDECLARE_EVENT( EDA_EVT_CLOSE_ERC_DIALOG, wxCommandEvent );
 
 
 class SCH_MARKER;
+enum class ERC_RUN_RESULT;
 
 
 class DIALOG_ERC : public DIALOG_ERC_BASE, PROGRESS_REPORTER_BASE
@@ -65,6 +66,15 @@ public:
 
     void UpdateData();
     void UpdateAnnotationWarning();
+
+    /// Shared entry point for the Run ERC button and semantic commands.
+    ERC_RUN_RESULT RunTests();
+    bool IsRunning() const { return m_running; }
+    void CancelTests() { m_cancelled = true; }
+
+    /// Counts include violations hidden by the current display filter.
+    int GetViolationCount( int aSeverity ) const;
+    int GetUnannotatedCount() const { return m_itemsNotAnnotated; }
 
 private:
     int getSeverities();
@@ -111,6 +121,7 @@ private:
 
     bool               m_running;
     bool               m_ercRun;
+    int                m_itemsNotAnnotated;
 
     const SCH_MARKER*  m_centerMarkerOnIdle;
 

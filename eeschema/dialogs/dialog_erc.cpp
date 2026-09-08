@@ -42,6 +42,7 @@
 #include <widgets/std_bitmap_button.h>
 #include <dialogs/dialog_text_entry.h>
 #include <string_utils.h>
+#include <scoped_set_reset.h>
 #include <kiplatform/ui.h>
 #include <confirm.h>
 
@@ -84,6 +85,7 @@ DIALOG_ERC::DIALOG_ERC( SCH_EDIT_FRAME* parent ) :
         m_markerTreeModel( nullptr ),
         m_running( false ),
         m_ercRun( false ),
+        m_itemsNotAnnotated( 0 ),
         m_centerMarkerOnIdle( nullptr ),
         m_crossprobe( true ),
         m_scroll_on_crossprobe( true ),
@@ -333,6 +335,12 @@ void DIALOG_ERC::UpdateData()
 }
 
 
+int DIALOG_ERC::GetViolationCount( int aSeverity ) const
+{
+    return m_markerProvider ? m_markerProvider->GetCount( aSeverity ) : 0;
+}
+
+
 void DIALOG_ERC::updateDisplayedCounts()
 {
     int numErrors = 0;
@@ -459,6 +467,16 @@ void DIALOG_ERC::OnCancelClick( wxCommandEvent& aEvent )
 
 void DIALOG_ERC::OnCloseErcDialog( wxCloseEvent& aEvent )
 {
+    if( m_running )
+    {
+        m_cancelled = true;
+
+        if( aEvent.CanVeto() )
+            aEvent.Veto();
+
+        return;
+    }
+
     m_parent->ClearFocus();
 
     // Dialog is mode-less so let the parent know that it needs to be destroyed.
@@ -480,7 +498,42 @@ void DIALOG_ERC::OnLinkClicked( wxHtmlLinkEvent& event )
 
 void DIALOG_ERC::OnRunERCClick( wxCommandEvent& event )
 {
+    RunTests();
+}
+
+
+ERC_RUN_RESULT DIALOG_ERC::RunTests()
+{
+    if( m_running || !m_parent->CanAcceptApiCommands() || !m_parent->ToolStackIsEmpty() )
+        return ERC_RUN_RESULT::BUSY;
+
     wxBusyCursor busy;
+    WINDOW_DISABLER disableEditor( m_parent );
+
+    // Checks can call code that yields or throws. Keep the editor alive and restore the
+    // dialog controls on every exit, so a failure cannot leave ERC permanently busy.
+    SCOPED_EXECUTION<std::function<void()>> runState(
+            [this]()
+            {
+                m_running = true;
+                m_ercRun = false;
+                m_cancelled = false;
+                m_itemsNotAnnotated = 0;
+                m_sdbSizer1Cancel->SetLabel( _( "Cancel" ) );
+                m_sdbSizer1OK->Enable( false );
+                m_deleteOneMarker->Enable( false );
+                m_deleteAllMarkers->Enable( false );
+                m_saveReport->Enable( false );
+            },
+            [this]()
+            {
+                m_running = false;
+                m_sdbSizer1Cancel->SetLabel( _( "Close" ) );
+                m_sdbSizer1OK->Enable( true );
+                m_deleteOneMarker->Enable( true );
+                m_deleteAllMarkers->Enable( true );
+                m_saveReport->Enable( true );
+            } );
 
     SCHEMATIC* sch = &m_parent->Schematic();
 
@@ -507,21 +560,13 @@ void DIALOG_ERC::OnRunERCClick( wxCommandEvent& event )
 
     m_ignoredList->SetColumnWidth( 0, m_ignoredList->GetParent()->GetClientSize().x - 20 );
 
-    m_cancelled = false;
     Raise();
 
     m_runningResultsBook->ChangeSelection( 0 );   // Display the "Tests Running..." tab
     m_messages->Clear();
     Update();                                     // Repaint only, don't enter the full event loop
 
-    m_running = true;
-    m_sdbSizer1Cancel->SetLabel( _( "Cancel" ) );
-    m_sdbSizer1OK->Enable( false );
-    m_deleteOneMarker->Enable( false );
-    m_deleteAllMarkers->Enable( false );
-    m_saveReport->Enable( false );
-
-    int itemsNotAnnotated = m_parent->CheckAnnotate(
+    m_itemsNotAnnotated = m_parent->CheckAnnotate(
             []( ERCE_T aType, const wxString& aMsg, SCH_REFERENCE* aItemA, SCH_REFERENCE* aItemB )
             {
                 std::shared_ptr<ERC_ITEM> ercItem = ERC_ITEM::Create( aType );
@@ -541,10 +586,10 @@ void DIALOG_ERC::OnRunERCClick( wxCommandEvent& event )
 
     testErc();
 
-    if( itemsNotAnnotated )
+    if( m_itemsNotAnnotated )
     {
         m_messages->ReportHead( wxString::Format( _( "%d symbol(s) require annotation.<br><br>" ),
-                                                  itemsNotAnnotated ),
+                                                  m_itemsNotAnnotated ),
                                 RPT_SEVERITY_INFO );
     }
 
@@ -556,26 +601,12 @@ void DIALOG_ERC::OnRunERCClick( wxCommandEvent& event )
     Raise();
     Update();                                     // Repaint only, don't enter the full event loop
 
-    m_running = false;
-    m_sdbSizer1Cancel->SetLabel( _( "Close" ) );
-    m_sdbSizer1OK->Enable( true );
-    m_deleteOneMarker->Enable( true );
-    m_deleteAllMarkers->Enable( true );
-    m_saveReport->Enable( true );
-
     if( !m_cancelled )
     {
         m_sdbSizer1Cancel->SetDefault();
 
-        // wxWidgets has a tendency to keep both buttons highlighted without the following:
-        m_sdbSizer1OK->Enable( false );
-
-        wxMilliSleep( 500 );
         m_runningResultsBook->ChangeSelection( 1 );
         KIPLATFORM::UI::ForceFocus( m_notebook );
-
-        // now re-enable m_sdbSizerOK button
-        m_sdbSizer1OK->Enable( true );
     }
 
     m_ercRun = true;
@@ -583,6 +614,8 @@ void DIALOG_ERC::OnRunERCClick( wxCommandEvent& event )
     updateDisplayedCounts();
     // set float level again, it can be lost due to window events during test run
     KIPLATFORM::UI::SetFloatLevel( this );
+
+    return m_cancelled ? ERC_RUN_RESULT::CANCELLED : ERC_RUN_RESULT::COMPLETED;
 }
 
 

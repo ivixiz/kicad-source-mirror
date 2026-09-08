@@ -32,6 +32,25 @@ class DIALOG_ERC;
 class SYMBOL_DIFF_WIDGET;
 
 
+enum class ERC_RUN_RESULT
+{
+    COMPLETED,
+    CANCELLED,
+    BUSY,
+    FAILED
+};
+
+
+struct ERC_RUN_REPORT
+{
+    ERC_RUN_RESULT status = ERC_RUN_RESULT::FAILED;
+    int            errors = 0;
+    int            warnings = 0;
+    int            excluded = 0;
+    int            annotationRequired = 0;
+};
+
+
 class SCH_INSPECTION_TOOL : public wxEvtHandler, public SCH_TOOL_BASE<SCH_BASE_FRAME>
 {
 public:
@@ -45,6 +64,9 @@ public:
 
     int RunERC( const TOOL_EVENT& aEvent );
     void ShowERCDialog();
+
+    /// Run the existing live-document ERC workflow, including its progress and results dialog.
+    ERC_RUN_REPORT RunTestsFromCommand();
 
     int PrevMarker( const TOOL_EVENT& aEvent );
     int NextMarker( const TOOL_EVENT& aEvent );
