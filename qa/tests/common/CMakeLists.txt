@@ -97,6 +97,7 @@ set( QA_COMMON_SRCS
     test_grid_helper.cpp
     test_snapping_options.cpp
     test_string_utils.cpp
+    test_text_entry_autopair.cpp
     test_richio.cpp
     test_template_fieldnames.cpp
     test_text_attributes.cpp

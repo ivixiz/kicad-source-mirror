@@ -263,6 +263,7 @@ set( KICOMMON_SRCS
     widgets/progress_reporter_base.cpp
     widgets/report_severity.cpp
     widgets/std_bitmap_button.cpp
+    widgets/text_entry_autopair.cpp
     widgets/ui_common.cpp
     widgets/up_down_tree.cpp
     widgets/wx_grid.cpp
