@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <advanced_config.h>
 #include <base_units.h>
+#include <kiplatform/environment.h>
 #include <kiplatform/io.h>
 #include <wildcards_and_files_ext.h>
 #include <background_jobs_monitor.h>
@@ -58,6 +59,7 @@
 #include <tool/tool_manager.h>
 #include <tool/tool_dispatcher.h>
 #include <tools/sch_selection_tool.h>
+#include <tools/sch_find_replace_tool.h>
 #include <trace_helpers.h>
 #include <view/view_controls.h>
 #include <widgets/kistatusbar.h>
@@ -520,8 +522,9 @@ void SCH_BASE_FRAME::ShowFindReplaceDialog( bool aReplace )
     wxString findString;
 
     SCH_SELECTION& selection = m_toolManager->GetTool<SCH_SELECTION_TOOL>()->GetSelection();
+    SCH_FIND_REPLACE_TOOL* findTool = m_toolManager->GetTool<SCH_FIND_REPLACE_TOOL>();
 
-    if( selection.Size() == 1 )
+    if( selection.Size() == 1 && selection.Front() != findTool->GetLastFoundItem() )
     {
         EDA_ITEM* front = selection.Front();
 
@@ -849,13 +852,20 @@ void SCH_BASE_FRAME::setSymWatcher( const LIB_ID* aID )
     if( !wxEventLoopBase::GetActive() )
         return;
 
-    Bind( wxEVT_FSWATCHER, &SCH_BASE_FRAME::OnSymChange, this );
-    m_watcher = std::make_unique<wxFileSystemWatcher>();
-    m_watcher->SetOwner( this );
-
     wxFileName fn;
     fn.AssignDir( m_watcherFileName.GetPath() );
     fn.DontFollowLink();
+
+    // wxMSW frees a watch before SMB completes its pending read, which then corrupts the heap
+    if( KIPLATFORM::ENV::IsNetworkPath( fn.GetPath() ) )
+    {
+        wxLogTrace( traceLibWatch, "Network path, not watching: %s", fn.GetPath() );
+        return;
+    }
+
+    Bind( wxEVT_FSWATCHER, &SCH_BASE_FRAME::OnSymChange, this );
+    m_watcher = std::make_unique<wxFileSystemWatcher>();
+    m_watcher->SetOwner( this );
 
     {
         // Silence OS errors that come from the watcher

@@ -68,6 +68,7 @@ class WX_INFOBAR;
 class KICAD_API_SERVER;
 class API_HANDLER_PCB;
 class API_HANDLER_COMMON;
+class API_HANDLER_LIBRARIES;
 
 enum LAST_PATH_TYPE : unsigned int;
 
@@ -112,15 +113,12 @@ public:
      */
     void ExecuteRemoteCommand( const char* cmdline ) override;
 
+    void HandleRemoteNetHighlight( const std::vector<wxString>& aNetNames );
+
     void KiwayMailIn( KIWAY_MAIL_EVENT& aEvent ) override;
 
     void      SetLastSchematicSheetPath( const KIID_PATH& aPath );
     KIID_PATH GetLastSchematicSheetPath() const { return m_lastSchematicSheetPath; }
-
-    /**
-     * Used to find items by selection synchronization spec string.
-     */
-    std::vector<BOARD_ITEM*> FindItemsFromSyncSelection( std::string syncStr );
 
     /**
      * @return the name of the wxAuiPaneInfo managing the Search panel
@@ -164,6 +162,11 @@ public:
     void UpdateTrackWidthSelectBox( wxChoice* aTrackWidthSelectBox, bool aShowNetclass,
                                     bool aShowEdit );
     void UpdateViaSizeSelectBox( wxChoice* aViaSizeSelectBox, bool aShowNetclass, bool aShowEdit );
+
+    /**
+     * Fill the via stack preset selector with the board's defined presets plus an edit entry.
+     */
+    void UpdateViaStackSelectBox( wxChoice* aViaStackSelectBox );
 
     /**
      * Update the variant selection dropdown with the current board's variant names.
@@ -259,6 +262,10 @@ public:
     void Process_Special_Functions( wxCommandEvent& event );
     void Tracks_and_Vias_Size_Event( wxCommandEvent& event );
 
+    /**
+     * Handle the via stack preset selector on the auxiliary toolbar.
+     */
+    void SelectViaStack_Event( wxCommandEvent& event );
 
 
     /**
@@ -317,6 +324,14 @@ public:
 
     ///< @copydoc EDA_DRAW_FRAME::UseGalCanvas()
     void ActivateGalCanvas() override;
+
+    /**
+     * Tell every hole to redraw its drill symbol.
+     *
+     * A cached GAL group replays until its own item is updated, so changing a map or a
+     * symbol assignment is invisible until the holes themselves are refreshed.
+     */
+    void RefreshDrillSymbols( int aUpdateFlags ) override;
 
     void ShowBoardSetupDialog( const wxString& aInitialPage = wxEmptyString, wxWindow* aParent = nullptr );
 
@@ -774,7 +789,7 @@ protected:
      *
      * @return
      */
-    bool saveBoardAsFile( BOARD* aBoard, const wxString& aFileName, bool aHeadless = false );
+    bool saveBoardAsFile( BOARD& aBoard, const wxString& aFileName, bool aHeadless = false );
 
     bool saveSelectionToDesignBlock( const wxString& aNickname, PCB_SELECTION& aSelection, DESIGN_BLOCK& aBlock );
 
@@ -801,6 +816,7 @@ protected:
 public:
     wxChoice* m_SelTrackWidthBox;        // a choice box to display and select current track width
     wxChoice* m_SelViaSizeBox;           // a choice box to display and select current via diameter
+    wxChoice* m_SelViaStackBox;          // a choice box to display and select current via stack preset
     wxChoice* m_CurrentVariantCtrl;      // a choice box to display and select current variant
 
     bool      m_ShowLayerManagerTools;
@@ -884,6 +900,7 @@ private:
 
     std::unique_ptr<API_HANDLER_PCB>    m_apiHandler;
     std::unique_ptr<API_HANDLER_COMMON> m_apiHandlerCommon;
+    std::unique_ptr<API_HANDLER_LIBRARIES> m_apiLibrariesHandler;
 };
 
 #endif  // __PCB_EDIT_FRAME_H__

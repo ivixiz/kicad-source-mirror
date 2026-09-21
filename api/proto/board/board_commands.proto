@@ -23,10 +23,12 @@ syntax = "proto3";
 package kiapi.board.commands;
 
 import "common/types/base_types.proto";
+import "common/types/embedded_files.proto";
 import "google/protobuf/any.proto";
 import "common/types/enums.proto";
 import "common/types/project_settings.proto";
 import "board/board.proto";
+import "board/board_rules.proto";
 import "board/board_types.proto";
 import "board/board_jobs.proto";
 import "common/commands/editor_commands.proto";
@@ -82,6 +84,26 @@ message SetBoardEnabledLayers
   // by setting copper_layer_count.  Note that the F/B.Courtyard, Edge.Cuts, and Margin layers cannot be disabled and
   // will be present in the board even if they are omitted from this list.
   repeated kiapi.board.types.BoardLayer layers = 3;
+}
+
+// Returns kiapi.common.types.EmbeddedFiles
+message GetEmbeddedFiles
+{
+  kiapi.common.types.DocumentSpecifier board = 1;
+}
+
+// Appends embedded files to the board.  Returns Empty.
+message AddEmbeddedFiles
+{
+  kiapi.common.types.DocumentSpecifier board = 1;
+  kiapi.common.types.EmbeddedFiles files = 2;
+}
+
+// Replaces all embedded files in the board.  Returns Empty.
+message SetEmbeddedFiles
+{
+  kiapi.common.types.DocumentSpecifier board = 1;
+  kiapi.common.types.EmbeddedFiles files = 2;
 }
 
 message GetGraphicsDefaults
@@ -577,6 +599,24 @@ message FlipItemsResponse
   kiapi.common.types.ItemRequestStatus status = 2;
 
   repeated ItemFlipResult flipped_items = 3;
+}
+
+// Requests placement of a footprint on a board
+// Returns PlaceFromLibraryResponse
+// Since: 11.0
+message PlaceFootprintFromLibrary
+{
+  kiapi.common.types.ItemHeader header = 1;
+
+  kiapi.common.types.LibraryIdentifier lib_id = 2;
+
+  kiapi.common.types.Vector2 position = 3;
+
+  // If unspecified, will use default orientation
+  optional kiapi.common.types.Angle orientation = 4;
+
+  // If unspecified, will place on F_Cu.  Footprint will be flipped if placed on B_Cu.
+  optional kiapi.board.types.BoardLayer layer = 5;
 }
 
 

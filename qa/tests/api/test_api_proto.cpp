@@ -19,6 +19,8 @@
  */
 
 #include <boost/test/unit_test.hpp>
+#include <memory>
+#include <limits>
 #include <import_export.h>
 #include <qa_utils/api_test_utils.h>
 #include <qa_utils/wx_utils/wx_assert.h>
@@ -26,13 +28,21 @@
 #include <settings/settings_manager.h>
 
 #include <api/board/board_types.pb.h>
+#include <api/common/types/embedded_files.pb.h>
 
 #include <board.h>
+#include <embedded_files.h>
 #include <footprint.h>
 #include <pcb_barcode.h>
 #include <pcb_dimension.h>
-#include <pcb_griditem.h>
+#include <pcb_drill_chart.h>
+#include <pcb_drill_map.h>
+#include <pcb_grid_item.h>
 #include <pcb_reference_image.h>
+#include <pcb_shape.h>
+#include <pcb_table.h>
+#include <pcb_text.h>
+#include <pcb_textbox.h>
 #include <pcb_track.h>
 #include <zone.h>
 
@@ -54,7 +64,13 @@ BOOST_FIXTURE_TEST_CASE( BoardTypes, PROTO_TEST_FIXTURE )
     KI_TEST::LoadBoard( m_settingsManager, "api_kitchen_sink", m_board );
 
     int barcodeCount = 0;
+    int drillChartCount = 0;
+    int drillMapCount = 0;
     int referenceImageCount = 0;
+    int tableCount = 0;
+    int textCount = 0;
+    int textBoxCount = 0;
+    int shapeCount = 0;
 
     for( PCB_TRACK* track : m_board->Tracks() )
     {
@@ -70,11 +86,8 @@ BOOST_FIXTURE_TEST_CASE( BoardTypes, PROTO_TEST_FIXTURE )
             break;
 
         case PCB_VIA_T:
-            // Vias are not strict-checked at the moment because m_zoneLayerOverrides is not
-            // currently exposed to the API
-            // TODO(JE) enable strict when fixed
             testProtoFromKiCadObject<kiapi::board::types::Via>( static_cast<PCB_VIA*>( track ),
-                                                                m_board.get(), false );
+                                                                m_board.get() );
             break;
 
         default:
@@ -129,15 +142,110 @@ BOOST_FIXTURE_TEST_CASE( BoardTypes, PROTO_TEST_FIXTURE )
             ++referenceImageCount;
             break;
 
+        case PCB_DRILL_CHART_T:
+            testProtoFromKiCadObject<kiapi::board::types::DrillChart>(
+                    static_cast<PCB_DRILL_CHART*>( item ), m_board.get() );
+            ++drillChartCount;
+            break;
+
+        case PCB_DRILL_MAP_T:
+            testProtoFromKiCadObject<kiapi::board::types::DrillMap>(
+                    static_cast<PCB_DRILL_MAP*>( item ), m_board.get() );
+            ++drillMapCount;
+            break;
+
+        case PCB_TABLE_T:
+            testProtoFromKiCadObject<kiapi::board::types::Table>( static_cast<PCB_TABLE*>( item ), m_board.get() );
+            ++tableCount;
+            break;
+
+        case PCB_TEXT_T:
+            testProtoFromKiCadObject<kiapi::board::types::BoardText>(
+                    static_cast<PCB_TEXT*>( item ), m_board.get() );
+            ++textCount;
+            break;
+
+        case PCB_TEXTBOX_T:
+            testProtoFromKiCadObject<kiapi::board::types::BoardTextBox>(
+                    static_cast<PCB_TEXTBOX*>( item ), m_board.get() );
+            ++textBoxCount;
+            break;
+
+        case PCB_SHAPE_T:
+            testProtoFromKiCadObject<kiapi::board::types::BoardGraphicShape>(
+                    static_cast<PCB_SHAPE*>( item ), m_board.get() );
+            ++shapeCount;
+            break;
+
         default: break;
         }
-        // TODO(JE) Shapes
-
-        // TODO(JE) Text
     }
 
     BOOST_CHECK_GT( barcodeCount, 0 );
+    BOOST_CHECK_GT( drillChartCount, 0 );
+    BOOST_CHECK_GT( drillMapCount, 0 );
     BOOST_CHECK_GT( referenceImageCount, 0 );
+    BOOST_CHECK_GT( tableCount, 0 );
+    BOOST_CHECK_GT( textCount, 0 );
+    BOOST_CHECK_GT( textBoxCount, 0 );
+    BOOST_CHECK_GT( shapeCount, 0 );
+}
+
+
+BOOST_AUTO_TEST_CASE( FootprintExcludeFromSimulationRoundTrip )
+{
+    BOARD     board;
+    FOOTPRINT footprint( &board );
+
+    footprint.SetExcludedFromSim( true );
+
+    testProtoFromKiCadObject<kiapi::board::types::FootprintInstance>( &footprint, &board );
+}
+
+
+BOOST_FIXTURE_TEST_CASE( DrillChartColumnWidths, PROTO_TEST_FIXTURE )
+{
+    KI_TEST::LoadBoard( m_settingsManager, "api_kitchen_sink", m_board );
+
+    PCB_DRILL_CHART* chart = nullptr;
+
+    for( BOARD_ITEM* item : m_board->Drawings() )
+    {
+        if( item->Type() == PCB_DRILL_CHART_T )
+        {
+            chart = static_cast<PCB_DRILL_CHART*>( item );
+            break;
+        }
+    }
+
+    BOOST_REQUIRE( chart );
+
+    google::protobuf::Any any;
+    chart->Serialize( any );
+    kiapi::board::types::DrillChart proto;
+    BOOST_REQUIRE( any.UnpackTo( &proto ) );
+    BOOST_REQUIRE_GT( proto.columns_size(), 0 );
+    BOOST_CHECK_EQUAL( proto.columns( 0 ).width().value_nm(), 16000000 );
+
+    for( int64_t width : { int64_t( 0 ), int64_t( DRILL_CHART_MAX_COLUMN_WIDTH ) } )
+    {
+        proto.mutable_columns( 0 )->mutable_width()->set_value_nm( width );
+        any.PackFrom( proto );
+        PCB_DRILL_CHART restored( m_board.get() );
+        BOOST_REQUIRE( restored.Deserialize( any ) );
+        BOOST_CHECK_EQUAL( restored.Columns().front().m_Width, width );
+    }
+
+    for( int64_t width : { int64_t( -1 ), int64_t( DRILL_CHART_MAX_COLUMN_WIDTH ) + 1,
+                          std::numeric_limits<int64_t>::max() } )
+    {
+        proto.mutable_columns( 0 )->mutable_width()->set_value_nm( width );
+        any.PackFrom( proto );
+        PCB_DRILL_CHART restored( m_board.get() );
+        BOOST_REQUIRE( restored.Deserialize( any ) );
+        BOOST_CHECK_EQUAL( restored.Columns().front().m_Width,
+                           width < 0 ? 0 : DRILL_CHART_MAX_COLUMN_WIDTH );
+    }
 }
 
 
@@ -150,11 +258,7 @@ BOOST_FIXTURE_TEST_CASE( Padstacks, PROTO_TEST_FIXTURE )
         switch( track->Type() )
         {
         case PCB_VIA_T:
-            // Vias are not strict-checked at the moment because m_zoneLayerOverrides is not
-            // currently exposed to the API
-            // TODO(JE) enable strict when fixed
-            testProtoFromKiCadObject<kiapi::board::types::Via>( static_cast<PCB_VIA*>( track ),
-                                                                m_board.get(), false );
+            testProtoFromKiCadObject<kiapi::board::types::Via>( static_cast<PCB_VIA*>( track ), m_board.get() );
             break;
 
         default:
@@ -165,6 +269,45 @@ BOOST_FIXTURE_TEST_CASE( Padstacks, PROTO_TEST_FIXTURE )
     for( FOOTPRINT* footprint : m_board->Footprints() )
         testProtoFromKiCadObject<kiapi::board::types::FootprintInstance>( footprint, m_board.get() );
 }
+
+
+BOOST_FIXTURE_TEST_CASE( EmbeddedFiles, PROTO_TEST_FIXTURE )
+{
+    KI_TEST::LoadBoard( m_settingsManager, "api_kitchen_sink", m_board );
+
+    for( const FOOTPRINT* fp : m_board->Footprints() )
+    {
+        if( fp->EmbeddedFileMap().empty() )
+            continue;
+
+        BOOST_TEST_CONTEXT( wxString::Format( wxS( "Footprint %s embedded files" ), fp->m_Uuid.AsStdString() ) )
+        {
+            google::protobuf::Any any;
+            fp->Serialize( any );
+
+            kiapi::board::types::FootprintInstance proto;
+            BOOST_CHECK( any.UnpackTo( &proto ) );
+
+            BOOST_CHECK_GT( proto.embedded_files().files_size(), 0 );
+
+            const kiapi::common::types::EmbeddedFile& file = proto.embedded_files().files( 0 );
+            BOOST_CHECK( !file.data().empty() );
+
+            std::unique_ptr<FOOTPRINT> roundTripped = std::make_unique<FOOTPRINT>( m_board.get() );
+            BOOST_CHECK( roundTripped->Deserialize( any ) );
+
+            for( const auto& [name, expected] : fp->EmbeddedFileMap() )
+            {
+                const EMBEDDED_FILES::EMBEDDED_FILE* actual = roundTripped->GetEmbeddedFile( name );
+                BOOST_CHECK_MESSAGE( actual, wxString::Format( wxS( "Embedded file '%s' missing after round-trip" ), name ).c_str() );
+                BOOST_CHECK_EQUAL( magic_enum::enum_name( expected->type ), magic_enum::enum_name( actual->type ) );
+                BOOST_CHECK_EQUAL( expected->data_hash, actual->data_hash );
+                BOOST_CHECK_EQUAL( expected->compressedEncodedData, actual->compressedEncodedData );
+            }
+        }
+    }
+}
+
 
 /**
  * Round-trip a copper-thieving zone through the protobuf API.  The shared
@@ -223,13 +366,14 @@ BOOST_FIXTURE_TEST_CASE( CopperThievingZoneRoundTrip, PROTO_TEST_FIXTURE )
 
 BOOST_AUTO_TEST_CASE( GridItems )
 {
-    const auto makeGridItem = []()
-    {
-        return std::make_unique<PCB_GRIDITEM>( nullptr );
-    };
+    const auto makeGridItem =
+            []()
+            {
+                return std::make_unique<PCB_GRID_ITEM>( nullptr );
+            };
 
-    PCB_GRIDITEM cartesian( nullptr );
-    cartesian.SetGridItemType( PCB_GRIDITEM_TYPE::CARTESIAN );
+    PCB_GRID_ITEM cartesian( nullptr );
+    cartesian.SetGridItemType( PCB_GRID_TYPE::CARTESIAN );
     cartesian.SetPosition( VECTOR2I( 1000000, -2000000 ) );
     cartesian.SetOrientationDegrees( 30.0 );
     cartesian.SetExtent( VECTOR2I( 5000000, 4000000 ) );
@@ -241,8 +385,8 @@ BOOST_AUTO_TEST_CASE( GridItems )
 
     testProtoFromKiCadObject<kiapi::board::types::GridItem>( &cartesian, makeGridItem );
 
-    PCB_GRIDITEM polar( nullptr );
-    polar.SetGridItemType( PCB_GRIDITEM_TYPE::POLAR );
+    PCB_GRID_ITEM polar( nullptr );
+    polar.SetGridItemType( PCB_GRID_TYPE::POLAR );
     polar.SetPosition( VECTOR2I( -750000, 125000 ) );
     polar.SetRadiusExtent( 8000000 );
     polar.SetRadiusSpacing( 1000000 );
@@ -258,10 +402,10 @@ BOOST_AUTO_TEST_CASE( GridItems )
     google::protobuf::Any any;
     polar.Serialize( any );
 
-    std::unique_ptr<PCB_GRIDITEM> roundTripped = makeGridItem();
+    std::unique_ptr<PCB_GRID_ITEM> roundTripped = makeGridItem();
     BOOST_REQUIRE( roundTripped->Deserialize( any ) );
 
-    BOOST_CHECK( roundTripped->GetGridItemType() == PCB_GRIDITEM_TYPE::POLAR );
+    BOOST_CHECK( roundTripped->GetGridItemType() == PCB_GRID_TYPE::POLAR );
     BOOST_CHECK_EQUAL( roundTripped->GetRadiusExtent(), 8000000 );
     BOOST_CHECK_EQUAL( roundTripped->GetRadiusSpacing(), 1000000 );
     BOOST_CHECK( roundTripped->GetPhiExtent() == EDA_ANGLE( 270.0, DEGREES_T ) );

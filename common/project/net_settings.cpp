@@ -130,7 +130,7 @@ NET_SETTINGS::NET_SETTINGS( JSON_SETTINGS* aParent, const std::string& aPath ) :
             {
                 wxString name = entry["name"];
 
-                std::shared_ptr<NETCLASS> nc = std::make_shared<NETCLASS>( name, false );
+                std::shared_ptr<NETCLASS> nc = std::make_shared<NETCLASS>( name, name == NETCLASS::Default );
 
                 if( entry.contains( "priority" ) && entry["priority"].is_number() )
                     nc->SetPriority( entry["priority"].get<int>() );
@@ -224,7 +224,7 @@ NET_SETTINGS::NET_SETTINGS( JSON_SETTINGS* aParent, const std::string& aPath ) :
     m_params.emplace_back( new PARAM_LAMBDA<nlohmann::json>( "net_colors",
             [&]() -> nlohmann::json
             {
-                nlohmann::json ret = {};
+                nlohmann::json ret = nlohmann::json::object();
 
                 for( const auto& [netname, color] : m_netColorAssignments )
                 {
@@ -323,7 +323,7 @@ NET_SETTINGS::NET_SETTINGS( JSON_SETTINGS* aParent, const std::string& aPath ) :
     m_params.emplace_back( new PARAM_LAMBDA<nlohmann::json>( "netclass_assignments",
             [&]() -> nlohmann::json
             {
-                nlohmann::json ret = {};
+                nlohmann::json ret = nlohmann::json::object();
 
                 for( const auto& [netname, netclassNames] : m_netClassLabelAssignments )
                 {
@@ -357,6 +357,9 @@ NET_SETTINGS::NET_SETTINGS( JSON_SETTINGS* aParent, const std::string& aPath ) :
                 }
             },
             {} ) );
+
+    // Let the save drop stale netclass assignments instead of merging them back in
+    m_params.back()->SetClearUnknownKeys();
 
     m_params.emplace_back( new PARAM_LAMBDA<nlohmann::json>( "netclass_patterns",
             [&]() -> nlohmann::json
@@ -836,11 +839,27 @@ void NET_SETTINGS::ClearChainPatternAssignments( NET_CHAIN_SOURCE aSource )
 
 void NET_SETTINGS::ClearCacheForNet( const wxString& netName )
 {
-    if( m_effectiveNetclassCache.count( netName ) )
+    std::set<wxString> pending{ netName };
+
+    while( !pending.empty() )
     {
-        wxString compositeNetclassName = m_effectiveNetclassCache[netName]->GetName();
-        m_compositeNetClasses.erase( compositeNetclassName );
-        m_effectiveNetclassCache.erase( netName );
+        const wxString name = *pending.begin();
+        pending.erase( pending.begin() );
+        auto cached = m_effectiveNetclassCache.find( name );
+
+        if( cached != m_effectiveNetclassCache.end() )
+        {
+            m_compositeNetClasses.erase( cached->second->GetName() );
+            m_effectiveNetclassCache.erase( cached );
+        }
+
+        m_netclassBusMembers.erase( name );
+
+        for( const auto& [bus, members] : m_netclassBusMembers )
+        {
+            if( members.contains( name ) )
+                pending.insert( bus );
+        }
     }
 }
 
@@ -849,6 +868,7 @@ void NET_SETTINGS::ClearAllCaches()
 {
     m_effectiveNetclassCache.clear();
     m_compositeNetClasses.clear();
+    m_netclassBusMembers.clear();
 }
 
 
@@ -898,6 +918,52 @@ bool NET_SETTINGS::RenameNetPathPrefix( const wxString& aOldPrefix, const wxStri
         if( netName.StartsWith( aOldPrefix ) )
         {
             updatedColors[aNewPrefix + netName.Mid( aOldPrefix.length() )] = color;
+            changed = true;
+        }
+        else
+        {
+            updatedColors[netName] = color;
+        }
+    }
+
+    if( changed )
+    {
+        m_netColorAssignments = std::move( updatedColors );
+        ClearAllCaches();
+    }
+
+    return changed;
+}
+
+
+bool NET_SETTINGS::RenameNets( const std::map<wxString, wxString>& aNewNames )
+{
+    if( aNewNames.empty() )
+        return false;
+
+    bool changed = false;
+
+    // Only an exact-net pattern names one net; a wildcard may still match after the rename.
+    for( auto& [matcher, netclass] : m_netClassPatternAssignments )
+    {
+        auto rename = aNewNames.find( matcher->GetPattern() );
+
+        if( rename != aNewNames.end() && rename->second != rename->first )
+        {
+            matcher = std::make_unique<EDA_COMBINED_MATCHER>( rename->second, CTX_NETCLASS );
+            changed = true;
+        }
+    }
+
+    std::map<wxString, KIGFX::COLOR4D> updatedColors;
+
+    for( const auto& [netName, color] : m_netColorAssignments )
+    {
+        auto rename = aNewNames.find( netName );
+
+        if( rename != aNewNames.end() && rename->second != netName )
+        {
+            updatedColors[rename->second] = color;
             changed = true;
         }
         else
@@ -1045,6 +1111,9 @@ std::shared_ptr<NETCLASS> NET_SETTINGS::GetEffectiveNetClass( const wxString& aN
                               if( !allSameNetclass )
                                   return;
 
+                              // The first disagreeing pair suffices: later members cannot change
+                              // the result while that pair remains unequal.
+                              m_netclassBusMembers[aNetName].insert( member );
                               std::shared_ptr<NETCLASS> memberNc = GetEffectiveNetClass( member );
 
                               if( !sharedNetclass )
@@ -1407,6 +1476,9 @@ bool NET_SETTINGS::ParseBusVector( const wxString& aBus, wxString* aName,
     int      braceNesting = 0;
     bool     fmtWrapsName = false;
     bool     inQuotes = false;
+    bool     parsedEnd = false;
+    bool     padded = false;
+    size_t   width = 0;
 
     prefix.reserve( busLen );
 
@@ -1514,7 +1586,11 @@ bool NET_SETTINGS::ParseBusVector( const wxString& aBus, wxString* aName,
     {
         if( aBus[i] == '.' && i + 1 < busLen && aBus[i+1] == '.' )
         {
-            tmp.ToLong( &begin );
+            if( tmp.IsEmpty() || !tmp.ToLong( &begin ) )
+                return false;
+
+            width = tmp.length();
+            padded = width > 1 && tmp[0] == '0';
             i += 2;
             break;
         }
@@ -1536,7 +1612,12 @@ bool NET_SETTINGS::ParseBusVector( const wxString& aBus, wxString* aName,
     {
         if( aBus[i] == ']' )
         {
-            tmp.ToLong( &end );
+            if( tmp.IsEmpty() || !tmp.ToLong( &end ) )
+                return false;
+
+            padded |= tmp.length() > 1 && tmp[0] == '0';
+            width = std::max( width, tmp.length() );
+            parsedEnd = true;
             ++i;
             break;
         }
@@ -1546,6 +1627,9 @@ bool NET_SETTINGS::ParseBusVector( const wxString& aBus, wxString* aName,
 
         tmp += aBus[i];
     }
+
+    if( !parsedEnd )
+        return false;
 
     // Parse suffix
     //
@@ -1581,13 +1665,21 @@ bool NET_SETTINGS::ParseBusVector( const wxString& aBus, wxString* aName,
 
     if( aMemberList )
     {
-        for( long idx = begin; idx <= end; ++idx )
+        // We can overflow the counter with the increment, so idx <= end is not safe here.
+        for( long idx = begin;; ++idx )
         {
+            wxString number;
+            number << idx;
             wxString str = prefix;
-            str << idx;
-            str << suffix;
 
+            if( padded && number.length() < width )
+                str += wxString( '0', width - number.length() );
+
+            str << number << suffix;
             aMemberList->emplace_back( str );
+
+            if( idx == end )
+                break;
         }
     }
 
@@ -1596,7 +1688,7 @@ bool NET_SETTINGS::ParseBusVector( const wxString& aBus, wxString* aName,
 
 
 bool NET_SETTINGS::ParseBusGroup( const wxString& aGroup, wxString* aName,
-                                  std::vector<wxString>* aMemberList )
+                                  std::vector<wxString>* aMemberList, size_t* aPrefixEnd )
 {
     size_t   groupLen = aGroup.length();
     size_t   i = 0;
@@ -1696,6 +1788,8 @@ bool NET_SETTINGS::ParseBusGroup( const wxString& aGroup, wxString* aName,
     if( aName )
         *aName = prefix;
 
+    const size_t prefixEnd = i;
+
     // Parse members
     //
     i++;  // '{' character
@@ -1758,6 +1852,9 @@ bool NET_SETTINGS::ParseBusGroup( const wxString& aGroup, wxString* aName,
             {
                 if( aMemberList && !tmp.IsEmpty() )
                     aMemberList->push_back( EscapeString( escapeSpacesForBus( tmp ), CTX_NETNAME ) );
+
+                if( aPrefixEnd )
+                    *aPrefixEnd = prefixEnd;
 
                 return true;
             }

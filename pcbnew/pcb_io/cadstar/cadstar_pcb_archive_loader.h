@@ -87,8 +87,9 @@ public:
     /**
      * @brief Parse a CADSTAR PCB Archive and load the footprints contained within
      * @return Container with all the footprint definitions that were loaded (caller owns them)
+     * Note: do not use name LoadLibrary, on MINGW it collides with a Windows define
      */
-    std::vector<std::unique_ptr<FOOTPRINT>> LoadLibrary();
+    std::vector<std::unique_ptr<FOOTPRINT>> LoadFpLibrary();
 
     /**
      * @brief Return a copy of the loaded library footprints (caller owns the objects)
@@ -455,6 +456,15 @@ private:
     // Helper Functions for obtaining individual elements as KiCad elements:
     EDA_ANGLE  getHatchCodeAngle( const HATCHCODE_ID& aCadstarHatchcodeID );
     PAD*       getKiCadPad( const COMPONENT_PAD& aCadstarPad, FOOTPRINT* aParent );
+
+    /**
+     * Apply a CADSTAR pad shape to a single layer of a KiCad padstack.
+     *
+     * @return the offset from the pad origin to the centre of the shape, non-zero for the
+     *         shapes CADSTAR grows asymmetrically.
+     */
+    VECTOR2I applyPadShape( PAD* aPad, PCB_LAYER_ID aPadLayer, const CADSTAR_PAD_SHAPE& aShape );
+
     PAD*&      getPadReference( FOOTPRINT* aFootprint, const PAD_ID aCadstarPadID );
     FOOTPRINT* getFootprintFromCadstarID( const COMPONENT_ID& aCadstarComponentID );
     int        getKiCadHatchCodeThickness( const HATCHCODE_ID& aCadstarHatchcodeID );

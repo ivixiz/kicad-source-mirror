@@ -87,6 +87,8 @@ wxString ERC_REPORT::GetTextReport()
         {
             if( item->MainItemHasSheetPath() )
                 orderedItems[item->GetMainItemSheetPath()].emplace_back( item );
+            else if( item->IsSheetSpecific() )
+                orderedItems[item->GetSpecificSheetPath()].emplace_back( item );
             else
                 orderedItems[sheetList[0]].emplace_back( item );
         }
@@ -158,7 +160,7 @@ bool ERC_REPORT::WriteJsonReport( const wxString& aFullFileName )
 {
     std::ofstream jsonFileStream( aFullFileName.fn_str() );
 
-    UNITS_PROVIDER            unitsProvider( pcbIUScale, m_reportUnits );
+    UNITS_PROVIDER            unitsProvider( schIUScale, m_reportUnits );
     std::map<KIID, EDA_ITEM*> itemMap;
 
     RC_JSON::ERC_REPORT reportHead;
@@ -192,6 +194,8 @@ bool ERC_REPORT::WriteJsonReport( const wxString& aFullFileName )
         {
             if( item->MainItemHasSheetPath() )
                 orderedItems[item->GetMainItemSheetPath()].emplace_back( item );
+            else if( item->IsSheetSpecific() )
+                orderedItems[item->GetSpecificSheetPath()].emplace_back( item );
             else
                 orderedItems[sheetList[0]].emplace_back( item );
         }

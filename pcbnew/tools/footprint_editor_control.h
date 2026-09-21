@@ -59,12 +59,14 @@ public:
     int DeleteFootprint( const TOOL_EVENT& aEvent );
     int ImportFootprint( const TOOL_EVENT& aEvent );
     int ExportFootprint( const TOOL_EVENT& aEvent );
+    int ExportFootprintAsSVG( const TOOL_EVENT& aEvent );
 
     /// Diff the currently-selected footprint library against another .pretty directory.
     int CompareLibraryWithFile( const TOOL_EVENT& aEvent );
     int OpenDirectory( const TOOL_EVENT& aEvent );
     int OpenWithTextEditor( const TOOL_EVENT& aEvent );
     int ShowDatasheet( const TOOL_EVENT& aEvent );
+    int ShowLibraryFieldsTable( const TOOL_EVENT& aEvent );
 
     int ToggleLayersManager( const TOOL_EVENT& aEvent );
     int ToggleProperties( const TOOL_EVENT& aEvent );

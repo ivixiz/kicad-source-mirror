@@ -174,6 +174,7 @@ public:
      * @param aRepositoryId id of the repository
      */
     void DiscardRepositoryCache( const wxString& aRepositoryId );
+    void DiscardAllRepositoryCaches();
 
     /**
      * @brief Mark package as installed
@@ -254,6 +255,35 @@ public:
      * @return PCM_PACKAGE_STATE
      */
     PCM_PACKAGE_STATE GetPackageState( const wxString& aRepositoryId, const wxString& aPackageId );
+
+    /**
+     * @brief Find the cached repository that publishes a given package
+     *
+     * A recorded repository id is a hash of the repository url, so it matches nothing once
+     * that url is edited, and it is empty for packages installed from a local file.
+     *
+     * Only repositories present in aCache are considered; the caller decides what to fetch.
+     * Several publishers that the recorded name does not settle give an empty result rather
+     * than a guess, so a package is never reassigned to a source the user did not pick.
+     *
+     * @param aPackageId package id to look for
+     * @param aRecordedName name the source repository gave itself at install time
+     * @param aRepositoryList configured repositories as (id, name, url) tuples
+     * @param aCache repositories cached so far
+     * @return id of the publishing repository, empty string if there is no unambiguous one
+     */
+    static wxString ResolveRepositoryId( const wxString& aPackageId, const wxString& aRecordedName,
+                                         const STRING_TUPLE_LIST& aRepositoryList,
+                                         const std::unordered_map<wxString, PCM_REPOSITORY>& aCache );
+
+    /**
+     * @brief Repair the repository id of every installed package
+     *
+     * Fetches configured repositories as needed and rewrites the recorded repository of
+     * each installed package to the one that currently publishes it. Also refreshes the
+     * installed package metadata of every repository this fetches.
+     */
+    void ResolveInstalledPackageRepositories();
 
     /**
      * @brief Returns true if the selected package version requires SWIG
@@ -393,12 +423,28 @@ private:
                         int aSchemaVersion = 1 );
 
     /**
+     * @brief Find a configured repository by id
+     *
+     * @param aRepositoryId id of the repository
+     * @return iterator into the repository list, end() if the id is not configured
+     */
+    STRING_TUPLE_LIST::const_iterator findRepository( const wxString& aRepositoryId ) const;
+
+    /**
      * @brief Get the cached repository metadata
      *
      * @param aRepositoryId id of the repository
      * @return const PCM_REPOSITORY&
      */
     const PCM_REPOSITORY& getCachedRepository( const wxString& aRepositoryId ) const;
+
+    /**
+     * @brief Repair the repository id of a single installed package
+     *
+     * @param aEntry installation entry to repair in place
+     * @return true if the entry now names a cached repository that publishes the package
+     */
+    bool resolveInstalledPackageRepository( PCM_INSTALLATION_ENTRY& aEntry );
 
     /**
      * @brief Updates metadata of installed packages from freshly fetched repo

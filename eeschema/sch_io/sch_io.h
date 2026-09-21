@@ -24,6 +24,7 @@
 #define SCH_IO_H_
 
 #include <io/io_base.h>
+#include <memory>
 #include <sch_io/sch_io_mgr.h>
 #include <import_export.h>
 #include <map>
@@ -199,6 +200,27 @@ public:
                                      const std::map<std::string, UTF8>* aProperties = nullptr );
 
     /**
+     * Validate that the library at \a aLibraryPath is reachable and well-formed,
+     * without necessarily loading symbol data.
+     *
+     * This is used for editing library tables, where a full EnumerateSymbolLib can be
+     * expensive for some libraries (e.g. HTTP or Database) and should not be done just to
+     * check if the library is OK to use.
+     *
+     * @param aLibraryPath is a locator for the "library", usually a directory, file,
+     *                     or URL containing one or more #LIB_SYMBOL objects.
+     *
+     * @param aProperties is an associative array that can be used to tell the plugin anything
+     *                    needed about how to perform with respect to \a aLibraryPath.  The
+     *                    caller continues to own this object (plugin may not delete it), and
+     *                    plugins should expect it to be optionally NULL.
+     *
+     * @throw IO_ERROR if the library cannot be found or is not well-formed.
+     */
+    virtual void CheckLibrary( const wxString& aLibraryPath,
+                               const std::map<std::string, UTF8>* aProperties = nullptr );
+
+    /**
      * Load a #LIB_SYMBOL object having \a aPartName from the \a aLibraryPath containing
      * a library format that this #SCH_IO knows about.
      *
@@ -232,8 +254,9 @@ public:
      * @param aLibraryPath is a locator for the "library", usually a directory, file,
      *                     or URL containing several symbols.
      *
-     * @param aSymbol is what to store in the library.  The library is refreshed and the
-     *                caller must update any #LIB_SYMBOL pointers that may have changed.
+     * @param aSymbol is what to store in the library. Ownership is transferred to the plugin,
+     *                which may retain or destroy the symbol: the caller must not use it after
+     *                this call.
      *
      * @param aProperties is an associative array that can be used to tell the
      *                    saver how to save the symbol, because it can take any number of
@@ -243,7 +266,7 @@ public:
      *
      * @throw IO_ERROR if there is a problem saving.
      */
-    virtual void SaveSymbol( const wxString& aLibraryPath, const LIB_SYMBOL* aSymbol,
+    virtual void SaveSymbol( const wxString& aLibraryPath, std::unique_ptr<LIB_SYMBOL> aSymbol,
                              const std::map<std::string, UTF8>* aProperties = nullptr );
 
     /**

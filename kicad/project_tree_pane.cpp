@@ -31,6 +31,9 @@
 #include <wx/timer.h>
 #include <wx/wupdlock.h>
 #include <wx/log.h>
+#include <wx/dcclient.h>
+#include <wx/progdlg.h>
+#include <wx/settings.h>
 
 #include <frame_type.h>
 #include <kiway.h>
@@ -57,9 +60,7 @@
 #include <string_utils.h>
 #include <thread_pool.h>
 #include <launch_ext.h>
-#include <wx/dcclient.h>
-#include <wx/progdlg.h>
-#include <wx/settings.h>
+#include <wx_log_utils.h>
 
 #include <git/git_commit_handler.h>
 #include <git/git_config_handler.h>
@@ -1565,13 +1566,13 @@ void PROJECT_TREE_PANE::FileWatcherReset()
 
         bool watcherHasError = false;
         WatcherLogHandler tmpLog( &watcherHasError );
-        wxLog* oldLog = wxLog::SetActiveTarget( &tmpLog );
 
-        m_watcher = new wxFileSystemWatcher();
-        m_watcher->SetOwner( this );
+        {
+            SCOPED_WXLOG_TARGET logOverride( &tmpLog );
 
-        // Restore previous log handler
-        wxLog::SetActiveTarget( oldLog );
+            m_watcher = new wxFileSystemWatcher();
+            m_watcher->SetOwner( this );
+        }
 
         if( watcherHasError )
         {
@@ -2370,7 +2371,7 @@ void PROJECT_TREE_PANE::updateGitStatusIcons()
         wxTreeItemId current = items.top();
         items.pop();
 
-        if( m_TreeProject->ItemHasChildren( current ) )
+        if( current.IsOk() && m_TreeProject->ItemHasChildren( current ) )
         {
             wxTreeItemIdValue cookie;
             wxTreeItemId      child = m_TreeProject->GetFirstChild( current, cookie );
@@ -2380,9 +2381,7 @@ void PROJECT_TREE_PANE::updateGitStatusIcons()
                 items.push( child );
 
                 if( auto it = m_gitStatusIcons.find( child ); it != m_gitStatusIcons.end() )
-                {
                     m_TreeProject->SetItemState( child, static_cast<int>( it->second ) );
-                }
 
                 child = m_TreeProject->GetNextChild( current, cookie );
             }
@@ -2666,8 +2665,8 @@ void PROJECT_TREE_PANE::onGitCommit( wxCommandEvent& aEvent )
     GitUserConfig userConfig = configHandler.GetUserConfig();
 
     // Collect modified files in the repository
-    GIT_STATUS_HANDLER statusHandler( m_TreeProject->GitCommon() );
-    auto fileStatusMap = statusHandler.GetFileStatus();
+    GIT_STATUS_HANDLER             statusHandler( m_TreeProject->GitCommon() );
+    std::map<wxString, FileStatus> fileStatusMap = statusHandler.GetFileStatus();
 
     std::map<wxString, int> modifiedFiles;
     std::set<wxString> selected_files;
@@ -2705,6 +2704,7 @@ void PROJECT_TREE_PANE::onGitCommit( wxCommandEvent& aEvent )
 
         // Convert to relative path for the modifiedFiles map
         wxString relativePath = absPath;
+
         if( relativePath.StartsWith( repoWorkDir ) )
         {
             relativePath = relativePath.Mid( repoWorkDir.length() );
@@ -2759,7 +2759,7 @@ void PROJECT_TREE_PANE::onGitCommit( wxCommandEvent& aEvent )
     // Create a commit dialog
     DIALOG_GIT_COMMIT dlg( wxGetTopLevelParent( this ), repo, userConfig.authorName, userConfig.authorEmail,
                            modifiedFiles );
-    auto              ret = dlg.ShowModal();
+    int               ret = dlg.ShowModal();
 
     if( ret != wxID_OK )
         return;
@@ -2779,13 +2779,12 @@ void PROJECT_TREE_PANE::onGitCommit( wxCommandEvent& aEvent )
     }
 
     GIT_COMMIT_HANDLER commitHandler( repo );
-    auto result = commitHandler.PerformCommit( files, dlg.GetCommitMessage(),
-                                              dlg.GetAuthorName(), dlg.GetAuthorEmail() );
+    CommitResult       result = commitHandler.PerformCommit( files, dlg.GetCommitMessage(), dlg.GetAuthorName(),
+                                                             dlg.GetAuthorEmail() );
 
     if( result != CommitResult::Success )
     {
-        wxMessageBox( wxString::Format( _( "Failed to create commit: %s" ),
-                                        commitHandler.GetErrorString() ) );
+        wxMessageBox( wxString::Format( _( "Failed to create commit: %s" ), commitHandler.GetErrorString() ) );
         return;
     }
 
@@ -2951,10 +2950,10 @@ void PROJECT_TREE_PANE::onGitAmendCommit( wxCommandEvent& aEvent )
     GIT_CONFIG_HANDLER configHandler( m_TreeProject->GitCommon() );
     GitUserConfig      userConfig = configHandler.GetUserConfig();
 
-    GIT_STATUS_HANDLER statusHandler( m_TreeProject->GitCommon() );
-    auto               fileStatusMap = statusHandler.GetFileStatus();
-    wxString           repoWorkDir = statusHandler.GetWorkingDirectory();
-    wxString           projectPath = Prj().GetProjectPath();
+    GIT_STATUS_HANDLER             statusHandler( m_TreeProject->GitCommon() );
+    std::map<wxString, FileStatus> fileStatusMap = statusHandler.GetFileStatus();
+    wxString                       repoWorkDir = statusHandler.GetWorkingDirectory();
+    wxString                       projectPath = Prj().GetProjectPath();
 
 #ifdef _WIN32
     projectPath.Replace( wxS( "\\" ), wxS( "/" ) );
@@ -2989,9 +2988,7 @@ void PROJECT_TREE_PANE::onGitAmendCommit( wxCommandEvent& aEvent )
             continue;
 
         if( fn.GetName().StartsWith( FILEEXT::LockFilePrefix ) || fn.GetName().EndsWith( FILEEXT::BackupFileSuffix ) )
-        {
             continue;
-        }
 
         if( fn.GetPath().Contains( Prj().GetProjectName() + wxT( "-backups" ) ) )
             continue;
@@ -3100,8 +3097,8 @@ bool PROJECT_TREE_PANE::canFileBeAddedToVCS( const wxString& aFile )
     if( !m_TreeProject->GetGitRepo() )
         return false;
 
-    GIT_STATUS_HANDLER statusHandler( m_TreeProject->GitCommon() );
-    auto fileStatusMap = statusHandler.GetFileStatus();
+    GIT_STATUS_HANDLER             statusHandler( m_TreeProject->GitCommon() );
+    std::map<wxString, FileStatus> fileStatusMap = statusHandler.GetFileStatus();
 
     // Check if file is already tracked or staged
     for( const auto& [filePath, fileStatus] : fileStatusMap )
@@ -3214,12 +3211,25 @@ void PROJECT_TREE_PANE::onGitSyncTimer( wxTimerEvent& aEvent )
     wxLogTrace( traceGit, "onGitSyncTimer" );
     COMMON_SETTINGS::GIT& gitSettings = Pgm().GetCommonSettings()->m_Git;
 
-    if( !gitSettings.enableGit || !m_TreeProject )
+    if( !gitSettings.enableGit || gitSettings.updatInterval <= 0 || !m_TreeProject )
         return;
 
-    thread_pool& tp = GetKiCadThreadPool();
+    // Skip the tick rather than stack a second fetch; assigning over a running std::async
+    // future blocks in its destructor, here on the UI thread.
+    if( m_gitSyncTask.valid()
+            && m_gitSyncTask.wait_for( std::chrono::seconds( 0 ) ) != std::future_status::ready )
+    {
+        wxLogTrace( traceGit, "onGitSyncTimer: previous fetch still running, skipping" );
+        m_gitSyncTimer.Start( gitSettings.updatInterval * 60 * 1000, wxTIMER_ONE_SHOT );
+        return;
+    }
 
-    m_gitSyncTask = tp.submit_task( [this]()
+    if( std::shared_ptr<KIGIT_COMMON> gitCommon = m_TreeProject->GitCommonPtr() )
+        gitCommon->SetCancelled( false );
+
+    // Never the shared compute pool; a libgit2 network read parked there stalls DRC, zone
+    // filling and library loading.
+    m_gitSyncTask = std::async( std::launch::async, [this]()
     {
         // Pin a shared handle so a concurrent releaseGitRepo() cannot free the common while
         // PerformFetch() is inside it holding the action mutex.
@@ -3246,12 +3256,9 @@ void PROJECT_TREE_PANE::onGitSyncTimer( wxTimerEvent& aEvent )
             CallAfter( [this]() { gitStatusTimerHandler(); } );
     } );
 
-    if( gitSettings.updatInterval > 0 )
-    {
-        wxLogTrace( traceGit, "onGitSyncTimer: Restarting git sync timer" );
-        // We store the timer interval in minutes but wxTimer uses milliseconds
-        m_gitSyncTimer.Start( gitSettings.updatInterval * 60 * 1000, wxTIMER_ONE_SHOT );
-    }
+    wxLogTrace( traceGit, "onGitSyncTimer: Restarting git sync timer" );
+    // We store the timer interval in minutes but wxTimer uses milliseconds
+    m_gitSyncTimer.Start( gitSettings.updatInterval * 60 * 1000, wxTIMER_ONE_SHOT );
 }
 
 

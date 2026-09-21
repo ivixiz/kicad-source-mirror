@@ -22,9 +22,13 @@
 
 #include <memory>
 #include <optional>
+#include <set>
+#include <string>
 #include <vector>
 
 #include <board_stackup_manager/board_stackup.h>
+#include <drill/drill_symbol_profile.h>
+#include <drc/drc_exclusion.h>
 #include <eda_units.h>
 #include <lset.h>
 #include <settings/nested_settings.h>
@@ -51,6 +55,9 @@
 
 #define DEFAULT_DIMENSION_ARROW_LENGTH         50 // mils, for legacy purposes
 #define DEFAULT_DIMENSION_EXTENSION_OFFSET     0.5
+
+// Largest microvia stack pitch, in mm. Bounds the hop position arithmetic.
+#define MAX_MICROVIA_STACK_PITCH_MM 25.0
 
 // Board thickness, mainly for 3D view:
 #define DEFAULT_BOARD_THICKNESS_MM             1.6
@@ -152,6 +159,27 @@ struct VIA_DIMENSION
 
 
 /**
+ * A named microvia stack definition, chosen while routing instead of entering the values
+ * each time. See PCB_VIA_STACK.
+ */
+struct VIA_STACK_PRESET
+{
+    wxString     m_Name;
+    PCB_LAYER_ID m_StartLayer = F_Cu;
+    PCB_LAYER_ID m_EndLayer = In1_Cu;
+    bool         m_Staggered = false;
+    int          m_ViaSize = 0; // <= 0 means use netclass
+    int          m_ViaDrill = 0;
+    bool         m_UseNetclass = false;
+    bool         m_Filled = true;
+    bool         m_Capped = false;
+    int          m_Pitch = 0; // staggered only
+
+    bool operator==( const VIA_STACK_PRESET& aOther ) const = default;
+};
+
+
+/**
  * Container to handle a stock of specific differential pairs each with unique track width,
  * gap and via gap.
  */
@@ -246,7 +274,7 @@ class PAD;
 /**
  * Container for design settings for a #BOARD object.
  */
-class BOARD_DESIGN_SETTINGS : public NESTED_SETTINGS
+class BOARD_DESIGN_SETTINGS : public NESTED_SETTINGS, public FIELDS_TABLE_BOM_SETTINGS
 {
 public:
     BOARD_DESIGN_SETTINGS( JSON_SETTINGS* aParent, const std::string& aPath );
@@ -273,6 +301,9 @@ public:
 
     BOARD_STACKUP& GetStackupDescriptor() { return m_stackup; }
     const BOARD_STACKUP& GetStackupDescriptor() const { return m_stackup; }
+
+    DRILL_SYMBOL_PROFILE& GetDrillSymbolProfile() { return m_drillSymbolProfile; }
+    const DRILL_SYMBOL_PROFILE& GetDrillSymbolProfile() const { return m_drillSymbolProfile; }
 
     TEARDROP_PARAMETERS_LIST* GetTeadropParamsList()
     {
@@ -381,6 +412,16 @@ public:
      * @return the current via size list index.
      */
     int GetViaSizeIndex() const { return m_viaSizeIndex; }
+
+    /**
+     * @return the currently selected via stack preset index (into m_ViaStackPresets).
+     */
+    inline int GetViaStackIndex() const { return m_viaStackIndex; }
+
+    /**
+     * Set the current via stack preset index to \a aIndex.
+     */
+    inline void SetViaStackIndex( int aIndex ) { m_viaStackIndex = aIndex; }
 
     /**
      * Set the current via size list index to \a aIndex.
@@ -652,11 +693,13 @@ private:
     void initFromOther( const BOARD_DESIGN_SETTINGS& aOther );
 
     bool migrateSchema0to1();
+    bool migrateSchema2to3();
 
 public:
     // Note: the first value in each dimensions list is the current netclass value
     std::vector<int>                 m_TrackWidthList;
     std::vector<VIA_DIMENSION>       m_ViasDimensionsList;
+    std::vector<VIA_STACK_PRESET>    m_ViaStackPresets;
     std::vector<DIFF_PAIR_DIMENSION> m_DiffPairDimensionsList;
 
     /**
@@ -695,8 +738,7 @@ public:
 
     std::shared_ptr<DRC_ENGINE>  m_DRCEngine;
     std::map<int, SEVERITY>      m_DRCSeverities;           // Map from DRCErrorCode to SEVERITY
-    std::set<wxString>           m_DrcExclusions;           // Serialized excluded DRC markers
-    std::map<wxString, wxString> m_DrcExclusionComments;    // Map from serialization to comment
+    std::set<DRC_EXCLUSION, DRC_EXCLUSION_COMPARE> m_DrcExclusions;
 
     // When smoothing the zone's outline there's the question of external fillets (that is, those
     // applied to concave corners).  While it seems safer to never have copper extend outside the
@@ -779,16 +821,6 @@ public:
     /// Enable inclusion of stackup height in track length measurements and length tuning
     bool       m_UseHeightForLengthCalcs;
 
-    wxString  m_BomExportFileName;
-
-    /// List of stored BOM presets
-    BOM_PRESET                  m_BomSettings;
-    std::vector<BOM_PRESET>     m_BomPresets;
-
-    /// List of stored BOM format presets
-    BOM_FMT_PRESET              m_BomFmtSettings;
-    std::vector<BOM_FMT_PRESET> m_BomFmtPresets;
-
 private:
     VECTOR2I   m_auxOrigin;  ///< origin for plot exports
     VECTOR2I   m_gridOrigin; ///< origin for grid offsets
@@ -798,6 +830,7 @@ private:
     int        m_trackWidthIndex;
     int        m_viaSizeIndex;
     int        m_diffPairIndex;
+    int        m_viaStackIndex; // current selection into m_ViaStackPresets
 
     // Custom values for track/via sizes (specified via dialog instead of netclass or lists)
     bool       m_useCustomTrackVia;
@@ -825,6 +858,12 @@ private:
      * It includes not only layers enabled for the board edition, but also dielectric layers.
      */
     BOARD_STACKUP m_stackup;
+
+    /**
+     * Grouping rules and symbol assignments shared by every drill chart and map on the board.
+     */
+    DRILL_SYMBOL_PROFILE m_drillSymbolProfile;
+
 
     /// The default settings that will be used for new zones.
     ZONE_SETTINGS m_defaultZoneSettings;

@@ -809,6 +809,9 @@ bool FOOTPRINT::FootprintNeedsUpdate( const FOOTPRINT* aLibFP, int aCompareFlags
 
     temp->SetParent( GetBoard() );
 
+    if( !( aCompareFlags & COMPARE_FLAGS::INSTANCE_TO_INSTANCE ) && IsFlipped() != temp->IsFlipped() )
+        temp->Flip( { 0, 0 }, FLIP_DIRECTION::TOP_BOTTOM );
+
     for( BOARD_ITEM* item : temp->GraphicalItems() )
         item->NormalizeForCompare();
 
@@ -844,6 +847,10 @@ bool FOOTPRINT::FootprintNeedsUpdate( const FOOTPRINT* aLibFP, int aCompareFlags
         TEST_ATTR( GetAttributes(), aLibFP->GetAttributes(), FP_EXCLUDE_FROM_BOM,
                    wxString::Format( _( "'%s' settings differ." ),
                                      _( "Exclude from bill of materials" ) ) );
+
+        TEST_ATTR( GetAttributes(), aLibFP->GetAttributes(), FP_EXCLUDE_FROM_SIM,
+                   wxString::Format( _( "'%s' settings differ." ),
+                                     _( "Exclude from simulation" ) ) );
 
         TEST_ATTR( GetAttributes(), aLibFP->GetAttributes(), FP_DNP,
                    wxString::Format( _( "'%s' settings differ." ),

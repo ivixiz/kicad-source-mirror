@@ -149,7 +149,8 @@ COLOR_SETTINGS::COLOR_SETTINGS( const wxString& aFilename, bool aAbsolutePath ) 
     CLR( "board.pad_net_names",            LAYER_PAD_NETNAMES       );
     CLR( "board.via_net_names",            LAYER_VIA_NETNAMES       );
     CLR( "board.points",                   LAYER_POINTS             );
-    CLR( "board.grid_items",               LAYER_GRIDITEMS          );
+    CLR( "board.subgrids",                 LAYER_SUBGRIDS          );
+    CLR( "board.via_stitching",            LAYER_VIA_STITCHING      );
 
     CLR( "board.copper.f",      F_Cu    );
     CLR( "board.copper.in1",    In1_Cu  );
@@ -268,6 +269,15 @@ COLOR_SETTINGS::COLOR_SETTINGS( const wxString& aFilename, bool aAbsolutePath ) 
                                                     layer, s_defaultTheme.at( pcb_layer ),
                                                     &m_colors ) );
     }
+
+    m_params.emplace_back( new COLOR_MAP_PARAM( "3d_viewer.f_fab", LAYER_3D_F_FAB,
+                                                s_defaultTheme.at( F_Fab ), &m_colors ) );
+    m_params.emplace_back( new COLOR_MAP_PARAM( "3d_viewer.b_fab", LAYER_3D_B_FAB,
+                                                s_defaultTheme.at( B_Fab ), &m_colors ) );
+    m_params.emplace_back( new COLOR_MAP_PARAM( "3d_viewer.f_courtyard", LAYER_3D_F_COURTYARD,
+                                                s_defaultTheme.at( F_CrtYd ), &m_colors ) );
+    m_params.emplace_back( new COLOR_MAP_PARAM( "3d_viewer.b_courtyard", LAYER_3D_B_COURTYARD,
+                                                s_defaultTheme.at( B_CrtYd ), &m_colors ) );
 
     registerMigration( 0, 1, std::bind( &COLOR_SETTINGS::migrateSchema0to1, this ) );
 

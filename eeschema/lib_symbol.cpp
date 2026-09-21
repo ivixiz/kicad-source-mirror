@@ -20,7 +20,18 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+
+#include "lib_symbol.h"
+
+#include <algorithm>
+#include <functional>
+#include <memory>
+#include <unordered_map>
+#include <unordered_set>
+
+#include <advanced_config.h>
 #include <font/outline_font.h>
+#include <jumper_group.h>
 #include <sch_draw_panel.h>
 #include <plotters/plotter.h>
 #include <sch_screen.h>
@@ -28,19 +39,21 @@
 #include <transform.h>
 #include <settings/color_settings.h>
 #include <sch_pin.h>
+#include <sch_render_settings.h>
 #include <sch_shape.h>
 #include <trace_helpers.h>
 #include <common.h>
+
+#include <api/api_enums.h>
+#include <api/api_sch_utils.h>
+#include <api/api_utils.h>
+#include <api/schematic/schematic_types.pb.h>
+
 #include <text_eval/text_eval_wrapper.h>
 
 // TODO(JE) remove m_library; shouldn't be needed with legacy remapping
 #include <libraries/legacy_symbol_library.h>
 
-#include <algorithm>
-#include <memory>
-#include <unordered_map>
-#include <unordered_set>
-#include <advanced_config.h>
 #include <properties/property.h>
 #include <properties/property_mgr.h>
 
@@ -95,24 +108,34 @@ static std::shared_ptr<LIB_SYMBOL> GetSafeRootSymbol( const LIB_SYMBOL* aSymbol,
 }
 
 
-wxString LIB_SYMBOL::GetShownDescription( int aDepth ) const
+wxString LIB_SYMBOL::getShownDescription( RESOLUTION_CONTEXT aContext, int aDepth ) const
 {
-    return m_shownDescriptionCache;
-}
-
-void LIB_SYMBOL::cacheShownDescription()
-{
-    wxString shownText = GetDescriptionField().GetShownText( false, 0 );
+    wxString shownText = GetDescriptionField().GetShownText( aContext, aDepth );
 
     if( shownText.IsEmpty() && IsDerived() )
     {
         std::shared_ptr<LIB_SYMBOL> root = GetSafeRootSymbol( this, __FUNCTION__ );
 
         if( root.get() != this )
-            shownText = root->GetDescriptionField().GetShownText( false, 0 );
+            shownText = root->GetDescriptionField().GetShownText( aContext, aDepth );
     }
 
-    m_shownDescriptionCache = shownText;
+    return shownText;
+}
+
+
+wxString LIB_SYMBOL::GetShownDescription( RESOLUTION_CONTEXT aContext, int aDepth ) const
+{
+    if( aContext == FOR_GUI )
+        return m_shownDescriptionCache;
+
+    return getShownDescription( aContext, aDepth );
+}
+
+
+void LIB_SYMBOL::cacheShownDescription()
+{
+    m_shownDescriptionCache = getShownDescription( FOR_GUI, 0 );
 }
 
 
@@ -131,14 +154,18 @@ void LIB_SYMBOL::SetKeyWords( const wxString& aKeyWords )
 }
 
 
-wxString LIB_SYMBOL::GetShownKeyWords( int aDepth ) const
+wxString LIB_SYMBOL::GetShownKeyWords( RESOLUTION_CONTEXT aContext, int aDepth ) const
 {
+    if( aContext == RAW_VALUE )
+        return GetKeyWords();
+
     wxString text = GetKeyWords();
 
-    std::function<bool( wxString* )> libSymbolResolver = [&]( wxString* token ) -> bool
-    {
-        return ResolveTextVar( token, aDepth + 1 );
-    };
+    std::function<bool( wxString* )> libSymbolResolver =
+            [&]( wxString* token ) -> bool
+            {
+                return ResolveTextVar( token, aDepth + 1 );
+            };
 
     text = ResolveTextVars( text, &libSymbolResolver, aDepth );
 
@@ -164,14 +191,17 @@ void LIB_SYMBOL::cacheSearchTerms()
     m_searchTermsCache.emplace_back( SEARCH_TERM( GetName(), 8, true ) );
     m_searchTermsCache.emplace_back( SEARCH_TERM( GetLIB_ID().Format(), 16, true ) );
 
-    wxStringTokenizer keywordTokenizer( GetShownKeyWords(), " \t\r\n", wxTOKEN_STRTOK );
+    wxStringTokenizer keywordTokenizer( GetShownKeyWords( FOR_GUI ), " \t\r\n", wxTOKEN_STRTOK );
 
     while( keywordTokenizer.HasMoreTokens() )
         m_searchTermsCache.emplace_back( SEARCH_TERM( keywordTokenizer.GetNextToken(), 4 ) );
 
     // Also include keywords as one long string, just in case
-    m_searchTermsCache.emplace_back( SEARCH_TERM( GetShownKeyWords(), 1 ) );
-    m_searchTermsCache.emplace_back( SEARCH_TERM( GetShownDescription(), 1 ) );
+    m_searchTermsCache.emplace_back( SEARCH_TERM( GetShownKeyWords( FOR_GUI ), 1 ) );
+    m_searchTermsCache.emplace_back( SEARCH_TERM( GetShownDescription( FOR_GUI ), 1 ) );
+
+    // Add relational term for unit count
+    m_searchTermsCache.emplace_back( SEARCH_TERM( wxString::Format( wxT( "units=%d" ), GetUnitCount() ), 1 ) );
 
     wxString footprint = GetFootprint();
 
@@ -195,7 +225,7 @@ void LIB_SYMBOL::cacheChooserFields()
         SCH_FIELD* field = static_cast<SCH_FIELD*>( &item );
 
         if( field->ShowInChooser() )
-            m_chooserFieldsCache[field->GetName()] = field->EDA_TEXT::GetShownText( false );
+            m_chooserFieldsCache[field->GetName()] = field->EDA_TEXT::GetShownText( FOR_GUI );
     }
 
     // If the user has a field named "Keywords", then prefer that.  Otherwise add the KiCad
@@ -203,7 +233,7 @@ void LIB_SYMBOL::cacheChooserFields()
     const wxString localizedKeywords = _( "Keywords" );
 
     if( !m_chooserFieldsCache.contains( localizedKeywords ) )
-        m_chooserFieldsCache[localizedKeywords] = GetShownKeyWords();
+        m_chooserFieldsCache[localizedKeywords] = GetShownKeyWords( FOR_GUI );
 }
 
 
@@ -279,7 +309,8 @@ LIB_SYMBOL::LIB_SYMBOL( const LIB_SYMBOL& aSymbol, LEGACY_SYMBOL_LIB* aLibrary, 
     m_duplicatePinNumbersAreJumpers = aSymbol.m_duplicatePinNumbersAreJumpers;
 
     m_unitDisplayNames = aSymbol.GetUnitDisplayNames();
-    m_bodyStyleNames = aSymbol.GetBodyStyleNames();
+    // Raw member, not the accessor, which would bake a root's body styles into a derived copy
+    m_bodyStyleNames = aSymbol.m_bodyStyleNames;
 
     ClearSelected();
 
@@ -310,6 +341,273 @@ LIB_SYMBOL::LIB_SYMBOL( const LIB_SYMBOL& aSymbol, LEGACY_SYMBOL_LIB* aLibrary, 
 }
 
 
+void LIB_SYMBOL::Serialize( kiapi::schematic::types::SchematicSymbol& aOutput, bool aSkipPins ) const
+{
+    using namespace kiapi::common;
+    using namespace kiapi::schematic::types;
+
+    SchematicSymbol& def = aOutput;
+    def.Clear();
+    PackLibId( def.mutable_id(), m_libId );
+
+    SchematicSymbolType symbolType = SchematicSymbolType::SST_NORMAL;
+
+    if( IsGlobalPower() )
+        symbolType = SchematicSymbolType::SST_GLOBAL_POWER;
+    else if( IsLocalPower() )
+        symbolType = SchematicSymbolType::SST_LOCAL_POWER;
+
+    def.set_type( symbolType );
+
+    SchematicSymbolAttributes* attributes = def.mutable_attributes();
+    attributes->set_exclude_from_simulation( GetExcludedFromSim() );
+    attributes->set_exclude_from_bill_of_materials( GetExcludedFromBOM() );
+    attributes->set_exclude_from_board( GetExcludedFromBoard() );
+    attributes->set_exclude_from_position_files( GetExcludedFromPosFiles() );
+    attributes->set_do_not_populate( GetDNP() );
+
+    GetField( FIELD_T::REFERENCE )->Serialize( *def.mutable_reference_field(), schIUScale );
+    GetField( FIELD_T::VALUE )->Serialize( *def.mutable_value_field(), schIUScale );
+    GetField( FIELD_T::FOOTPRINT )->Serialize( *def.mutable_footprint_field(), schIUScale );
+    GetField( FIELD_T::DATASHEET )->Serialize( *def.mutable_datasheet_field(), schIUScale );
+    GetField( FIELD_T::DESCRIPTION )->Serialize( *def.mutable_description_field(), schIUScale );
+
+    for( const SCH_ITEM& drawItem : GetDrawItems() )
+    {
+        if( drawItem.Type() == SCH_FIELD_T && static_cast<const SCH_FIELD&>( drawItem ).IsMandatory() )
+            continue;
+
+        if( aSkipPins && drawItem.Type() == SCH_PIN_T )
+            continue;
+
+        SchematicSymbolChild* item = def.add_items();
+        item->mutable_unit()->set_unit( drawItem.GetUnit() );
+        item->mutable_body_style()->set_style( drawItem.GetBodyStyle() );
+        item->set_is_private( drawItem.IsPrivate() );
+        drawItem.Serialize( *item->mutable_item() );
+    }
+
+    def.set_unit_count( GetUnitCount() );
+
+    for( int bodyStyle = BODY_STYLE::BASE; bodyStyle <= GetBodyStyleCount(); ++bodyStyle )
+        def.add_body_style()->set_name( GetBodyStyleDescription( bodyStyle, false ).ToUTF8() );
+
+    def.set_keywords( GetKeyWords().ToUTF8() );
+
+    for( const wxString& filter : GetFPFilters() )
+        def.add_footprint_filters( filter.ToUTF8() );
+
+    JumperSettings* jumpers = def.mutable_jumpers();
+    jumpers->set_duplicate_names_are_jumpered( GetDuplicatePinNumbersAreJumpers() );
+
+    for( const JUMPER_GROUP& group : JumperPinGroups().GetAll() )
+    {
+        JumperGroup* jumperGroup = jumpers->add_groups();
+
+        for( const wxString& pinNumber : group.GetNames() )
+            jumperGroup->add_pin_numbers( pinNumber.ToUTF8() );
+    }
+
+    def.set_units_locked( UnitsLocked() );
+    def.set_embedded_fonts( GetAreFontsEmbedded() );
+    def.set_show_pin_numbers( GetShowPinNumbers() );
+    def.set_show_pin_names( GetShowPinNames() );
+    PackDistance( *def.mutable_pin_name_offset(), GetPinNameOffset(), schIUScale );
+
+    for( const auto& [unit, displayName] : GetUnitDisplayNames() )
+    {
+        SchematicUnitDisplayName* protoName = def.add_unit_display_names();
+        protoName->set_unit( unit );
+        protoName->set_name( displayName.ToUTF8() );
+    }
+
+    SymbolPinMaps* pinMaps = def.mutable_pin_maps();
+
+    for( const ASSOCIATED_FOOTPRINT& assoc : GetEffectiveAssociatedFootprints() )
+    {
+        AssociatedFootprint* a = pinMaps->add_associated_footprints();
+        PackLibId( a->mutable_footprint(), assoc.m_FootprintLibId );
+        a->set_map_name( assoc.m_MapName.ToUTF8() );
+    }
+
+    for( const PIN_MAP& map : GetEffectivePinMaps().GetAll() )
+    {
+        PinMap* m = pinMaps->add_pin_maps();
+        m->set_name( map.GetName().ToUTF8() );
+
+        for( const PIN_MAP_ENTRY& entry : map.GetEntries() )
+        {
+            PinMapEntry* e = m->add_entries();
+            e->set_pin_number( entry.m_PinNumber.ToUTF8() );
+            e->set_pad_number( entry.m_PadNumber.ToUTF8() );
+        }
+    }
+}
+
+
+void LIB_SYMBOL::Serialize( google::protobuf::Any& aContainer ) const
+{
+    kiapi::schematic::types::SchematicSymbol def;
+    Serialize( def );
+    aContainer.PackFrom( def );
+}
+
+
+bool LIB_SYMBOL::Deserialize( const kiapi::schematic::types::SchematicSymbol& aInput )
+{
+    using namespace kiapi::common;
+    using namespace kiapi::common::types;
+    using namespace kiapi::schematic::types;
+
+    const SchematicSymbol& def = aInput;
+
+    LIB_ID libId = UnpackLibId( def.id() );
+    SetLibId( libId );
+
+    switch( def.type() )
+    {
+    case SchematicSymbolType::SST_GLOBAL_POWER: SetGlobalPower(); break;
+    case SchematicSymbolType::SST_LOCAL_POWER:  SetLocalPower();  break;
+    default: break;
+    }
+
+    if( def.has_attributes() )
+    {
+        SetExcludedFromSim( def.attributes().exclude_from_simulation() );
+        SetExcludedFromBOM( def.attributes().exclude_from_bill_of_materials() );
+        SetExcludedFromBoard( def.attributes().exclude_from_board() );
+        SetExcludedFromPosFiles( def.attributes().exclude_from_position_files() );
+        SetDNP( def.attributes().do_not_populate() );
+    }
+
+    GetField( FIELD_T::REFERENCE )->Deserialize( def.reference_field(), schIUScale );
+    GetField( FIELD_T::VALUE )->Deserialize( def.value_field(), schIUScale );
+    GetField( FIELD_T::FOOTPRINT )->Deserialize( def.footprint_field(), schIUScale );
+    GetField( FIELD_T::DATASHEET )->Deserialize( def.datasheet_field(), schIUScale );
+    GetField( FIELD_T::DESCRIPTION )->Deserialize( def.description_field(), schIUScale );
+
+    for( const SchematicSymbolChild& child : def.items() )
+    {
+        std::optional<KICAD_T> type = TypeNameFromAny( child.item() );
+
+        if( !type )
+            continue;
+
+        std::unique_ptr<EDA_ITEM> item = CreateItemForType( *type, this );
+
+        if( !item || !item->Deserialize( child.item() ) )
+            continue;
+
+        SCH_ITEM* schItem = static_cast<SCH_ITEM*>( item.release() );
+
+        if( child.has_unit() )
+            schItem->SetUnit( child.unit().unit() );
+
+        if( child.has_body_style() )
+            schItem->SetBodyStyle( child.body_style().style() );
+
+        schItem->SetLayer( LAYER_DEVICE );
+        schItem->SetPrivate( child.is_private() );
+        AddDrawItem( schItem, false );
+    }
+
+    if( def.unit_count() > 0 )
+        SetUnitCount( def.unit_count(), false );
+
+    if( def.body_style_size() > 0 )
+    {
+        std::vector<wxString> bodyStyleNames;
+
+        for( const SchematicBodyStyle& bodyStyle : def.body_style() )
+            bodyStyleNames.emplace_back( wxString::FromUTF8( bodyStyle.name() ) );
+
+        SetBodyStyleNames( bodyStyleNames );
+        SetBodyStyleCount( static_cast<int>( bodyStyleNames.size() ), false, false );
+    }
+
+    if( !def.keywords().empty() )
+        SetKeyWords( wxString::FromUTF8( def.keywords() ) );
+
+    if( def.footprint_filters_size() > 0 )
+    {
+        wxArrayString filters;
+
+        for( const std::string& filter : def.footprint_filters() )
+            filters.Add( wxString::FromUTF8( filter ) );
+
+        SetFPFilters( filters );
+    }
+
+    SetDuplicatePinNumbersAreJumpers( def.jumpers().duplicate_names_are_jumpered() );
+
+    JUMPER_GROUP_SET& jumperGroups = JumperPinGroups();
+    jumperGroups.Clear();
+
+    for( const JumperGroup& group : def.jumpers().groups() )
+    {
+        std::set<wxString> pinNumbers;
+
+        for( const std::string& pinNumber : group.pin_numbers() )
+            pinNumbers.insert( wxString::FromUTF8( pinNumber ) );
+
+        jumperGroups.Add( std::move( pinNumbers ) );
+    }
+
+    LockUnits( def.units_locked() );
+    SetAreFontsEmbedded( def.embedded_fonts() );
+
+    for( const SchematicUnitDisplayName& displayName : def.unit_display_names() )
+        GetUnitDisplayNames()[displayName.unit()] = wxString::FromUTF8( displayName.name() );
+
+    SetShowPinNumbers( def.show_pin_numbers() );
+    SetShowPinNames( def.show_pin_names() );
+    SetPinNameOffset( UnpackDistance( def.pin_name_offset(), schIUScale ) );
+
+    if( def.has_pin_maps() )
+    {
+        PIN_MAP_SET pinMapSet;
+
+        for( const PinMap& map : def.pin_maps().pin_maps() )
+        {
+            PIN_MAP pinMap( wxString::FromUTF8( map.name() ) );
+
+            for( const PinMapEntry& entry : map.entries() )
+            {
+                pinMap.SetEntry( wxString::FromUTF8( entry.pin_number() ), wxString::FromUTF8( entry.pad_number() ) );
+            }
+
+            pinMapSet.AddOrReplace( std::move( pinMap ) );
+        }
+
+        std::vector<ASSOCIATED_FOOTPRINT> associatedFootprints;
+
+        for( const AssociatedFootprint& footprint : def.pin_maps().associated_footprints() )
+        {
+            ASSOCIATED_FOOTPRINT assoc;
+            assoc.m_FootprintLibId = UnpackLibId( footprint.footprint() );
+            assoc.m_MapName = wxString::FromUTF8( footprint.map_name() );
+            associatedFootprints.push_back( std::move( assoc ) );
+        }
+
+        SetPinMaps( pinMapSet );
+        SetAssociatedFootprints( std::move( associatedFootprints ) );
+    }
+
+    return true;
+}
+
+
+bool LIB_SYMBOL::Deserialize( const google::protobuf::Any& aContainer )
+{
+    kiapi::schematic::types::SchematicSymbol def;
+
+    if( !aContainer.UnpackTo( &def ) )
+        return false;
+
+    return Deserialize( def );
+}
+
+
 const LIB_SYMBOL& LIB_SYMBOL::operator=( const LIB_SYMBOL& aSymbol )
 {
     if( &aSymbol == this )
@@ -334,7 +632,8 @@ const LIB_SYMBOL& LIB_SYMBOL::operator=( const LIB_SYMBOL& aSymbol )
     m_duplicatePinNumbersAreJumpers = aSymbol.m_duplicatePinNumbersAreJumpers;
 
     m_unitDisplayNames = aSymbol.GetUnitDisplayNames();
-    m_bodyStyleNames = aSymbol.GetBodyStyleNames();
+    // Raw member, not the accessor, which would bake a root's body styles into a derived copy
+    m_bodyStyleNames = aSymbol.m_bodyStyleNames;
 
     m_drawings.clear();
 
@@ -450,10 +749,33 @@ std::shared_ptr<LIB_SYMBOL> LIB_SYMBOL::GetRootSymbol() const
 }
 
 
+bool LIB_SYMBOL::UnitsLocked() const
+{
+    if( IsDerived() )
+    {
+        std::shared_ptr<LIB_SYMBOL> root = GetSafeRootSymbol( this, __FUNCTION__ );
+
+        if( root.get() != this )
+            return root->m_unitsLocked;
+    }
+
+    return m_unitsLocked;
+}
+
+
 wxString LIB_SYMBOL::GetUnitDisplayName( int aUnit, bool aLabel ) const
 {
-    if( m_unitDisplayNames.contains( aUnit ) )
-        return m_unitDisplayNames.at( aUnit );
+    const LIB_SYMBOL*           owner = this;
+    std::shared_ptr<LIB_SYMBOL> root;
+
+    if( IsDerived() )
+    {
+        root = GetSafeRootSymbol( this, __FUNCTION__ );
+        owner = root.get();
+    }
+
+    if( owner->m_unitDisplayNames.contains( aUnit ) )
+        return owner->m_unitDisplayNames.at( aUnit );
     else if( aLabel )
         return wxString::Format( _( "Unit %s" ), LIB_SYMBOL::LetterSubReference( aUnit, 'A' ) );
     else
@@ -472,8 +794,11 @@ wxString LIB_SYMBOL::GetBodyStyleDescription( int aBodyStyle, bool aLabel ) cons
     }
     else if( IsMultiBodyStyle() )
     {
-        if( aBodyStyle <= (int) m_bodyStyleNames.size() )
-            return m_bodyStyleNames[aBodyStyle - 1];
+        const std::vector<wxString>& names = GetBodyStyleNames();
+
+        // Draw items common to every body style carry a body style of 0
+        if( aBodyStyle >= BODY_STYLE::BASE && aBodyStyle <= (int) names.size() )
+            return names[aBodyStyle - 1];
     }
 
     return wxT( "?" );
@@ -551,7 +876,7 @@ wxString LIB_SYMBOL::GetFootprint()
     if( !GetField( FIELD_T::FOOTPRINT ) )
         return wxEmptyString;
 
-    return GetFootprintField().GetShownText( false );
+    return GetFootprintField().GetShownText( INTERNAL );
 }
 
 
@@ -865,11 +1190,11 @@ bool LIB_SYMBOL::ResolveTextVar( wxString* token, int aDepth ) const
             const SCH_FIELD& field = static_cast<const SCH_FIELD&>( item );
 
             if( field.GetId() == FIELD_T::FOOTPRINT )
-                footprint = field.GetShownText( nullptr, false, aDepth + 1 );
+                footprint = field.GetShownText( nullptr, INTERNAL, wxEmptyString, aDepth + 1 );
 
-            if( token->IsSameAs( field.GetCanonicalName().Upper() ) || token->IsSameAs( field.GetName(), false ) )
+            if( token->IsSameAs( field.GetUntranslatedName().Upper() ) || token->IsSameAs( field.GetName(), false ) )
             {
-                *token = field.GetShownText( nullptr, false, aDepth + 1 );
+                *token = field.GetShownText( nullptr, INTERNAL, wxEmptyString, aDepth + 1 );
                 return true;
             }
         }
@@ -916,34 +1241,56 @@ bool LIB_SYMBOL::ResolveTextVar( wxString* token, int aDepth ) const
         *token = m_libId.GetUniStringLibItemName();
         return true;
     }
+    else if( token->IsSameAs( wxT( "SYMBOL_PARENT" ) ) )
+    {
+        std::shared_ptr<LIB_SYMBOL> parent = GetParent().lock();
+        *token = parent ? parent->GetName() : wxString();
+        return true;
+    }
+    else if( token->IsSameAs( wxT( "SYMBOL_ROOT" ) ) )
+    {
+        std::shared_ptr<LIB_SYMBOL> root = GetRootSymbol();
+        *token = root ? root->GetName() : GetName();
+        return true;
+    }
     else if( token->IsSameAs( wxT( "SYMBOL_DESCRIPTION" ) ) )
     {
-        *token = GetShownDescription( aDepth + 1 );
+        *token = GetShownDescription( INTERNAL, aDepth + 1 );
         return true;
     }
     else if( token->IsSameAs( wxT( "SYMBOL_KEYWORDS" ) ) )
     {
-        *token = GetShownKeyWords( aDepth + 1 );
+        *token = GetShownKeyWords( INTERNAL, aDepth + 1 );
+        return true;
+    }
+    else if( token->IsSameAs( wxT( "SYMBOL_IS_POWER" ) ) )
+    {
+        *token = this->IsPower() ? wxString( wxS( "Power Symbol" ) ) : wxString( "" );
+        return true;
+    }
+    else if( token->IsSameAs( wxT( "SYMBOL_IS_LOCAL_POWER" ) ) )
+    {
+        *token = this->IsLocalPower() ? wxString( wxS( "Local Power Symbol" ) ) : wxString( "" );
         return true;
     }
     else if( token->IsSameAs( wxT( "EXCLUDE_FROM_BOM" ) ) )
     {
-        *token = this->GetExcludedFromBOM() ? _( "Excluded from BOM" ) : wxString( "" );
+        *token = this->GetExcludedFromBOM() ? wxS( "Excluded from BOM" ) : wxEmptyString;
         return true;
     }
     else if( token->IsSameAs( wxT( "EXCLUDE_FROM_BOARD" ) ) )
     {
-        *token = this->GetExcludedFromBoard() ? _( "Excluded from board" ) : wxString( "" );
+        *token = this->GetExcludedFromBoard() ? wxS( "Excluded from board" ) : wxEmptyString;
         return true;
     }
     else if( token->IsSameAs( wxT( "EXCLUDE_FROM_SIM" ) ) )
     {
-        *token = this->GetExcludedFromSim() ? _( "Excluded from simulation" ) : wxString( "" );
+        *token = this->GetExcludedFromSim() ? wxS( "Excluded from simulation" ) : wxEmptyString;
         return true;
     }
     else if( token->IsSameAs( wxT( "DNP" ) ) )
     {
-        *token = this->GetDNP() ? _( "DNP" ) : wxString( "" );
+        *token = this->GetDNP() ? wxS( "DNP" ) : wxEmptyString;
         return true;
     }
 
@@ -1658,7 +2005,7 @@ void LIB_SYMBOL::SyncFieldsFromParent( const LIB_FIELD_SYNC_OPTIONS& aOptions )
             result.emplace_back( this, FIELD_T::USER );
             SCH_FIELD* newField = &result.back();
 
-            newField->SetName( parentField->GetCanonicalName() );
+            newField->SetName( parentField->GetUntranslatedName() );
             newField->SetText( parentField->GetText() );
             newField->SetAttributes( *parentField );   // Includes visible bit and position
         }
@@ -1741,7 +2088,7 @@ SCH_FIELD* LIB_SYMBOL::FindFieldCaseInsensitive( const wxString& aFieldName )
     {
         SCH_FIELD& field = static_cast<SCH_FIELD&>( item );
 
-        if( field.GetCanonicalName().IsSameAs( aFieldName, false ) )
+        if( field.GetUntranslatedName().IsSameAs( aFieldName, false ) )
             return &field;
     }
 
@@ -1755,7 +2102,7 @@ const SCH_FIELD* LIB_SYMBOL::FindFieldCaseInsensitive( const wxString& aFieldNam
     {
         const SCH_FIELD& field = static_cast<const SCH_FIELD&>( item );
 
-        if( field.GetCanonicalName().IsSameAs( aFieldName, false ) )
+        if( field.GetUntranslatedName().IsSameAs( aFieldName, false ) )
             return &field;
     }
 
@@ -1970,8 +2317,7 @@ void LIB_SYMBOL::SetUnitCount( int aCount, bool aDuplicateDrawItems )
     // A LIB_SYMBOL must always have at least one unit. Passing a value less than 1 would
     // erase the mandatory fields (which all have m_unit == 0), leaving the symbol in a
     // broken state that crashes later when callers dereference GetReferenceField() etc.
-    wxCHECK_RET( aCount >= 1,
-                 wxString::Format( wxT( "Invalid unit count %d, ignoring." ), aCount ) );
+    wxCHECK_RET( aCount >= 1, wxString::Format( wxT( "Invalid unit count %d, ignoring." ), aCount ) );
 
     if( m_unitCount == aCount )
         return;
@@ -2020,6 +2366,7 @@ void LIB_SYMBOL::SetUnitCount( int aCount, bool aDuplicateDrawItems )
 
     m_drawings.sort();
     m_unitCount = aCount;
+    cacheSearchTerms();
 }
 
 
@@ -2034,6 +2381,43 @@ int LIB_SYMBOL::GetUnitCount() const
     }
 
     return m_unitCount;
+}
+
+
+int LIB_SYMBOL::GetBodyStyleCount() const
+{
+    if( HasDeMorganBodyStyles() )
+        return 2;
+
+    return std::max( 1, (int) GetBodyStyleNames().size() );
+}
+
+
+bool LIB_SYMBOL::HasDeMorganBodyStyles() const
+{
+    if( IsDerived() )
+    {
+        std::shared_ptr<LIB_SYMBOL> root = GetSafeRootSymbol( this, __FUNCTION__ );
+
+        if( root.get() != this )
+            return root->m_demorgan;
+    }
+
+    return m_demorgan;
+}
+
+
+const std::vector<wxString>& LIB_SYMBOL::GetBodyStyleNames() const
+{
+    if( IsDerived() )
+    {
+        std::shared_ptr<LIB_SYMBOL> root = GetSafeRootSymbol( this, __FUNCTION__ );
+
+        if( root.get() != this )
+            return root->m_bodyStyleNames;
+    }
+
+    return m_bodyStyleNames;
 }
 
 
@@ -2172,6 +2556,41 @@ std::vector<LIB_SYMBOL_UNIT> LIB_SYMBOL::GetUnitDrawItems()
     }
 #define ITEM_DESC( item ) ( item )->GetItemDescription( &unitsProvider, false )
 
+LIB_SYMBOL_ATTRIBUTES LIB_SYMBOL::ComparisonAttributes() const
+{
+    return { m_options, m_unitCount, m_fpFilters, m_pinMaps, m_associatedFootprints, m_keyWords,
+             m_pinNameOffset, m_showPinNames, m_showPinNumbers, m_excludedFromSim, m_excludedFromBOM,
+             m_excludedFromBoard, m_excludedFromPosFiles, m_DNP, m_unitsLocked, m_unitDisplayNames,
+             m_bodyStyleNames, m_duplicatePinNumbersAreJumpers };
+}
+
+bool LIB_SYMBOL_ATTRIBUTES::Matches( const LIB_SYMBOL_ATTRIBUTES& aOther, int aCompareFlags ) const
+{
+    using FLAGS = SCH_ITEM::COMPARE_FLAGS;
+
+    if( options != aOther.options || unitCount != aOther.unitCount || footprintFilters != aOther.footprintFilters
+        || pinMaps != aOther.pinMaps || associatedFootprints != aOther.associatedFootprints
+        || keywords != aOther.keywords || pinNameOffset != aOther.pinNameOffset
+        || unitsLocked != aOther.unitsLocked || unitDisplayNames != aOther.unitDisplayNames
+        || bodyStyleNames != aOther.bodyStyleNames )
+    {
+        return false;
+    }
+
+    if( ( aCompareFlags & FLAGS::PIN_VISIBILITIES )
+        && ( showPinNames != aOther.showPinNames || showPinNumbers != aOther.showPinNumbers ) )
+    {
+        return false;
+    }
+
+    return ( !( aCompareFlags & FLAGS::EXCLUDE_FROM_SIM ) || excludedFromSim == aOther.excludedFromSim )
+           && ( !( aCompareFlags & FLAGS::EXCLUDE_FROM_BOM ) || excludedFromBOM == aOther.excludedFromBOM )
+           && ( !( aCompareFlags & FLAGS::EXCLUDE_FROM_BOARD ) || excludedFromBoard == aOther.excludedFromBoard )
+           && ( !( aCompareFlags & FLAGS::EXCLUDE_FROM_POS_FILES )
+                || excludedFromPosFiles == aOther.excludedFromPosFiles )
+           && ( !( aCompareFlags & FLAGS::DNP ) || dnp == aOther.dnp );
+}
+
 int LIB_SYMBOL::Compare( const LIB_SYMBOL& aRhs, int aCompareFlags, REPORTER* aReporter ) const
 {
     UNITS_PROVIDER unitsProvider( schIUScale, EDA_UNITS::MM );
@@ -2300,7 +2719,7 @@ int LIB_SYMBOL::Compare( const LIB_SYMBOL& aRhs, int aCompareFlags, REPORTER* aR
             if( !aReporter )
                 return retv;
         }
-        else if( int tmp = aPin->SCH_ITEM::compare( *bPin, aCompareFlags ) )
+        else if( int tmp = static_cast<const SCH_ITEM*>( aPin )->compare( *bPin, aCompareFlags ) )
         {
             retv = tmp;
             REPORT( wxString::Format( _( "Pin %s differs: %s; %s" ),
@@ -2315,7 +2734,7 @@ int LIB_SYMBOL::Compare( const LIB_SYMBOL& aRhs, int aCompareFlags, REPORTER* aR
 
     for( const SCH_PIN* bPin : bPins )
     {
-        const SCH_PIN* aPin = aRhs.GetPin( bPin->GetNumber(), bPin->GetUnit(), bPin->GetBodyStyle() );
+        const SCH_PIN* aPin = GetPin( bPin->GetNumber(), bPin->GetUnit(), bPin->GetBodyStyle() );
 
         if( !aPin )
         {
@@ -2368,7 +2787,7 @@ int LIB_SYMBOL::Compare( const LIB_SYMBOL& aRhs, int aCompareFlags, REPORTER* aR
             {
                 if( aField->GetFont() != bField->GetFont() )
                 {
-                    retv = static_cast<int>( aField->GetFont() - bField->GetFont() );
+                    retv = std::less<KIFONT::FONT*>{}( aField->GetFont(), bField->GetFont() ) ? -1 : 1;
                     REPORT( wxString::Format( _( "Field '%s' fonts differ." ), aField->GetName( false ) ) );
 
                     if( !aReporter )
@@ -2454,9 +2873,9 @@ int LIB_SYMBOL::Compare( const LIB_SYMBOL& aRhs, int aCompareFlags, REPORTER* aR
             const SCH_FIELD* aField = nullptr;
 
             if( bField->IsMandatory() )
-                aField = aRhs.GetField( bField->GetId() );
+                aField = GetField( bField->GetId() );
             else
-                aField = aRhs.GetField( bField->GetName() );
+                aField = GetField( bField->GetName() );
 
             if( !aField )
             {
@@ -2816,20 +3235,15 @@ void LIB_SYMBOL::EmbedFonts()
     for( KIFONT::OUTLINE_FONT* font : fonts )
     {
         auto file = GetEmbeddedFiles()->AddFile( font->GetFileName(), false );
+
+        if( !file )
+        {
+            wxLogTrace( "EMBED", "Failed to add font file: %s", font->GetFileName() );
+            continue;
+        }
+
         file->type = EMBEDDED_FILES::EMBEDDED_FILE::FILE_TYPE::FONT;
     }
-}
-
-
-std::optional<const std::set<wxString>> LIB_SYMBOL::GetJumperPinGroup( const wxString& aPinNumber ) const
-{
-    for( const std::set<wxString>& group : m_jumperPinGroups )
-    {
-        if( group.contains( aPinNumber ) )
-            return group;
-    }
-
-    return std::nullopt;
 }
 
 static struct LIB_SYMBOL_DESC
@@ -2842,102 +3256,94 @@ static struct LIB_SYMBOL_DESC
 
         const wxString groupFields = _HKI( "Fields" );
 
-        propMgr.AddProperty( new PROPERTY<LIB_SYMBOL, wxString>( _HKI( "Reference" ), &LIB_SYMBOL::SetRefProp,
-                                                                 &LIB_SYMBOL::GetRefProp ),
-                             groupFields );
-        propMgr.AddProperty( new PROPERTY<LIB_SYMBOL, wxString>( _HKI( "Value" ), &LIB_SYMBOL::SetValueProp,
-                                                                 &LIB_SYMBOL::GetValueProp ),
-                             groupFields );
-        propMgr.AddProperty( new PROPERTY<LIB_SYMBOL, wxString>( _HKI( "Footprint" ), &LIB_SYMBOL::SetFootprintProp,
-                                                                 &LIB_SYMBOL::GetFootprintProp ),
-                             groupFields );
-        propMgr.AddProperty( new PROPERTY<LIB_SYMBOL, wxString>( _HKI( "Datasheet" ), &LIB_SYMBOL::SetDatasheetProp,
-                                                                 &LIB_SYMBOL::GetDatasheetProp ),
-                             groupFields );
-        propMgr.AddProperty( new PROPERTY<LIB_SYMBOL, wxString>( _HKI( "Keywords" ), &LIB_SYMBOL::SetKeywordsProp,
-                                                                 &LIB_SYMBOL::GetKeywordsProp ),
-                             groupFields );
+        propMgr.AddProperty( new PROPERTY<LIB_SYMBOL, wxString>( _HKI( "Reference" ),
+                    &LIB_SYMBOL::SetRefProp, &LIB_SYMBOL::GetRefProp ),
+                    groupFields );
+        propMgr.AddProperty( new PROPERTY<LIB_SYMBOL, wxString>( _HKI( "Value" ),
+                    &LIB_SYMBOL::SetValueProp, &LIB_SYMBOL::GetValueProp ),
+                    groupFields );
+        propMgr.AddProperty( new PROPERTY<LIB_SYMBOL, wxString>( _HKI( "Footprint" ),
+                    &LIB_SYMBOL::SetFootprintProp, &LIB_SYMBOL::GetFootprintProp ),
+                    groupFields );
+        propMgr.AddProperty( new PROPERTY<LIB_SYMBOL, wxString>( _HKI( "Datasheet" ),
+                    &LIB_SYMBOL::SetDatasheetProp, &LIB_SYMBOL::GetDatasheetProp ),
+                    groupFields );
+        propMgr.AddProperty( new PROPERTY<LIB_SYMBOL, wxString>( _HKI( "Keywords" ),
+                    &LIB_SYMBOL::SetKeywordsProp, &LIB_SYMBOL::GetKeywordsProp ),
+                    groupFields );
 
         const wxString groupSymbolDef = _HKI( "Symbol Definition" );
 
         propMgr.AddProperty( new PROPERTY<LIB_SYMBOL, bool>( _HKI( "Define as Power Symbol" ),
-                                                             &LIB_SYMBOL::SetPowerSymbolProp,
-                                                             &LIB_SYMBOL::GetPowerSymbolProp ),
-                             groupSymbolDef );
+                    &LIB_SYMBOL::SetPowerSymbolProp, &LIB_SYMBOL::GetPowerSymbolProp ),
+                    groupSymbolDef );
         propMgr.AddProperty( new PROPERTY<LIB_SYMBOL, bool>( _HKI( "Define as Local Power Symbol" ),
-                                                             &LIB_SYMBOL::SetLocalPowerSymbolProp,
-                                                             &LIB_SYMBOL::GetLocalPowerSymbolProp ),
-                             groupSymbolDef );
+                    &LIB_SYMBOL::SetLocalPowerSymbolProp, &LIB_SYMBOL::GetLocalPowerSymbolProp ),
+                    groupSymbolDef );
 
         const wxString groupPinDisplay = _HKI( "Pin Display" );
 
-        propMgr.AddProperty( new PROPERTY<SYMBOL, bool>( _HKI( "Show Pin Number" ), &SYMBOL::SetShowPinNumbers,
-                                                         &SYMBOL::GetShowPinNumbers ),
-                             groupPinDisplay );
-        propMgr.AddProperty( new PROPERTY<SYMBOL, bool>( _HKI( "Show Pin Name" ), &SYMBOL::SetShowPinNames,
-                                                         &SYMBOL::GetShowPinNames ),
-                             groupPinDisplay );
+        propMgr.AddProperty( new PROPERTY<SYMBOL, bool>( _HKI( "Show Pin Number" ),
+                    &SYMBOL::SetShowPinNumbers, &SYMBOL::GetShowPinNumbers ),
+                    groupPinDisplay );
+        propMgr.AddProperty( new PROPERTY<SYMBOL, bool>( _HKI( "Show Pin Name" ),
+                    &SYMBOL::SetShowPinNames, &SYMBOL::GetShowPinNames ),
+                    groupPinDisplay );
         propMgr.AddProperty( new PROPERTY<LIB_SYMBOL, bool>( _HKI( "Place Pin Names Inside" ),
-                                                             &LIB_SYMBOL::SetPinNamesInsideProp,
-                                                             &LIB_SYMBOL::GetPinNamesInsideProp ),
-                             groupPinDisplay );
-        propMgr.AddProperty( new PROPERTY<SYMBOL, int>( _HKI( "Pin Name Position Offset" ), &SYMBOL::SetPinNameOffset,
-                                                        &SYMBOL::GetPinNameOffset, PROPERTY_DISPLAY::PT_SIZE ),
-                             groupPinDisplay );
+                    &LIB_SYMBOL::SetPinNamesInsideProp, &LIB_SYMBOL::GetPinNamesInsideProp ),
+                    groupPinDisplay );
+        propMgr.AddProperty( new PROPERTY<SYMBOL, int>( _HKI( "Pin Name Position Offset" ),
+                    &SYMBOL::SetPinNameOffset, &SYMBOL::GetPinNameOffset, PROPERTY_DISPLAY::PT_SIZE ),
+                    groupPinDisplay );
 
         const wxString groupAttributes = _HKI( "Attributes" );
 
         propMgr.AddProperty( new PROPERTY<LIB_SYMBOL, bool>( _HKI( "Exclude from Simulation" ),
-                                                             &LIB_SYMBOL::SetExcludedFromSimProp,
-                                                             &LIB_SYMBOL::GetExcludedFromSimProp ),
-                             groupAttributes );
+                    &LIB_SYMBOL::SetExcludedFromSimProp, &LIB_SYMBOL::GetExcludedFromSimProp ),
+                    groupAttributes );
         propMgr.AddProperty( new PROPERTY<LIB_SYMBOL, bool>( _HKI( "Exclude from Board" ),
-                                                             &LIB_SYMBOL::SetExcludedFromBoardProp,
-                                                             &LIB_SYMBOL::GetExcludedFromBoardProp ),
-                             groupAttributes );
+                    &LIB_SYMBOL::SetExcludedFromBoardProp, &LIB_SYMBOL::GetExcludedFromBoardProp ),
+                    groupAttributes );
         propMgr.AddProperty( new PROPERTY<LIB_SYMBOL, bool>( _HKI( "Exclude from Bill of Materials" ),
-                                                             &LIB_SYMBOL::SetExcludedFromBOMProp,
-                                                             &LIB_SYMBOL::GetExcludedFromBOMProp ),
-                             groupAttributes );
+                    &LIB_SYMBOL::SetExcludedFromBOMProp, &LIB_SYMBOL::GetExcludedFromBOMProp ),
+                    groupAttributes );
         propMgr.AddProperty( new PROPERTY<LIB_SYMBOL, bool>( _HKI( "Exclude from Position Files" ),
-                                                             &LIB_SYMBOL::SetExcludedFromPosFilesProp,
-                                                             &LIB_SYMBOL::GetExcludedFromPosFilesProp ),
-                             groupAttributes );
+                    &LIB_SYMBOL::SetExcludedFromPosFilesProp, &LIB_SYMBOL::GetExcludedFromPosFilesProp ),
+                    groupAttributes );
 
         const wxString groupUnits = _HKI( "Units and Body Styles" );
 
-        propMgr.AddProperty( new PROPERTY<LIB_SYMBOL, int>( _HKI( "Number of Symbol Units" ), &LIB_SYMBOL::SetUnitProp,
-                                                            &LIB_SYMBOL::GetUnitProp ),
-                             groupUnits );
+        propMgr.AddProperty( new PROPERTY<LIB_SYMBOL, int>( _HKI( "Number of Symbol Units" ),
+                        &LIB_SYMBOL::SetUnitProp, &LIB_SYMBOL::GetUnitProp ),
+                        groupUnits );
         propMgr.AddProperty( new PROPERTY<LIB_SYMBOL, bool>( _HKI( "Units are Interchangeable" ),
-                                                             &LIB_SYMBOL::SetUnitsInterchangeableProp,
-                                                             &LIB_SYMBOL::GetUnitsInterchangeableProp ),
-                             groupUnits );
+                    &LIB_SYMBOL::SetUnitsInterchangeableProp, &LIB_SYMBOL::GetUnitsInterchangeableProp ),
+                    groupUnits );
 
-        auto multiBodyStyle = [=]( INSPECTABLE* aItem ) -> bool
-        {
-            if( LIB_SYMBOL* symbol = dynamic_cast<LIB_SYMBOL*>( aItem ) )
-                return symbol->IsMultiBodyStyle();
+        auto multiBodyStyle =
+                [=]( INSPECTABLE* aItem ) -> bool
+                {
+                    if( LIB_SYMBOL* symbol = dynamic_cast<LIB_SYMBOL*>( aItem ) )
+                        return symbol->IsMultiBodyStyle();
 
-            return false;
-        };
+                    return false;
+                };
 
-        propMgr.AddProperty( new PROPERTY<LIB_SYMBOL, wxString>( _HKI( "Body Styles" ), &LIB_SYMBOL::SetBodyStyleProp,
-                                                                 &LIB_SYMBOL::GetBodyStyleProp ),
-                             groupUnits )
+        propMgr.AddProperty( new PROPERTY<LIB_SYMBOL, wxString>( _HKI( "Body Styles" ),
+                    &LIB_SYMBOL::SetBodyStyleProp, &LIB_SYMBOL::GetBodyStyleProp ),
+                    groupUnits )
                 .SetAvailableFunc( multiBodyStyle )
-                .SetChoicesFunc(
-                        []( INSPECTABLE* aItem )
-                        {
-                            wxPGChoices choices;
+                .SetChoicesFunc( []( INSPECTABLE* aItem )
+                                 {
+                                     wxPGChoices choices;
 
-                            if( LIB_SYMBOL* symbol = dynamic_cast<LIB_SYMBOL*>( aItem ) )
-                            {
-                                for( int ii = 1; ii <= symbol->GetBodyStyleCount(); ii++ )
-                                    choices.Add( symbol->GetBodyStyleDescription( ii, false ) );
-                            }
+                                     if( LIB_SYMBOL* symbol = dynamic_cast<LIB_SYMBOL*>( aItem ) )
+                                     {
+                                         for( int ii = 1; ii <= symbol->GetBodyStyleCount(); ii++ )
+                                             choices.Add( symbol->GetBodyStyleDescription( ii, false ) );
+                                     }
 
-                            return choices;
-                        } );
+                                     return choices;
+                                 } );
     }
 } _LIB_SYMBOL_DESC;

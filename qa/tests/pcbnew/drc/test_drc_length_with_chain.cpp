@@ -70,8 +70,7 @@ BOOST_AUTO_TEST_CASE( PerNetLengthFiresAlongsideChainLength )
     }
 
     PCB_IO_KICAD_SEXPR     plugin;
-    std::unique_ptr<BOARD> board = std::make_unique<BOARD>();
-    plugin.LoadBoard( KI_TEST::GetPcbnewTestDataDir() + BOARD_FILE, board.get() );
+    std::unique_ptr<BOARD> board = plugin.LoadBoard( KI_TEST::GetPcbnewTestDataDir() + BOARD_FILE );
     board->BuildConnectivity();
 
     // Tag CHAIN_NET into a signal chain so the chain branch fires; leave PLAIN_NET unchained

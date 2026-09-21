@@ -227,8 +227,8 @@ void PCB_IO_EASYEDA_PARSER::ParseToBoardItemContainer(
             parts.RemoveAt( 0 );
 
             VECTOR2D   pcbOrigin = m_relOrigin;
-            FOOTPRINT* fp = ParseFootprint( fpOrigin, orientation, layer, board, innerParamMap,
-                                            aFootprintMap, parts );
+            std::unique_ptr<FOOTPRINT> fp =
+                    ParseFootprint( fpOrigin, orientation, layer, board, innerParamMap, aFootprintMap, parts );
 
             if( !fp )
                 continue;
@@ -237,7 +237,7 @@ void PCB_IO_EASYEDA_PARSER::ParseToBoardItemContainer(
 
             fp->Move( RelPos( fpOrigin ) );
 
-            aContainer->Add( fp, ADD_MODE::APPEND );
+            aContainer->Add( fp.release(), ADD_MODE::APPEND );
         }
         else if( elType == wxS( "TRACK" ) )
         {
@@ -848,6 +848,7 @@ void PCB_IO_EASYEDA_PARSER::ParseToBoardItemContainer(
                 pad->SetPosition( center );
                 pad->SetLayerSet( PAD::PTHMask() );
                 pad->SetAttribute( PAD_ATTRIB::PTH );
+                pad->SetPadstackMode( PADSTACK::MODE::NORMAL );     // EasyEDA doesn't have complex padstacks
                 pad->SetShape( PADSTACK::ALL_LAYERS, PAD_SHAPE::CIRCLE );
                 pad->SetSize( PADSTACK::ALL_LAYERS, VECTOR2I( kdia, kdia ) );
                 pad->SetDrillShape( PAD_DRILL_SHAPE::CIRCLE );
@@ -860,7 +861,7 @@ void PCB_IO_EASYEDA_PARSER::ParseToBoardItemContainer(
                 std::unique_ptr<PCB_VIA> via = std::make_unique<PCB_VIA>( aContainer );
 
                 via->SetPosition( center );
-
+                via->SetPadstackMode( PADSTACK::MODE::NORMAL );     // EasyEDA doesn't have complex padstacks
                 via->SetWidth( PADSTACK::ALL_LAYERS, kdia );
                 via->SetNet( getOrAddNetItem( arr[4] ) );
                 via->SetDrill( kdrill );
@@ -907,6 +908,7 @@ void PCB_IO_EASYEDA_PARSER::ParseToBoardItemContainer(
             pad->SetPosition( center );
             pad->SetLayerSet( PAD::UnplatedHoleMask() );
             pad->SetAttribute( PAD_ATTRIB::NPTH );
+            pad->SetPadstackMode( PADSTACK::MODE::NORMAL );     // EasyEDA doesn't have complex padstacks
             pad->SetShape( PADSTACK::ALL_LAYERS, PAD_SHAPE::CIRCLE );
             pad->SetSize( PADSTACK::ALL_LAYERS, VECTOR2I( kdia, kdia ) );
             pad->SetDrillShape( PAD_DRILL_SHAPE::CIRCLE );
@@ -953,6 +955,7 @@ void PCB_IO_EASYEDA_PARSER::ParseToBoardItemContainer(
             pad->SetNet( getOrAddNetItem( arr[7] ) );
             pad->SetNumber( arr[8] );
             pad->SetPosition( center );
+            pad->SetPadstackMode( PADSTACK::MODE::NORMAL );     // EasyEDA doesn't have complex padstacks
             pad->SetSize( PADSTACK::ALL_LAYERS, size );
             pad->SetOrientationDegrees( Convert( arr[11] ) );
             pad->SetThermalSpokeAngle( ANGLE_0 );
@@ -986,7 +989,8 @@ void PCB_IO_EASYEDA_PARSER::ParseToBoardItemContainer(
                 pad->SetAttribute( PAD_ATTRIB::SMD );
             }
 
-            wxString padType = arr[1];
+            const wxString& padType = arr[1];
+
             if( padType == wxS( "ELLIPSE" ) )
             {
                 pad->SetShape( PADSTACK::ALL_LAYERS, PAD_SHAPE::OVAL );
@@ -1071,10 +1075,11 @@ void PCB_IO_EASYEDA_PARSER::ParseToBoardItemContainer(
 }
 
 
-FOOTPRINT* PCB_IO_EASYEDA_PARSER::ParseFootprint(
-        const VECTOR2D& aOrigin, const EDA_ANGLE& aOrientation, int aLayer, BOARD* aParent,
-        std::map<wxString, wxString>                    aParams,
-        std::map<wxString, std::unique_ptr<FOOTPRINT>>& aFootprintMap, wxArrayString aShapes )
+std::unique_ptr<FOOTPRINT>
+PCB_IO_EASYEDA_PARSER::ParseFootprint( const VECTOR2D& aOrigin, const EDA_ANGLE& aOrientation, int aLayer,
+                                       BOARD* aParent, std::map<wxString, wxString> aParams,
+                                       std::map<wxString, std::unique_ptr<FOOTPRINT>>& aFootprintMap,
+                                       wxArrayString                                   aShapes )
 {
     std::unique_ptr<FOOTPRINT> footprint = std::make_unique<FOOTPRINT>( aParent );
 
@@ -1155,7 +1160,7 @@ FOOTPRINT* PCB_IO_EASYEDA_PARSER::ParseFootprint(
         footprint->Add( refText.release(), ADD_MODE::APPEND );
     }
 
-    return footprint.release();
+    return footprint;
 }
 
 

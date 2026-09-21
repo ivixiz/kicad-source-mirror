@@ -416,7 +416,7 @@ void CLIPBOARD_IO::SaveSelection( const PCB_SELECTION& aSelected, bool isFootpri
                     if( PCB_FIELD* field = dynamic_cast<PCB_FIELD*>( copy ) )
                     {
                         if( field->IsMandatory() )
-                            field->SetOrdinal( footprint->GetNextFieldOrdinal() );
+                            field->SetOrdinal( footprint->GetNextFieldOrdinal(), FIELD_T::USER );
                     }
 
                     copy = footprint;
@@ -498,18 +498,18 @@ BOARD_ITEM* CLIPBOARD_IO::Parse()
 }
 
 
-void CLIPBOARD_IO::SaveBoard( const wxString& aFileName, BOARD* aBoard,
+void CLIPBOARD_IO::SaveBoard( const wxString& aFileName, BOARD& aBoard,
                               const std::map<std::string, UTF8>* aProperties )
 {
     init( aProperties );
 
-    m_board = aBoard;       // after init()
+    m_board = &aBoard; // after init()
 
     m_formatter.Print( "(kicad_pcb (version %d) (generator \"pcbnew\") (generator_version %s)",
                   SEXPR_BOARD_FILE_VERSION,
                   m_formatter.Quotew( GetMajorMinorVersion() ).c_str() );
 
-    Format( aBoard );
+    Format( &aBoard );
 
     m_formatter.Print( ")" );
 
@@ -517,66 +517,4 @@ void CLIPBOARD_IO::SaveBoard( const wxString& aFileName, BOARD* aBoard,
     KICAD_FORMAT::Prettify( prettyData, KICAD_FORMAT::FORMAT_MODE::COMPACT_TEXT_PROPERTIES );
 
     m_writer( wxString( prettyData.c_str(), wxConvUTF8 ) );
-}
-
-
-BOARD* CLIPBOARD_IO::LoadBoard( const wxString& aFileName, BOARD* aAppendToMe,
-                                const std::map<std::string, UTF8>* aProperties, PROJECT* aProject )
-{
-    std::string result( m_reader().mb_str() );
-
-    std::function<bool( wxString, int, wxString, wxString )> queryUser =
-            [&]( wxString aTitle, int aIcon, wxString aMessage, wxString aAction ) -> bool
-            {
-                KIDIALOG dlg( nullptr, aMessage, aTitle, wxOK | wxCANCEL | aIcon );
-
-                if( !aAction.IsEmpty() )
-                    dlg.SetOKLabel( aAction );
-
-                dlg.DoNotShowCheckbox( aMessage, 0 );
-
-                return dlg.ShowModal() == wxID_OK;
-            };
-
-    STRING_LINE_READER reader( result, wxT( "clipboard" ) );
-    PCB_IO_KICAD_SEXPR_PARSER         parser( &reader, aAppendToMe, queryUser );
-
-    init( aProperties );
-
-    BOARD_ITEM* item;
-    BOARD* board;
-
-    try
-    {
-        item =  parser.Parse();
-    }
-    catch( const FUTURE_FORMAT_ERROR& )
-    {
-        // Don't wrap a FUTURE_FORMAT_ERROR in another
-        throw;
-    }
-    catch( const PARSE_ERROR& parse_error )
-    {
-        if( parser.IsTooRecent() )
-            throw FUTURE_FORMAT_ERROR( parse_error, parser.GetRequiredVersion() );
-        else
-            throw;
-    }
-
-    if( item->Type() != PCB_T )
-    {
-        // The parser loaded something that was valid, but wasn't a board.
-        THROW_PARSE_ERROR( _( "Clipboard content is not KiCad compatible" ), parser.CurSource(),
-                           parser.CurLine(), parser.CurLineNumber(), parser.CurOffset() );
-    }
-    else
-    {
-        board = dynamic_cast<BOARD*>( item );
-    }
-
-    // Give the filename to the board if it's new
-    if( board && !aAppendToMe )
-        board->SetFileName( aFileName );
-
-    return board;
 }

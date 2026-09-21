@@ -80,7 +80,7 @@ public:
     /**
      * Write to specified output file.
      */
-    bool WriteNetlist( const wxString& aOutFileName, unsigned aNetlistOptions,
+    bool writeNetlist( const wxString& aOutFileName, unsigned aNetlistOptions,
                        REPORTER& aReporter ) override;
 
     /**
@@ -108,6 +108,7 @@ public:
     virtual bool ReadSchematicAndLibraries( unsigned aNetlistOptions, REPORTER& aReporter );
 
     /**
+     * Unescape schematic names, preserving literal slashes when mapping ground names.
      * Encode formatting wrappers as separators and add a net suffix before replacing illegal
      * SPICE characters.  This avoids collisions between formatted labels and literal net names.
      */

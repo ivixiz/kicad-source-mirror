@@ -629,11 +629,12 @@ std::unique_ptr<PAD> PCB_IO_EASYEDAPRO_PARSER::createPAD( FOOTPRINT*            
     pad->SetNumber( padNumber );
     pad->SetPosition( ScalePos( center ) );
     pad->SetOrientationDegrees( orientation );
+    pad->SetPadstackMode( PADSTACK::MODE::NORMAL );
 
     // Check if this pad has a real drill hole
     // JLCEDA may use ["ROUND",0,0] to indicate SMD pads
     bool hasHole = false;
-    
+
     if( !padHole.is_null() && !padHole.empty() )
     {
         wxString holeShape = padHole.at( 0 );
@@ -670,7 +671,7 @@ std::unique_ptr<PAD> PCB_IO_EASYEDAPRO_PARSER::createPAD( FOOTPRINT*            
             }
         }
     }
-    
+
     // If no valid hole, this is an SMD pad
     if( !hasHole )
     {
@@ -687,6 +688,7 @@ std::unique_ptr<PAD> PCB_IO_EASYEDAPRO_PARSER::createPAD( FOOTPRINT*            
     }
 
     wxString padSh = padShape.at( 0 );
+
     if( padSh == wxS( "RECT" ) )
     {
         VECTOR2D size;
@@ -752,9 +754,9 @@ std::unique_ptr<PAD> PCB_IO_EASYEDAPRO_PARSER::createPAD( FOOTPRINT*            
 }
 
 
-FOOTPRINT* PCB_IO_EASYEDAPRO_PARSER::ParseFootprint( const nlohmann::json&              aProject,
-                                                     const wxString&                    aFpUuid,
-                                                     const std::vector<nlohmann::json>& aLines )
+std::unique_ptr<FOOTPRINT> PCB_IO_EASYEDAPRO_PARSER::ParseFootprint( const nlohmann::json&              aProject,
+                                                                     const wxString&                    aFpUuid,
+                                                                     const std::vector<nlohmann::json>& aLines )
 {
     std::unique_ptr<FOOTPRINT> footprintPtr = std::make_unique<FOOTPRINT>( m_board );
     FOOTPRINT*                 footprint = footprintPtr.get();
@@ -1004,7 +1006,7 @@ FOOTPRINT* PCB_IO_EASYEDAPRO_PARSER::ParseFootprint( const nlohmann::json&      
         footprint->Add( refText.release(), ADD_MODE::APPEND );
     }
 
-    return footprintPtr.release();
+    return footprintPtr;
 }
 
 
@@ -1161,6 +1163,7 @@ void PCB_IO_EASYEDAPRO_PARSER::ParseBoard(
                 std::unique_ptr<PCB_VIA> via = std::make_unique<PCB_VIA>( aBoard );
 
                 via->SetPosition( ScalePos( center ) );
+                via->SetPadstackMode( PADSTACK::MODE::NORMAL );
                 via->SetDrill( ScaleSize( drill ) );
                 via->SetWidth( PADSTACK::ALL_LAYERS, ScaleSize( dia ) );
 

@@ -18,6 +18,7 @@
  */
 
 #include <qa_utils/wx_utils/unit_test_utils.h>
+#include <pcbnew_utils/board_construction_utils.h>
 #include <boost/test/data/test_case.hpp>
 
 #include <wx/wx.h>
@@ -27,6 +28,9 @@
 #include <geometry/eda_angle.h>
 #include <pcbnew/pcbexpr_evaluator.h>
 #include <drc/drc_rule.h>
+#include <drc/drc_rule_parser.h>
+#include <ki_exception.h>
+#include <reporter.h>
 #include <pcbnew/board.h>
 #include <board_design_settings.h>
 #include <pcbnew/pcb_shape.h>
@@ -38,6 +42,7 @@
 #include <project/net_settings.h>
 #include <properties/property.h>
 #include <properties/property_mgr.h>
+#include <dialogs/dialog_find_by_properties.h>
 
 BOOST_AUTO_TEST_SUITE( Libeval_Compiler )
 
@@ -100,15 +105,15 @@ const static std::vector<EXPR_TO_TEST> introspectionExpressions = {
     { "A.Netclass + 1.0", false, VAL( 1.0 ) },
     { "A.hasNetclass('HV_LINE')", false, VAL( 1.0 ) },
     { "A.hasNetclass('HV_*')", false, VAL( 1.0 ) },
+    { "A.existsOnLayer(B.Layer)", false, VAL( 1.0 ) },
     { "A.type == 'Track' && B.type == 'Track' && A.layer == 'F.Cu'", false, VAL( 1.0 ) },
     { "(A.type == 'Track') && (B.type == 'Track') && (A.layer == 'F.Cu')", false, VAL( 1.0 ) },
     { "A.type == 'Via' && A.isMicroVia()", false, VAL(0.0) }
 };
 
 
-static bool testEvalExpr( const wxString& expr, const LIBEVAL::VALUE& expectedResult,
-                          bool expectError = false, BOARD_ITEM* itemA = nullptr,
-                          BOARD_ITEM* itemB = nullptr )
+static bool testEvalExpr( const wxString& expr, const LIBEVAL::VALUE& expectedResult, bool expectError = false,
+                          BOARD_ITEM* itemA = nullptr, BOARD_ITEM* itemB = nullptr )
 {
     PCBEXPR_COMPILER  compiler( new PCBEXPR_UNIT_RESOLVER() );
     PCBEXPR_UCODE     ucode;
@@ -199,8 +204,8 @@ BOOST_AUTO_TEST_CASE( IntrospectedProperties )
     std::shared_ptr<NETCLASS> netclass1( new NETCLASS( "HV_LINE" ) );
     std::shared_ptr<NETCLASS> netclass2( new NETCLASS( "otherClass" ) );
 
-    auto net1info = new NETINFO_ITEM( &brd, "net1", 1 );
-    auto net2info = new NETINFO_ITEM( &brd, "net2", 2 );
+    NETINFO_ITEM* net1info = new NETINFO_ITEM( &brd, "net1", 1 );
+    NETINFO_ITEM* net2info = new NETINFO_ITEM( &brd, "net2", 2 );
 
     net1info->SetNetClass( netclass1 );
     net2info->SetNetClass( netclass2 );
@@ -221,6 +226,7 @@ BOOST_AUTO_TEST_CASE( IntrospectedProperties )
         testEvalExpr( expr.expression, expr.expectedResult, expr.expectError, &trackA, &trackB );
     }
 }
+
 
 BOOST_AUTO_TEST_CASE( IntrospectedExtendedNumericProperties )
 {
@@ -247,14 +253,13 @@ BOOST_AUTO_TEST_CASE( IntrospectedExtendedNumericProperties )
     FOOTPRINT footprint( &brd );
     footprint.SetLocalSolderPasteMarginRatio( 0.125 );
 
-    testEvalExpr( wxT( "A.Solderpaste_Margin_Ratio_Override == 0.125" ), VAL( 1.0 ), false,
-                  &footprint );
+    testEvalExpr( wxT( "A.Solderpaste_Margin_Ratio_Override == 0.125" ), VAL( 1.0 ), false, &footprint );
 
     footprint.SetLocalSolderPasteMarginRatio( std::nullopt );
 
-    testEvalExpr( wxT( "A.Solderpaste_Margin_Ratio_Override == null" ), VAL( 1.0 ), false,
-                  &footprint );
+    testEvalExpr( wxT( "A.Solderpaste_Margin_Ratio_Override == null" ), VAL( 1.0 ), false, &footprint );
 }
+
 
 BOOST_AUTO_TEST_CASE( RenamedProperties )
 {
@@ -279,6 +284,7 @@ BOOST_AUTO_TEST_CASE( RenamedProperties )
     testEvalExpr( wxT( "A.Start_Y == 2mm" ), VAL( 1.0 ), false, &track );
 }
 
+
 BOOST_AUTO_TEST_CASE( IntrospectedColorProperties )
 {
     PROPERTY_MANAGER& propMgr = PROPERTY_MANAGER::Instance();
@@ -287,18 +293,22 @@ BOOST_AUTO_TEST_CASE( IntrospectedColorProperties )
     BOARD     brd;
     PCB_TABLE table( &brd, 0 );
 
-    const auto checkColor = [&]( const COLOR4D& aColor, const wxString& aExpectedCss )
-    {
-        table.SetBorderColor( aColor );
-        BOOST_CHECK_EQUAL( aColor.ToCSSString(), aExpectedCss );
+    auto checkColor =
+            [&]( const COLOR4D& aColor, const wxString& aExpectedCss )
+            {
+                table.SetBorderColor( aColor );
+                BOOST_CHECK_EQUAL( aColor.ToCSSString(), aExpectedCss );
 
-        wxString expression = wxT( "A.Border_Color == '" ) + aExpectedCss + wxT( "'" );
-        testEvalExpr( expression, VAL( 1.0 ), false, &table );
-    };
+                wxString expression = wxT( "A.Border_Color == '" ) + aExpectedCss + wxT( "'" );
+                testEvalExpr( expression, VAL( 1.0 ), false, &table );
+            };
 
     checkColor( COLOR4D( 0.25, 0.5, 0.75, 0.5 ), wxT( "rgba(64, 128, 191, 0.502)" ) );
+#ifndef __WXMAC__   // WXMAC doesn't have colour names initialized when run headless
     checkColor( COLOR4D( wxString( wxT( "red" ) ) ), wxT( "rgb(255, 0, 0)" ) );
+#endif
 }
+
 
 BOOST_AUTO_TEST_CASE( ExpressionPropertyTypesAreSupported )
 {
@@ -339,12 +349,12 @@ BOOST_AUTO_TEST_CASE( ExpressionPropertyTypesAreSupported )
 
     for( const auto& [field, types] : fieldTypes )
     {
-        BOOST_CHECK_MESSAGE( types.size() == 1,
-                             "Incompatible expression types for property: " << field.mb_str() );
+        BOOST_CHECK_MESSAGE( types.size() == 1, "Incompatible expression types for property: " << field.mb_str() );
     }
 
     expectCompileError( wxT( "A.Shape" ) );
 }
+
 
 BOOST_AUTO_TEST_CASE( IntrospectedPropertyAvailability )
 {
@@ -365,6 +375,7 @@ BOOST_AUTO_TEST_CASE( IntrospectedPropertyAvailability )
     testEvalExpr( wxT( "A.Priority == 7" ), VAL( 1.0 ), false, &zone );
 }
 
+
 BOOST_AUTO_TEST_CASE( InNetChainClassWildcard )
 {
     PROPERTY_MANAGER& propMgr = PROPERTY_MANAGER::Instance();
@@ -375,9 +386,9 @@ BOOST_AUTO_TEST_CASE( InNetChainClassWildcard )
     std::shared_ptr<NET_SETTINGS> netSettings = brd.GetDesignSettings().m_NetSettings;
     netSettings->SetNetChainClass( wxT( "ChainHS" ), wxT( "HighSpeed" ) );
 
-    auto netUnclassified = new NETINFO_ITEM( &brd, "netA", 1 );
-    auto netClassified   = new NETINFO_ITEM( &brd, "netB", 2 );
-    auto netNoChain      = new NETINFO_ITEM( &brd, "netC", 3 );
+    NETINFO_ITEM* netUnclassified = new NETINFO_ITEM( &brd, "netA", 1 );
+    NETINFO_ITEM* netClassified   = new NETINFO_ITEM( &brd, "netB", 2 );
+    NETINFO_ITEM* netNoChain      = new NETINFO_ITEM( &brd, "netC", 3 );
 
     netUnclassified->SetNetChain( wxT( "ChainOrphan" ) );
     netClassified->SetNetChain( wxT( "ChainHS" ) );
@@ -392,24 +403,76 @@ BOOST_AUTO_TEST_CASE( InNetChainClassWildcard )
 
     // A chain with no class assignment must not match any inNetChainClass() pattern,
     // including the '*' wildcard.
-    testEvalExpr( wxT( "A.inNetChainClass('*')" ), VAL( 0.0 ), false, &trackUnclassified,
-                  &trackUnclassified );
-    testEvalExpr( wxT( "A.inNetChainClass('HighSpeed')" ), VAL( 0.0 ), false, &trackUnclassified,
-                  &trackUnclassified );
+    testEvalExpr( wxT( "A.inNetChainClass('*')" ), VAL( 0.0 ), false, &trackUnclassified, &trackUnclassified );
+    testEvalExpr( wxT( "A.inNetChainClass('HighSpeed')" ), VAL( 0.0 ), false, &trackUnclassified, &trackUnclassified );
 
     // Net with no chain at all must not match either.
-    testEvalExpr( wxT( "A.inNetChainClass('*')" ), VAL( 0.0 ), false, &trackNoChain,
-                  &trackNoChain );
+    testEvalExpr( wxT( "A.inNetChainClass('*')" ), VAL( 0.0 ), false, &trackNoChain, &trackNoChain );
 
     // Properly classified chain must match both wildcard and exact patterns.
-    testEvalExpr( wxT( "A.inNetChainClass('*')" ), VAL( 1.0 ), false, &trackClassified,
-                  &trackClassified );
-    testEvalExpr( wxT( "A.inNetChainClass('HighSpeed')" ), VAL( 1.0 ), false, &trackClassified,
-                  &trackClassified );
-    testEvalExpr( wxT( "A.inNetChainClass('High*')" ), VAL( 1.0 ), false, &trackClassified,
-                  &trackClassified );
-    testEvalExpr( wxT( "A.inNetChainClass('LowSpeed')" ), VAL( 0.0 ), false, &trackClassified,
-                  &trackClassified );
+    testEvalExpr( wxT( "A.inNetChainClass('*')" ), VAL( 1.0 ), false, &trackClassified, &trackClassified );
+    testEvalExpr( wxT( "A.inNetChainClass('HighSpeed')" ), VAL( 1.0 ), false, &trackClassified, &trackClassified );
+    testEvalExpr( wxT( "A.inNetChainClass('High*')" ), VAL( 1.0 ), false, &trackClassified, &trackClassified );
+    testEvalExpr( wxT( "A.inNetChainClass('LowSpeed')" ), VAL( 0.0 ), false, &trackClassified, &trackClassified );
+}
+
+BOOST_AUTO_TEST_CASE( StackedMicroviaExpression )
+{
+    PROPERTY_MANAGER& propMgr = PROPERTY_MANAGER::Instance();
+    propMgr.Rebuild();
+
+    BOARD brd;
+    brd.SetCopperLayerCount( 4 );
+
+    auto microvia = []( BOARD* aBoard, const VECTOR2I& aPos, PCB_LAYER_ID aTop, PCB_LAYER_ID aBottom )
+    {
+        PCB_VIA* via = new PCB_VIA( aBoard );
+
+        via->SetViaType( VIATYPE::MICROVIA );
+        via->SetPosition( aPos );
+        via->SetLayerPair( aTop, aBottom );
+        via->SetWidth( PADSTACK::ALL_LAYERS, pcbIUScale.mmToIU( 0.25 ) );
+        via->SetDrill( pcbIUScale.mmToIU( 0.1 ) );
+        aBoard->Add( via );
+
+        return via;
+    };
+
+    VECTOR2I origin( 0, 0 );
+    VECTOR2I away( pcbIUScale.mmToIU( 10 ), 0 );
+
+    PCB_VIA* upperHop = microvia( &brd, origin, F_Cu, In1_Cu );
+    PCB_VIA* lowerHop = microvia( &brd, origin, In1_Cu, In2_Cu );
+    PCB_VIA* lone = microvia( &brd, away, F_Cu, In1_Cu );
+
+    PCB_VIA* through = new PCB_VIA( &brd );
+
+    through->SetViaType( VIATYPE::THROUGH );
+    through->SetPosition( origin );
+    through->SetLayerPair( F_Cu, B_Cu );
+    through->SetWidth( PADSTACK::ALL_LAYERS, pcbIUScale.mmToIU( 0.6 ) );
+    through->SetDrill( pcbIUScale.mmToIU( 0.3 ) );
+    brd.Add( through );
+
+    // Both hops of a stack are in it, not just the one on top.
+    testEvalExpr( wxT( "A.isStackedVia()" ), VAL( 1.0 ), false, upperHop, upperHop );
+    testEvalExpr( wxT( "A.isStackedVia()" ), VAL( 1.0 ), false, lowerHop, lowerHop );
+
+    // A microvia landing on nothing is not a stack.
+    testEvalExpr( wxT( "A.isStackedVia()" ), VAL( 0.0 ), false, lone, lone );
+
+    // A through via sharing the position of a stack is not part of it.
+    testEvalExpr( wxT( "A.isStackedVia()" ), VAL( 0.0 ), false, through, through );
+
+    // The predicate composes with the rest of the language.
+    testEvalExpr( wxT( "A.isMicroVia() && !A.isStackedVia()" ), VAL( 1.0 ), false, lone, lone );
+
+    // The relation is cached for the whole board, so an edit has to drop it.
+    PCB_VIA* landing = microvia( &brd, away, In1_Cu, In2_Cu );
+    brd.IncrementTimeStamp();
+
+    testEvalExpr( wxT( "A.isStackedVia()" ), VAL( 1.0 ), false, lone, lone );
+    testEvalExpr( wxT( "A.isStackedVia()" ), VAL( 1.0 ), false, landing, landing );
 }
 
 BOOST_AUTO_TEST_CASE( ParentNavigation )
@@ -458,6 +521,92 @@ BOOST_AUTO_TEST_CASE( ParentNavigation )
 }
 
 
+// A property missing on a child item resolves against its parent footprint.
+BOOST_AUTO_TEST_CASE( PropertyParentFallback )
+{
+    PROPERTY_MANAGER::Instance().Rebuild();
+
+    BOARD brd;
+
+    FOOTPRINT fp( &brd );
+    fp.SetReference( wxT( "J1" ) );
+
+    PCB_TEXT* text = new PCB_TEXT( &fp );
+    fp.Add( text );
+
+    testEvalExpr( wxT( "A.Reference == 'J1'" ), VAL( 1.0 ), false, text, text );
+    testEvalExpr( wxT( "A.Reference == 'J2'" ), VAL( 0.0 ), false, text, text );
+}
+
+
+// A bool property must be readable in a rule.
+BOOST_AUTO_TEST_CASE( BoolPropertyEvaluation )
+{
+    PROPERTY_MANAGER::Instance().Rebuild();
+
+    BOARD brd;
+
+    FOOTPRINT fp( &brd );
+
+    testEvalExpr( wxT( "A.Do_not_Populate == 0" ), VAL( 1.0 ), false, &fp, &fp );
+
+    fp.SetDNP( true );
+
+    testEvalExpr( wxT( "A.Do_not_Populate == 1" ), VAL( 1.0 ), false, &fp, &fp );
+}
+
+
+// Queries read flags and fields through the current assembly variant.
+BOOST_AUTO_TEST_CASE( VariantAwareEvaluation )
+{
+    PROPERTY_MANAGER::Instance().Rebuild();
+
+    BOARD brd;
+
+    FOOTPRINT fp( &brd );
+    fp.SetValue( wxT( "BaseVal" ) );
+
+    FOOTPRINT_VARIANT* variant = fp.AddVariant( wxT( "V1" ) );
+    variant->SetDNP( true );
+    variant->SetFieldValue( wxT( "Value" ), wxT( "VariantVal" ) );
+
+    brd.AddVariant( wxT( "V1" ) );
+    brd.SetCurrentVariant( wxT( "V1" ) );
+
+    testEvalExpr( wxT( "A.Do_not_Populate == 1" ), VAL( 1.0 ), false, &fp, &fp );
+    testEvalExpr( wxT( "A.getField('Value') == 'VariantVal'" ), VAL( 1.0 ), false, &fp, &fp );
+
+    // Without a current variant the base values apply.
+    brd.SetCurrentVariant( wxEmptyString );
+
+    testEvalExpr( wxT( "A.Do_not_Populate == 0" ), VAL( 1.0 ), false, &fp, &fp );
+    testEvalExpr( wxT( "A.getField('Value') == 'BaseVal'" ), VAL( 1.0 ), false, &fp, &fp );
+}
+
+
+// Reference resolves as a property with the fallback above, so the query normalizer
+// must leave it alone. getField() has no such fallback.
+BOOST_AUTO_TEST_CASE( FieldAliasNormalization )
+{
+    std::vector<PROPERTY_ROW_DATA> rows;
+
+    BOOST_CHECK_EQUAL( normalizeQueryFieldAliases( wxS( "A.Reference == 'R1'" ), rows ), wxS( "A.Reference == 'R1'" ) );
+
+    // A field with no property behind it needs the rewrite to resolve at all.
+    BOOST_CHECK_EQUAL( normalizeQueryFieldAliases( wxS( "A.Value == 'X'" ), rows ),
+                       wxS( "A.getField('Value') == 'X'" ) );
+
+    PROPERTY_ROW_DATA customField;
+    customField.propertyName = wxS( "My Field" );
+    customField.property = nullptr;
+    customField.matchMode = PROPERTY_MATCH_MODE::MATCHING;
+    customField.isMixed = false;
+
+    BOOST_CHECK_EQUAL( normalizeQueryFieldAliases( wxS( "A.My_Field == 'X'" ), { customField } ),
+                       wxS( "A.getField('My Field') == 'X'" ) );
+}
+
+
 BOOST_AUTO_TEST_CASE( ReceiverValidation )
 {
     expectCompileSuccess( wxT( "L == 'F.Cu'" ) );
@@ -468,6 +617,201 @@ BOOST_AUTO_TEST_CASE( ReceiverValidation )
     expectCompileError( wxT( "L.Width == 1mm" ) );
     expectCompileError( wxT( "AB.Width == A.Width" ) );
     expectCompileError( wxT( "AB.Parent.Reference == 'J1'" ) );
+}
+
+
+BOOST_AUTO_TEST_CASE( LayerReceiverLayerField )
+{
+    PCBEXPR_COMPILER compiler( new PCBEXPR_UNIT_RESOLVER() );
+    PCBEXPR_UCODE    ucode;
+    PCBEXPR_CONTEXT  preflight( NULL_CONSTRAINT, UNDEFINED_LAYER );
+
+    compiler.Compile( wxT( "L.Layer == '*.Paste'" ), &ucode, &preflight );
+    BOOST_REQUIRE( !compiler.IsErrorPending() );
+
+    BOARD           brd;
+    PCB_TRACK       track( &brd );
+    PCBEXPR_CONTEXT paste( NULL_CONSTRAINT, F_Paste );
+    PCBEXPR_CONTEXT copper( NULL_CONSTRAINT, F_Cu );
+
+    paste.SetItems( &track, &track );
+    copper.SetItems( &track, &track );
+
+    BOOST_CHECK_EQUAL( ucode.Run( &paste )->AsDouble(), 1.0 );
+    BOOST_CHECK_EQUAL( ucode.Run( &copper )->AsDouble(), 0.0 );
+}
+
+
+BOOST_AUTO_TEST_CASE( DynamicCourtyardArgument )
+{
+    PROPERTY_MANAGER::Instance().Rebuild();
+
+    BOARD board;
+    FOOTPRINT* target = new FOOTPRINT( &board );
+    target->SetReference( wxS( "U1" ) );
+    KI_TEST::DrawRect( *target, { 0, 0 }, { pcbIUScale.mmToIU( 4 ), pcbIUScale.mmToIU( 4 ) },
+                      0, pcbIUScale.mmToIU( 0.05 ), F_CrtYd );
+    board.Add( target );
+
+    FOOTPRINT* other = new FOOTPRINT( &board );
+    other->SetReference( wxS( "U2" ) );
+    board.Add( other );
+
+    PCB_SHAPE graphic( other, SHAPE_T::SEGMENT );
+    graphic.SetLayer( F_Fab );
+    graphic.SetStart( { 0, 0 } );
+    graphic.SetEnd( { pcbIUScale.mmToIU( 1 ), 0 } );
+    graphic.SetWidth( pcbIUScale.mmToIU( 0.05 ) );
+
+    PCB_TEXT targetChild( target );
+    PCB_TEXT otherChild( other );
+
+    for( const wxString& expression : {
+                 wxString( "A.intersectsFrontCourtyard(B.Parent)" ),
+                 wxString( "A.intersectsCourtyard(B.Parent.Reference)" ),
+                 wxString( "A.intersectsFrontCourtyard(B.Parent.getField('Reference'))" ) } )
+    {
+        BOOST_TEST_CONTEXT( expression )
+        {
+            PCBEXPR_COMPILER compiler( new PCBEXPR_UNIT_RESOLVER() );
+            PCBEXPR_UCODE    ucode;
+            PCBEXPR_CONTEXT preflight( NULL_CONSTRAINT, F_Fab );
+            PCBEXPR_CONTEXT context( NULL_CONSTRAINT, F_Fab );
+
+            BOOST_REQUIRE( compiler.Compile( expression, &ucode, &preflight ) );
+            BOOST_REQUIRE_MESSAGE( !compiler.IsErrorPending(), compiler.GetError().message );
+            BOOST_CHECK( ucode.RequiresPairItems() );
+
+            context.SetItems( &graphic, &targetChild );
+            BOOST_CHECK_EQUAL( ucode.Run( &context )->AsDouble(), 1.0 );
+
+            context.SetItems( &graphic, &otherChild );
+            BOOST_CHECK_EQUAL( ucode.Run( &context )->AsDouble(), 0.0 );
+
+            context.SetItems( &graphic, &targetChild );
+            BOOST_CHECK_EQUAL( ucode.Run( &context )->AsDouble(), 1.0 );
+        }
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( FunctionArgumentValidation )
+{
+    expectCompileError( wxS( "A.intersectsFrontCourtyard()" ) );
+    expectCompileError( wxS( "A.intersectsFrontCourtyard('')" ) );
+    expectCompileError( wxS( "A.memberOfFootprint('')" ) );
+    expectCompileError( wxS( "A.fromTo('U1-1')" ) );
+    expectCompileError( wxS( "A.intersectsFrontCourtyard(B.UnknownProperty)" ) );
+    expectCompileError( wxS( "A.intersectsFrontCourtyard(B.Parent.unknownFunction())" ) );
+}
+
+
+BOOST_AUTO_TEST_CASE( SingleItemRulePreflight )
+{
+    PROPERTY_MANAGER::Instance().Rebuild();
+
+    for( const wxString& constraint : {
+                 wxString( "assertion \"A.Type == 'Graphic'\"" ),
+                 wxString( "hole_size (min 0.2mm)" ), wxString( "text_height (min 1mm)" ),
+                 wxString( "text_thickness (min 0.1mm)" ),
+                 wxString( "track_segment_length (min 1mm)" ), wxString( "annular_width (min 0.1mm)" ),
+                 wxString( "solder_mask_expansion (opt 0mm)" ),
+                 wxString( "solder_paste_abs_margin (opt 0mm)" ),
+                 wxString( "solder_paste_rel_margin (opt 0mm)" ), wxString( "disallow track" ),
+                 wxString( "via_diameter (min 0.5mm)" ), wxString( "length (max 100mm)" ),
+                 wxString( "net_chain_length (max 100mm)" ), wxString( "stub_length (max 1mm)" ),
+                 wxString( "return_path (layer 'B.Cu')" ), wxString( "skew (max 1mm)" ),
+                 wxString( "via_count (max 2)" ),
+                 wxString( "via_dangling (max 0)" ), wxString( "bridged_mask (min 0)" ),
+                 wxString( "microvia_stack_depth (max 2)" ), wxString( "microvia_aspect_ratio (max 1)" ) } )
+    {
+        for( bool conditionFirst : { true, false } )
+        {
+            BOOST_TEST_CONTEXT( constraint << ", condition first: " << conditionFirst )
+            {
+                wxString condition = wxS( "(condition \"B.Type == 'Graphic'\")" );
+                wxString body = wxString::Format( wxS( "(constraint %s)" ), constraint );
+                wxString source = wxS( "(version 1)\n(rule test\n" )
+                                  + ( conditionFirst ? condition + wxS( "\n" ) + body
+                                                     : body + wxS( "\n" ) + condition ) + wxS( "\n)" );
+                std::vector<std::shared_ptr<DRC_RULE>> rules;
+                WX_STRING_REPORTER reporter;
+                wxString controlSource = source;
+                controlSource.Replace( wxS( "B.Type" ), wxS( "A.Type" ) );
+                DRC_RULES_PARSER controlParser( controlSource, wxS( "single item control" ) );
+                controlParser.Parse( rules, &reporter );
+                BOOST_REQUIRE_MESSAGE( !reporter.GetMessages().Contains( wxS( "ERROR:" ) ), reporter.GetMessages() );
+                reporter.Clear();
+
+                DRC_RULES_PARSER parser( source, wxS( "single item preflight" ) );
+                parser.Parse( rules, &reporter );
+                BOOST_CHECK_MESSAGE( reporter.GetMessages().Contains( wxS( "Item 'B'" ) ),
+                                     reporter.GetMessages() );
+
+                DRC_RULES_PARSER throwingParser( source, wxS( "single item preflight" ) );
+                BOOST_CHECK_EXCEPTION( throwingParser.Parse( rules, nullptr ), PARSE_ERROR,
+                        [conditionFirst]( const PARSE_ERROR& error )
+                        {
+                            return error.What().Contains( wxS( "Item 'B' is not available" ) )
+                                   && error.lineNumber == ( conditionFirst ? 3 : 4 );
+                        } );
+            }
+        }
+    }
+}
+
+
+BOOST_AUTO_TEST_CASE( PairConditionsInSingleItemRules )
+{
+    PROPERTY_MANAGER::Instance().Rebuild();
+
+    for( const wxString& body : {
+                 wxString( "(condition \"A.intersectsFrontCourtyard(B.Parent)\")"
+                           "(constraint assertion \"A.Type == 'Graphic'\")" ),
+                 wxString( "(condition \"AB.isCoupledDiffPair()\")(constraint hole_size (min 0.2mm))" ),
+                 wxString( "(constraint assertion \"B.Type == 'Graphic'\")" ),
+                 wxString( "(constraint assertion \"A.intersectsFrontCourtyard(B.Parent.getField('Reference'))\")" ),
+                 wxString( "(condition \"B.Type == 'Graphic'\")(constraint clearance (min 0.2mm))"
+                           "(constraint hole_size (min 0.2mm))" ),
+                 wxString( "(condition \"AB.isCoupledDiffPair() && B.Type == 'Track'\")"
+                           "(constraint length (max 100mm))" ) } )
+    {
+        BOOST_TEST_CONTEXT( body )
+        {
+            std::vector<std::shared_ptr<DRC_RULE>> rules;
+            DRC_RULES_PARSER parser( wxS( "(version 1)(rule test " ) + body + wxS( ")" ), wxS( "preflight" ) );
+            BOOST_CHECK_EXCEPTION( parser.Parse( rules, nullptr ), PARSE_ERROR,
+                    []( const PARSE_ERROR& error )
+                    {
+                        return error.What().Contains( wxS( "Item 'B' is not available" ) );
+                    } );
+        }
+    }
+
+    for( const wxString& body : {
+                 wxString( "(condition \"A.Reference == 'B.Width'\")(constraint hole_size (min 0.2mm))" ),
+                 wxString( "(constraint assertion \"A.Type == 'Graphic'\")" ),
+                 wxString( "(condition \"A.intersectsFrontCourtyard(B.Parent)\")"
+                           "(constraint physical_clearance (min 100mm))" ),
+                 wxString( "(condition \"AB.isCoupledDiffPair()\")(constraint diff_pair_gap (min 0.2mm))" ),
+                 wxString( "(condition \"AB.isCoupledDiffPair()\")(constraint track_width (min 0.2mm))" ),
+                 wxString( "(condition \"AB.isCoupledDiffPair()\")(constraint diff_pair_uncoupled (max 1mm))" ),
+                 wxString( "(condition \"AB.isCoupledDiffPair()\")(constraint length (max 100mm))" ),
+                 wxString( "(condition \"AB.isCoupledDiffPair()\")(constraint net_chain_length (max 100mm))" ),
+                 wxString( "(condition \"AB.isCoupledDiffPair()\")(constraint skew (max 1mm))" ),
+                 wxString( "(condition \"B.Type == 'Track'\")(constraint track_width (min 0.2mm))" ),
+                 wxString( "(condition \"B.Type == 'Track'\")(constraint track_angle (min 45))" ),
+                 wxString( "(condition \"B.Type == 'Zone'\")(constraint thermal_relief_gap (min 0.2mm))" ) } )
+    {
+        BOOST_TEST_CONTEXT( body )
+        {
+            std::vector<std::shared_ptr<DRC_RULE>> rules;
+            WX_STRING_REPORTER reporter;
+            DRC_RULES_PARSER parser( wxS( "(version 1)(rule test " ) + body + wxS( ")" ), wxS( "preflight" ) );
+            parser.Parse( rules, &reporter );
+            BOOST_CHECK_MESSAGE( !reporter.GetMessages().Contains( wxS( "ERROR:" ) ), reporter.GetMessages() );
+        }
+    }
 }
 
 

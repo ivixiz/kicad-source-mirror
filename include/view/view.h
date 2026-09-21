@@ -434,7 +434,9 @@ public:
         return it->second.visible;
     }
 
-    inline bool IsLayerVisibleCached( int aLayer ) const
+    void SyncLayerVisibilityCache();
+
+    bool IsLayerVisibleCached( int aLayer ) const
     {
         return m_layerVisibilityCache[ aLayer ];
     }
@@ -798,6 +800,17 @@ protected:
         }
     };
 
+    /**
+     * Detach a single #VIEW_ITEM from this view.
+     *
+     * Child items are left alone. Composite-aware traversal belongs to the Add() and Remove()
+     * overrides that know about the item hierarchy, so callers that have already handled the
+     * children use this instead of Remove().
+     *
+     * @param aItem is the item to detach. It is ignored if it belongs to a different view.
+     */
+    void unlinkItem( VIEW_ITEM* aItem );
+
     /// Redraw contents within rectangle \a aRect.
     void redrawRect( const BOX2I& aRect );
 
@@ -853,6 +866,8 @@ protected:
     /// Update colors that are used for an item to be drawn.
     void updateItemColor( VIEW_ITEM* aItem, int aLayer );
 
+    void recolorGroup( VIEW_ITEM* aItem, int aLayer, int aGroup );
+
     /// Update all information needed to draw an item.
     void updateItemGeometry( VIEW_ITEM* aItem, int aLayer );
 
@@ -870,8 +885,6 @@ protected:
 
     /// Check if every layer required by the aLayerId layer is enabled.
     bool areRequiredLayersEnabled( int aLayerId ) const;
-
-    void syncLayerVisibilityCache();
 
     // Function objects that need to access VIEW/VIEW_ITEM private/protected members
     struct CLEAR_LAYER_CACHE_VISITOR;

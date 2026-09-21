@@ -88,6 +88,7 @@
 #include <pcb_plot_params_parser.h>
 #include <trigo.h>
 #include <confirm.h>
+#include <magic_enum.hpp>
 #include <math/util.h>      // for KiROUND
 #include <progress_reporter.h>
 
@@ -214,7 +215,7 @@ void PCB_IO_KICAD_LEGACY::checkpoint()
                                                             / std::max( 1U, m_lineCount ) );
 
             if( !m_progressReporter->KeepRefreshing() )
-                THROW_IO_ERROR( _( "Open canceled by user." ) );
+                THROW_IO_CANCELLED();
 
             m_lastProgressLine = curLine;
         }
@@ -462,28 +463,14 @@ bool PCB_IO_KICAD_LEGACY::CanReadFootprint( const wxString& aFileName ) const
 }
 
 
-BOARD* PCB_IO_KICAD_LEGACY::LoadBoard( const wxString& aFileName, BOARD* aAppendToMe,
-                                 const std::map<std::string, UTF8>* aProperties, PROJECT* aProject )
+void PCB_IO_KICAD_LEGACY::loadBoard( const wxString& aFileName, BOARD& aBoard, bool aIsNewLoad,
+                                     const std::map<std::string, UTF8>* aProperties, PROJECT* aProject )
 {
     init( aProperties );
 
-    std::unique_ptr<BOARD> boardDeleter;
+    m_board = &aBoard;
 
-    if( aAppendToMe )
-    {
-        m_board = aAppendToMe;
-    }
-    else
-    {
-        boardDeleter = std::make_unique<BOARD>();
-        m_board = boardDeleter.get();
-    }
-
-    // Give the filename to the board if it's new
-    if( !aAppendToMe )
-        m_board->SetFileName( aFileName );
-
-    FILE_LINE_READER    reader( aFileName );
+    FILE_LINE_READER reader( aFileName );
 
     m_reader = &reader;
 
@@ -497,7 +484,7 @@ BOARD* PCB_IO_KICAD_LEGACY::LoadBoard( const wxString& aFileName, BOARD* aAppend
         m_progressReporter->Report( wxString::Format( _( "Loading %s..." ), aFileName ) );
 
         if( !m_progressReporter->KeepRefreshing() )
-            THROW_IO_ERROR( _( "Open canceled by user." ) );
+            THROW_IO_CANCELLED();
 
         while( reader.ReadLine() )
             m_lineCount++;
@@ -505,11 +492,9 @@ BOARD* PCB_IO_KICAD_LEGACY::LoadBoard( const wxString& aFileName, BOARD* aAppend
         reader.Rewind();
     }
 
-    loadAllSections( bool( aAppendToMe ) );
+    loadAllSections( !aIsNewLoad );
 
-    ignore_unused( boardDeleter.release() ); // give it up so we dont delete it on exit
     m_progressReporter = nullptr;
-    return m_board;
 }
 
 
@@ -1090,6 +1075,7 @@ void PCB_IO_KICAD_LEGACY::loadSETUP()
             BIU x = biuParse( line + SZ( "PadSize" ), &data );
             BIU y = biuParse( data );
 
+            bds.m_Pad_Master->SetPadstackMode( PADSTACK::MODE::NORMAL );
             bds.m_Pad_Master->SetSize( PADSTACK::ALL_LAYERS, VECTOR2I( x, y ) );
         }
         else if( TESTLINE( "PadDrill" ) )
@@ -1442,6 +1428,7 @@ void PCB_IO_KICAD_LEGACY::loadPAD( FOOTPRINT* aFootprint )
             // chances are both were ASCII, but why take chances?
 
             pad->SetNumber( padNumber );
+            pad->SetPadstackMode( PADSTACK::MODE::NORMAL );
             pad->SetShape( PADSTACK::ALL_LAYERS, static_cast<PAD_SHAPE>( padshape ) );
             pad->SetSize( PADSTACK::ALL_LAYERS, VECTOR2I( size_x, size_y ) );
             pad->SetDelta( PADSTACK::ALL_LAYERS, VECTOR2I( delta_x, delta_y ) );
@@ -1474,6 +1461,7 @@ void PCB_IO_KICAD_LEGACY::loadPAD( FOOTPRINT* aFootprint )
             }
 
             pad->SetDrillShape( drShape );
+            pad->SetPadstackMode( PADSTACK::MODE::NORMAL );
             pad->SetOffset( PADSTACK::ALL_LAYERS, VECTOR2I( offs_x, offs_y ) );
             pad->SetDrillSize( VECTOR2I( drill_x, drill_y ) );
         }
@@ -2279,6 +2267,7 @@ void PCB_IO_KICAD_LEGACY::loadTrackList( int aStructType )
                 viatype = VIATYPE::BLIND;
 
             newVia->SetViaType( viatype );
+            newVia->SetPadstackMode( PADSTACK::MODE::NORMAL );
             newVia->SetWidth( PADSTACK::ALL_LAYERS, width );
 
             newVia->SetUuidDirect( KIID( uuid ) );
@@ -2524,17 +2513,19 @@ void PCB_IO_KICAD_LEGACY::loadZONE_CONTAINER()
         else if( TESTLINE( "ZSmoothing" ) )
         {
             // e.g. "ZSmoothing 0 0"
-            int     smoothing    = intParse( line + SZ( "ZSmoothing" ), &data );
+            int     smoothingRaw = intParse( line + SZ( "ZSmoothing" ), &data );
             BIU     cornerRadius = biuParse( data );
+            std::optional<ZONE_SETTINGS::CORNER_SMOOTHING> smoothing =
+                magic_enum::enum_cast<ZONE_SETTINGS::CORNER_SMOOTHING>( smoothingRaw );
 
-            if( smoothing >= ZONE_SETTINGS::SMOOTHING_LAST || smoothing < 0 )
+            if( !smoothing.has_value() )
             {
                 m_error.Printf( _( "Bad ZSmoothing for CZONE_CONTAINER '%s'" ),
                                 zc->GetNetname().GetData() );
                 THROW_IO_ERROR( m_error );
             }
 
-            zc->SetCornerSmoothingType( smoothing );
+            zc->SetCornerSmoothingType( *smoothing );
             zc->SetCornerRadius( cornerRadius );
         }
         else if( TESTLINE( "ZKeepout" ) )
@@ -3284,9 +3275,9 @@ void PCB_IO_KICAD_LEGACY::FootprintEnumerate( wxArrayString& aFootprintNames, co
 }
 
 
-FOOTPRINT* PCB_IO_KICAD_LEGACY::FootprintLoad( const wxString& aLibraryPath,
-                                               const wxString& aFootprintName, bool aKeepUUID,
-                                               const std::map<std::string, UTF8>* aProperties )
+std::unique_ptr<FOOTPRINT> PCB_IO_KICAD_LEGACY::FootprintLoad( const wxString& aLibraryPath,
+                                                               const wxString& aFootprintName, bool aKeepUUID,
+                                                               const std::map<std::string, UTF8>* aProperties )
 {
     init( aProperties );
 
@@ -3299,7 +3290,7 @@ FOOTPRINT* PCB_IO_KICAD_LEGACY::FootprintLoad( const wxString& aLibraryPath,
         return nullptr;
 
     // Return copy of already loaded FOOTPRINT
-    FOOTPRINT* copy = (FOOTPRINT*) it->second->Duplicate( IGNORE_PARENT_GROUP );
+    std::unique_ptr<FOOTPRINT> copy( static_cast<FOOTPRINT*>( it->second->Duplicate( IGNORE_PARENT_GROUP ) ) );
     copy->SetParent( nullptr );
     return copy;
 }

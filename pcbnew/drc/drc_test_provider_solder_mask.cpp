@@ -22,6 +22,7 @@
 #include <board_connected_item.h>
 #include <footprint.h>
 #include <pad.h>
+#include <pcb_shape.h>
 #include <pcb_track.h>
 #include <pcb_text.h>
 #include <thread_pool.h>
@@ -46,6 +47,22 @@
     - DRCE_SILK_MASK_CLEARANCE
     - DRCE_SOLDERMASK_BRIDGE
 */
+
+
+static void addItemPolysWithEndings( BOARD_ITEM* aItem, SHAPE_POLY_SET& aBuffer, PCB_LAYER_ID aLayer, int aClearance,
+                                     int aError, ERROR_LOC aErrorLoc )
+{
+    if( aItem->Type() == PCB_SHAPE_T )
+    {
+        PCB_SHAPE* shape = static_cast<PCB_SHAPE*>( aItem );
+        shape->TransformWithLineEndingsToPolygon( aBuffer, aClearance, aError, aErrorLoc );
+    }
+    else
+    {
+        aItem->TransformShapeToPolygon( aBuffer, aLayer, aClearance, aError, aErrorLoc );
+    }
+}
+
 
 class DRC_TEST_PROVIDER_SOLDER_MASK : public ::DRC_TEST_PROVIDER
 {
@@ -204,7 +221,7 @@ void DRC_TEST_PROVIDER_SOLDER_MASK::addItemToRTrees( BOARD_ITEM* aItem )
             }
             else
             {
-                aItem->TransformShapeToPolygon( *solderMask, layer, clearance, m_maxError, ERROR_OUTSIDE );
+                addItemPolysWithEndings( aItem, *solderMask, layer, clearance, m_maxError, ERROR_OUTSIDE );
             }
 
             m_itemTree->Insert( aItem, layer, NULL_CONSTRAINT, m_largestClearance );
@@ -671,7 +688,7 @@ void DRC_TEST_PROVIDER_SOLDER_MASK::testMaskItemAgainstZones( BOARD_ITEM* aItem,
         if( !inflatedBBox.Intersects( zone->GetBoundingBox() ) )
             continue;
 
-        DRC_RTREE* zoneTree = m_board->m_CopperZoneRTreeCache[ zone ].get();
+        DRC_RTREE* zoneTree = m_board->GetCopperZoneRTree( zone );
         int        actual;
         VECTOR2I   pos;
 
@@ -731,7 +748,7 @@ void DRC_TEST_PROVIDER_SOLDER_MASK::testMaskBridges()
                     // Test for aperture-to-zone collisions
                     testMaskItemAgainstZones( item, itemBBox, F_Mask, F_Cu );
                 }
-                else if( item->IsOnLayer( PADSTACK::ALL_LAYERS ) )
+                else if( item->IsOnLayer( F_Cu ) )
                 {
                     // Test for copper-item-to-aperture collisions
                     testItemAgainstItems( item, itemBBox, F_Cu, F_Mask );
@@ -791,11 +808,23 @@ void DRC_TEST_PROVIDER_SOLDER_MASK::collectBridge( BOARD_ITEM* aItemA, BOARD_ITE
 
     // Only the third item is ever absent, and the swaps above already ordered the copper items, so
     // the key needs at most the aperture inserted.  The unused slot stays trailing.
-    PENDING_BRIDGE bridge = { aItemA, aItemB, aItemC, aPos, aLayer,
-                              { aItemA->m_Uuid, aItemB->m_Uuid,
-                                aItemC ? aItemC->m_Uuid : niluuid } };
+    std::array<KIID, 3> ids = { aItemA->m_Uuid, aItemB->m_Uuid,
+                                aItemC ? aItemC->m_Uuid : niluuid };
 
-    std::sort( bridge.ids.begin(), bridge.ids.end() - ( aItemC ? 0 : 1 ) );
+    // Inserted by hand because std::sort over a two- or three-element runtime range inlines an
+    // introsort GCC cannot bound
+    if( ids[1] < ids[0] )
+        std::swap( ids[0], ids[1] );
+
+    if( aItemC && ids[2] < ids[1] )
+    {
+        std::swap( ids[1], ids[2] );
+
+        if( ids[1] < ids[0] )
+            std::swap( ids[0], ids[1] );
+    }
+
+    PENDING_BRIDGE bridge = { aItemA, aItemB, aItemC, aPos, aLayer, ids };
 
     std::lock_guard<std::mutex> lock( m_bridgeMutex );
 
@@ -1010,7 +1039,13 @@ bool DRC_TEST_PROVIDER_SOLDER_MASK::Run()
     for( FOOTPRINT* footprint : m_board->Footprints() )
     {
         for( PAD* pad : footprint->Pads() )
-            updateLargestClearance( pad->GetSolderMaskExpansion( PADSTACK::ALL_LAYERS ) );
+        {
+            pad->Padstack().ForEachUniqueLayer(
+                    [&]( PCB_LAYER_ID aLayer )
+                    {
+                        updateLargestClearance( pad->GetSolderMaskExpansion( aLayer ) );
+                    } );
+        }
 
         for( BOARD_ITEM* item : footprint->GraphicalItems() )
         {

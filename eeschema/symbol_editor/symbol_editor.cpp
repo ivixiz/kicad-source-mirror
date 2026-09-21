@@ -40,6 +40,7 @@
 #include <sch_io/kicad_sexpr/sch_io_kicad_sexpr.h>
 #include <dialogs/dialog_lib_new_symbol.h>
 #include <eda_list_dialog.h>
+#include <set>
 #include <wx/clipbrd.h>
 #include <wx/filedlg.h>
 #include <wx/log.h>
@@ -206,9 +207,6 @@ bool SYMBOL_EDIT_FRAME::LoadSymbolFromLib( const wxString& aLibName, const wxStr
     if( !symbol || !LoadOneLibrarySymbol( symbol, aLibName, aUnit, aBodyStyle ) )
         return false;
 
-    // Enable synchronized pin edit mode for symbols with interchangeable units
-    m_SyncPinEdit = GetCurSymbol()->IsMultiUnit() && !GetCurSymbol()->UnitsLocked();
-
     m_toolManager->RunAction( ACTIONS::zoomFitScreen );
 
     RebuildSymbolUnitAndBodyStyleLists();
@@ -302,6 +300,11 @@ void SYMBOL_EDIT_FRAME::CreateNewSymbol( const wxString& aInheritFrom )
             return;
     }
 
+    wxArrayString symbolNamesInLib;
+    wxArrayString derivedSymbols;
+    m_libMgr->GetSymbolNames( lib, symbolNamesInLib, SYMBOL_NAME_FILTER::ALL );
+    m_libMgr->GetSymbolNames( lib, derivedSymbols, SYMBOL_NAME_FILTER::DERIVED_ONLY );
+
     const auto validator =
             [&]( wxString newName ) -> bool
             {
@@ -330,10 +333,19 @@ void SYMBOL_EDIT_FRAME::CreateNewSymbol( const wxString& aInheritFrom )
                 return true;
             };
 
-    wxArrayString symbolNamesInLib;
-    m_libMgr->GetSymbolNames( lib, symbolNamesInLib );
+    const auto styler =
+            [&]( const wxString& aItem ) -> int
+            {
+                for( wxString& candidate : derivedSymbols )
+                {
+                    if( candidate.CmpNoCase( aItem ) == 0 )
+                        return ITALIC;
+                }
 
-    DIALOG_LIB_NEW_SYMBOL dlg( this, symbolNamesInLib, aInheritFrom, validator );
+                return 0;
+            };
+
+    DIALOG_LIB_NEW_SYMBOL dlg( this, symbolNamesInLib, styler, aInheritFrom, validator );
 
     dlg.SetMinSize( dlg.GetSize() );
 
@@ -955,12 +967,13 @@ void SYMBOL_EDIT_FRAME::saveSymbolCopyAs( bool aOpenCopy )
     auto strategy = SYMBOL_SAVE_AS_HANDLER::CONFLICT_STRATEGY::OVERWRITE;
 
     std::vector<wxString> parentSymbolNames;
+
     if( symbol->IsDerived() )
     {
         // The parents are everything but the leaf symbol
         std::vector<std::shared_ptr<LIB_SYMBOL>> parentChain = GetParentChain( *symbol, false );
 
-        for( const auto& parent : parentChain )
+        for( const std::shared_ptr<LIB_SYMBOL>& parent : parentChain )
             parentSymbolNames.push_back( parent->GetName() );
     }
 
@@ -1140,7 +1153,7 @@ void SYMBOL_EDIT_FRAME::ExportSymbol()
         // The flattened symbol is most likely what the user would want.  As some point in
         // the future as more of the symbol library inheritance is implemented, this may have
         // to be changes to save symbols of inherited symbols.
-        pi->SaveSymbol( fn.GetFullPath(), flattenedSymbol.release() );
+        pi->SaveSymbol( fn.GetFullPath(), std::move( flattenedSymbol ) );
     }
     catch( const IO_ERROR& ioe )
     {
@@ -1164,7 +1177,10 @@ void SYMBOL_EDIT_FRAME::UpdateAfterSymbolProperties( wxString* aOldName )
 {
     wxCHECK( m_symbol, /* void */ );
 
-    wxString lib = m_symbol->GetLibNickname();
+    wxString lib;
+
+    if( !IsSymbolFromSchematic() )
+        lib = m_symbol->GetLibNickname();
 
     if( !lib.IsEmpty() && aOldName && *aOldName != m_symbol->GetName() )
     {
@@ -1212,8 +1228,14 @@ void SYMBOL_EDIT_FRAME::DeleteSymbolFromLibrary()
     if( toDelete.empty() )
         toDelete.emplace_back( GetTargetLibId() );
 
+    // A derived symbol selected together with its base is already gone once the base is removed
+    std::set<LIB_ID> removedWithBase;
+
     for( LIB_ID& libId : toDelete )
     {
+        if( removedWithBase.count( libId ) )
+            continue;
+
         if( m_libMgr->IsSymbolModified( libId.GetLibItemName(), libId.GetLibNickname() )
             && !IsOK( this, wxString::Format( _( "The symbol '%s' has been modified.\n"
                                                  "Do you want to remove it from the library?" ),
@@ -1263,6 +1285,9 @@ void SYMBOL_EDIT_FRAME::DeleteSymbolFromLibrary()
         }
 
         m_libMgr->RemoveSymbol( libId.GetLibItemName(), libId.GetLibNickname() );
+
+        for( const wxString& derivedName : derived )
+            removedWithBase.emplace( libId.GetLibNickname().wx_str(), derivedName );
     }
 
     m_treePane->GetLibTree()->RefreshLibTree();
@@ -1424,7 +1449,7 @@ void SYMBOL_EDIT_FRAME::Revert( bool aConfirm )
     }
     else
     {
-        libId = m_libMgr->RevertSymbol( libId.GetLibItemName(), libId.GetLibNickname() );
+        libId = m_libMgr->RevertSymbol( libId );
 
         m_treePane->GetLibTree()->SelectLibId( libId );
         m_libMgr->ClearSymbolModified( libId.GetLibItemName(), libId.GetLibNickname() );
@@ -1677,8 +1702,7 @@ bool SYMBOL_EDIT_FRAME::saveAllLibraries( bool aRequireConfirmation )
                     else
                     {
                         m_infoBar->Dismiss();
-                        m_infoBar->ShowMessageFor( msg + wxS( "  " ) + msg2,
-                                                   2000, wxICON_EXCLAMATION );
+                        m_infoBar->ShowMessageFor( msg + wxS( "  " ) + msg2, 5000, wxICON_EXCLAMATION );
 
                         while( m_infoBar->IsShownOnScreen() )
                             wxSafeYield();

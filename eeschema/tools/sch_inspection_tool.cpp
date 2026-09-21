@@ -18,6 +18,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <tool/tool_manager.h>
 #include "tools/sch_inspection_tool.h"
 #include "dialog_change_symbols.h"
 
@@ -490,34 +491,35 @@ void buildSchOverrides( const KICAD_DIFF::DOCUMENT_DIFF& aDiff, const KICAD_DIFF
     aCompO.clear();
     aCats.clear();
 
-    std::function<void( const KICAD_DIFF::ITEM_CHANGE& )> visit = [&]( const KICAD_DIFF::ITEM_CHANGE& aChange )
-    {
-        if( !aChange.id.empty() )
-        {
-            const KIID& kiid = aChange.id.back();
-            aCats[kiid] = KICAD_DIFF::CategoryFor( aChange.kind );
-
-            switch( aChange.kind )
+    std::function<void( const KICAD_DIFF::ITEM_CHANGE& )> visit =
+            [&]( const KICAD_DIFF::ITEM_CHANGE& aChange )
             {
-            case KICAD_DIFF::CHANGE_KIND::ADDED: aCompO[kiid] = aTheme.added; break;
-            case KICAD_DIFF::CHANGE_KIND::REMOVED:
-                aRefO[kiid] = aTheme.removed;
-                aCompO[kiid] = aTheme.removed;
-                break;
-            case KICAD_DIFF::CHANGE_KIND::MODIFIED:
-                aRefO[kiid] = aTheme.modified;
-                aCompO[kiid] = aTheme.modified;
-                break;
-            default:
-                aRefO[kiid] = aTheme.conflict;
-                aCompO[kiid] = aTheme.conflict;
-                break;
-            }
-        }
+                if( !aChange.id.empty() )
+                {
+                    const KIID& kiid = aChange.id.back();
+                    aCats[kiid] = KICAD_DIFF::CategoryFor( aChange.kind );
 
-        for( const KICAD_DIFF::ITEM_CHANGE& child : aChange.children )
-            visit( child );
-    };
+                    switch( aChange.kind )
+                    {
+                    case KICAD_DIFF::CHANGE_KIND::ADDED: aCompO[kiid] = aTheme.added; break;
+                    case KICAD_DIFF::CHANGE_KIND::REMOVED:
+                        aRefO[kiid] = aTheme.removed;
+                        aCompO[kiid] = aTheme.removed;
+                        break;
+                    case KICAD_DIFF::CHANGE_KIND::MODIFIED:
+                        aRefO[kiid] = aTheme.modified;
+                        aCompO[kiid] = aTheme.modified;
+                        break;
+                    default:
+                        aRefO[kiid] = aTheme.conflict;
+                        aCompO[kiid] = aTheme.conflict;
+                        break;
+                    }
+                }
+
+                for( const KICAD_DIFF::ITEM_CHANGE& child : aChange.children )
+                    visit( child );
+            };
 
     for( const KICAD_DIFF::ITEM_CHANGE& change : aDiff.changes )
         visit( change );
@@ -578,6 +580,41 @@ DIALOG_KICAD_DIFF::SHEET_SWITCHER makeSchSwitcher( SCHEMATIC* aRef, SCHEMATIC* a
         KICAD_DIFF::ConfigureSchDiffCanvasContext( aCanvas, nullptr, aComp, modifiedColor, compO, extras, cats, nullptr,
                                                    compScreen );
     };
+}
+
+
+struct DRILL_FRAME
+{
+    SCH_SHEET_PATH editorPath;
+    SCHEMATIC*     compSch = nullptr;
+    wxString       compFile;
+    KIID_PATH      compScope;
+};
+
+
+void reloadDrillFrame( DIALOG_KICAD_DIFF& aDlg, SCHEMATIC* aRefSch, const KICAD_DIFF::DIFF_COLOR_THEME& aTheme,
+                       const DRILL_FRAME& aFrame )
+{
+    KICAD_DIFF::SCH_DIFFER differ( aRefSch, aFrame.compSch, aFrame.compFile );
+    const KIID_PATH        scope = aFrame.editorPath.Path();
+
+    if( !scope.empty() && !aFrame.compScope.empty() )
+        differ.SetScope( scope, aFrame.compScope );
+
+    KICAD_DIFF::DOCUMENT_DIFF diff = differ.Diff();
+
+    std::map<KIID, KIGFX::COLOR4D>       refO;
+    std::map<KIID, KIGFX::COLOR4D>       compO;
+    std::map<KIID, KICAD_DIFF::CATEGORY> cats;
+    buildSchOverrides( diff, aTheme, refO, compO, cats );
+
+    auto switcher = makeSchSwitcher( aRefSch, aFrame.compSch, refO, compO, cats, aTheme );
+
+    SCH_SCREEN* refScreen = aFrame.editorPath.LastScreen();
+    wxString    refLabel = refScreen ? refScreen->GetFileName() : wxString();
+
+    aDlg.Reload( refLabel, aFrame.compFile, std::move( diff ), /*aReferenceGeometry=*/{},
+                 /*aComparisonGeometry=*/{}, std::move( switcher ), scope );
 }
 } // namespace
 
@@ -739,24 +776,18 @@ int SCH_INSPECTION_TOOL::showSchematicComparison( const wxString& aOtherPath, co
 
     // Drill state owns the comparison schematics loaded across double-click
     // drills. The editor schematic stays the reference on all drills.
-    struct DRILL_STATE
-    {
-        SCH_SHEET_PATH                          editorPath;
-        SCHEMATIC*                              compSch;
-        wxString                                compFile;
-        std::vector<std::unique_ptr<SCHEMATIC>> ownedSchs;
-    };
+    DRILL_FRAME drillCurrent{ schEditorFrame->GetCurrentSheet(), otherSchematic.get(), aOtherPath, scopeAfter };
 
-    DRILL_STATE drillState;
-    drillState.editorPath = schEditorFrame->GetCurrentSheet();
-    drillState.compSch = otherSchematic.get();
-    drillState.compFile = aOtherPath;
-    drillState.ownedSchs.push_back( std::move( otherSchematic ) );
+    std::vector<DRILL_FRAME>                drillBack;
+    std::vector<std::unique_ptr<SCHEMATIC>> drilledSchs;
+
+    drilledSchs.push_back( std::move( otherSchematic ) );
 
     if( WIDGET_DIFF_CANVAS* canvas = dlgDiff.DiffCanvas() )
     {
         canvas->SetDoubleClickHandler(
-                [&dlgDiff, &drillState, mySch, otherPrj, theme, schEditorFrame]( KIGFX::VIEW_ITEM* aItem )
+                [&dlgDiff, &drillCurrent, &drillBack, &drilledSchs, mySch, otherPrj, theme,
+                 schEditorFrame]( KIGFX::VIEW_ITEM* aItem )
                 {
                     auto* sheet = dynamic_cast<SCH_SHEET*>( aItem );
 
@@ -768,7 +799,7 @@ int SCH_INSPECTION_TOOL::showSchematicComparison( const wxString& aOtherPath, co
                     if( sheetFile.IsEmpty() )
                         return;
 
-                    KIID_PATH newEditorKiid = drillState.editorPath.Path();
+                    KIID_PATH newEditorKiid = drillCurrent.editorPath.Path();
                     newEditorKiid.push_back( sheet->m_Uuid );
 
                     auto newEditorSheet = mySch->Hierarchy().GetSheetPathByKIIDPath( newEditorKiid, true );
@@ -778,21 +809,18 @@ int SCH_INSPECTION_TOOL::showSchematicComparison( const wxString& aOtherPath, co
 
                     // Prefer resolving inside the current comparison schematic so
                     // shared-sheet instance context is preserved on both sides.
-                    SCHEMATIC* compSch = drillState.compSch;
-                    wxString   compFile = drillState.compFile;
-                    KIID_PATH  scopeBefore = newEditorKiid;
-                    KIID_PATH  scopeAfter;
+                    DRILL_FRAME next{ *newEditorSheet, drillCurrent.compSch, drillCurrent.compFile, KIID_PATH() };
 
-                    if( auto compMatch = compSch->Hierarchy().GetSheetPathByKIIDPath( newEditorKiid, true ) )
+                    if( auto compMatch = next.compSch->Hierarchy().GetSheetPathByKIIDPath( newEditorKiid, true ) )
                     {
-                        scopeAfter = compMatch->Path();
+                        next.compScope = compMatch->Path();
 
                         if( SCH_SCREEN* compMatchScreen = compMatch->LastScreen() )
-                            compFile = compMatchScreen->GetFileName();
+                            next.compFile = compMatchScreen->GetFileName();
                     }
                     else
                     {
-                        wxFileName newCompFn( wxFileName( drillState.compFile ).GetPath(), sheetFile );
+                        wxFileName newCompFn( wxFileName( drillCurrent.compFile ).GetPath(), sheetFile );
                         newCompFn.MakeAbsolute();
 
                         SCHEMATIC* loaded = EESCHEMA_HELPERS::LoadSchematic( newCompFn.GetFullPath(),
@@ -810,37 +838,31 @@ int SCH_INSPECTION_TOOL::showSchematicComparison( const wxString& aOtherPath, co
                         const SCH_SHEET_LIST loadedSheets = loaded->BuildSheetListSortedByPageNumbers();
 
                         if( !loadedSheets.empty() )
-                            scopeAfter = loadedSheets.front().Path();
+                            next.compScope = loadedSheets.front().Path();
 
-                        drillState.ownedSchs.emplace_back( loaded );
-                        compSch = loaded;
-                        compFile = newCompFn.GetFullPath();
+                        drilledSchs.emplace_back( loaded );
+                        next.compSch = loaded;
+                        next.compFile = newCompFn.GetFullPath();
                     }
 
-                    KICAD_DIFF::SCH_DIFFER newDiffer( mySch, compSch, compFile );
+                    reloadDrillFrame( dlgDiff, mySch, theme, next );
 
-                    if( !scopeBefore.empty() && !scopeAfter.empty() )
-                        newDiffer.SetScope( scopeBefore, scopeAfter );
+                    drillBack.push_back( drillCurrent );
+                    drillCurrent = next;
+                    dlgDiff.EnableUp( true );
+                } );
 
-                    KICAD_DIFF::DOCUMENT_DIFF newDiff = newDiffer.Diff();
+        dlgDiff.SetUpHandler(
+                [&dlgDiff, &drillCurrent, &drillBack, mySch, theme]()
+                {
+                    if( drillBack.empty() )
+                        return;
 
-                    std::map<KIID, KIGFX::COLOR4D>       newRefO;
-                    std::map<KIID, KIGFX::COLOR4D>       newCompO;
-                    std::map<KIID, KICAD_DIFF::CATEGORY> newCats;
-                    buildSchOverrides( newDiff, theme, newRefO, newCompO, newCats );
+                    reloadDrillFrame( dlgDiff, mySch, theme, drillBack.back() );
 
-                    auto newSwitcher = makeSchSwitcher( mySch, compSch, newRefO, newCompO, newCats, theme );
-
-                    drillState.editorPath = *newEditorSheet;
-                    drillState.compSch = compSch;
-                    drillState.compFile = compFile;
-
-                    SCH_SCREEN* newRefScreen = newEditorSheet->LastScreen();
-                    wxString    newRefLabel = newRefScreen ? newRefScreen->GetFileName() : wxString();
-
-                    dlgDiff.Reload( newRefLabel, compFile, std::move( newDiff ),
-                                    /*aReferenceGeometry=*/{}, /*aComparisonGeometry=*/{}, std::move( newSwitcher ),
-                                    scopeBefore );
+                    drillCurrent = drillBack.back();
+                    drillBack.pop_back();
+                    dlgDiff.EnableUp( !drillBack.empty() );
                 } );
     }
 
@@ -848,13 +870,13 @@ int SCH_INSPECTION_TOOL::showSchematicComparison( const wxString& aOtherPath, co
 
     // Detach schematics from the project before unloading so the project's
     // ERC and schematic settings release cleanly.
-    for( auto& sch : drillState.ownedSchs )
+    for( auto& sch : drilledSchs )
     {
         if( sch )
             sch->SetProject( nullptr );
     }
 
-    drillState.ownedSchs.clear();
+    drilledSchs.clear();
 
     mgr->UnloadProject( otherPrj, false );
 
@@ -944,6 +966,7 @@ int SCH_INSPECTION_TOOL::CompareSchematicWithHistory( const TOOL_EVENT& aEvent )
         KICAD_DIFF::DOCUMENT_GEOMETRY     refGeom;
         KICAD_DIFF::DOCUMENT_GEOMETRY     compGeom;
         DIALOG_KICAD_DIFF::SHEET_SWITCHER switcher;
+        KIID_PATH                         compScope;
     };
 
     auto buildView =
@@ -969,6 +992,7 @@ int SCH_INSPECTION_TOOL::CompareSchematicWithHistory( const TOOL_EVENT& aEvent )
                 if( !scopeBefore.empty() && !scopeAfter.empty() )
                     differ.SetScope( scopeBefore, scopeAfter );
 
+                view.compScope = scopeAfter;
                 view.result = differ.Diff();
 
                 std::map<KIID, KIGFX::COLOR4D>       refO;
@@ -990,9 +1014,8 @@ int SCH_INSPECTION_TOOL::CompareSchematicWithHistory( const TOOL_EVENT& aEvent )
 
     // Drill state: which comparison sheet is shown and sub-schematics loaded on
     // double-click. Reset when the revision changes.
-    SCH_SHEET_PATH                          drillEditorPath = schEditorFrame->GetCurrentSheet();
-    SCHEMATIC*                              drillCompSch = nullptr;
-    wxString                                drillCompFile;
+    DRILL_FRAME                             drillCurrent;
+    std::vector<DRILL_FRAME>                drillBack;
     std::vector<std::unique_ptr<SCHEMATIC>> drilledSchs;
 
     auto cleanupCurrent =
@@ -1139,8 +1162,10 @@ int SCH_INSPECTION_TOOL::CompareSchematicWithHistory( const TOOL_EVENT& aEvent )
         startIndex++;
     }
 
-    drillCompSch = curSch.get();
-    drillCompFile = curTempDir + wxS( "/" ) + rootRel;
+    drillCurrent = { schEditorFrame->GetCurrentSheet(), curSch.get(), curTempDir + wxS( "/" ) + rootRel,
+                     view.compScope };
+
+    int shownIndex = startIndex;
 
     SCH_SCREEN* curScreen = schEditorFrame->GetCurrentSheet().LastScreen();
     wxString    referenceLabel = curScreen ? curScreen->GetFileName() : mySch->GetFileName();
@@ -1162,7 +1187,7 @@ int SCH_INSPECTION_TOOL::CompareSchematicWithHistory( const TOOL_EVENT& aEvent )
                     if( !sheet || sheet->GetFileName().IsEmpty() )
                         return;
 
-                    KIID_PATH newEditorKiid = drillEditorPath.Path();
+                    KIID_PATH newEditorKiid = drillCurrent.editorPath.Path();
                     newEditorKiid.push_back( sheet->m_Uuid );
 
                     auto newEditorSheet = mySch->Hierarchy().GetSheetPathByKIIDPath( newEditorKiid, true );
@@ -1170,21 +1195,18 @@ int SCH_INSPECTION_TOOL::CompareSchematicWithHistory( const TOOL_EVENT& aEvent )
                     if( !newEditorSheet )
                         return;
 
-                    SCHEMATIC* compSch = drillCompSch;
-                    wxString   compFile = drillCompFile;
-                    KIID_PATH  drillScopeBefore = newEditorKiid;
-                    KIID_PATH  drillScopeAfter;
+                    DRILL_FRAME next{ *newEditorSheet, drillCurrent.compSch, drillCurrent.compFile, KIID_PATH() };
 
-                    if( auto compMatch = compSch->Hierarchy().GetSheetPathByKIIDPath( newEditorKiid, true ) )
+                    if( auto compMatch = next.compSch->Hierarchy().GetSheetPathByKIIDPath( newEditorKiid, true ) )
                     {
-                        drillScopeAfter = compMatch->Path();
+                        next.compScope = compMatch->Path();
 
                         if( SCH_SCREEN* matchScreen = compMatch->LastScreen() )
-                            compFile = matchScreen->GetFileName();
+                            next.compFile = matchScreen->GetFileName();
                     }
                     else
                     {
-                        wxFileName subFn( wxFileName( drillCompFile ).GetPath(), sheet->GetFileName() );
+                        wxFileName subFn( wxFileName( drillCurrent.compFile ).GetPath(), sheet->GetFileName() );
                         subFn.MakeAbsolute();
 
                         SCHEMATIC* loaded = nullptr;
@@ -1210,34 +1232,16 @@ int SCH_INSPECTION_TOOL::CompareSchematicWithHistory( const TOOL_EVENT& aEvent )
                         SCH_SHEET_LIST loadedSheets = loaded->BuildSheetListSortedByPageNumbers();
 
                         if( !loadedSheets.empty() )
-                            drillScopeAfter = loadedSheets.front().Path();
+                            next.compScope = loadedSheets.front().Path();
 
                         drilledSchs.emplace_back( loaded );
-                        compSch = loaded;
-                        compFile = subFn.GetFullPath();
+                        next.compSch = loaded;
+                        next.compFile = subFn.GetFullPath();
                     }
 
                     try
                     {
-                        KICAD_DIFF::SCH_DIFFER newDiffer( mySch, compSch, compFile );
-
-                        if( !drillScopeBefore.empty() && !drillScopeAfter.empty() )
-                            newDiffer.SetScope( drillScopeBefore, drillScopeAfter );
-
-                        KICAD_DIFF::DOCUMENT_DIFF newDiff = newDiffer.Diff();
-
-                        std::map<KIID, KIGFX::COLOR4D>       newRefO;
-                        std::map<KIID, KIGFX::COLOR4D>       newCompO;
-                        std::map<KIID, KICAD_DIFF::CATEGORY> newCats;
-                        buildSchOverrides( newDiff, theme, newRefO, newCompO, newCats );
-
-                        auto newSwitcher = makeSchSwitcher( mySch, compSch, newRefO, newCompO, newCats, theme );
-
-                        SCH_SCREEN* newRefScreen = newEditorSheet->LastScreen();
-                        wxString    newRefLabel = newRefScreen ? newRefScreen->GetFileName() : wxString();
-
-                        dlgDiff->Reload( newRefLabel, compFile, std::move( newDiff ), /*aReferenceGeometry=*/{},
-                                         /*aComparisonGeometry=*/{}, std::move( newSwitcher ), drillScopeBefore );
+                        reloadDrillFrame( *dlgDiff, mySch, theme, next );
                     }
                     catch( ... )
                     {
@@ -1245,15 +1249,40 @@ int SCH_INSPECTION_TOOL::CompareSchematicWithHistory( const TOOL_EVENT& aEvent )
                         return;
                     }
 
-                    drillEditorPath = *newEditorSheet;
-                    drillCompSch = compSch;
-                    drillCompFile = compFile;
+                    drillBack.push_back( drillCurrent );
+                    drillCurrent = next;
+                    dlgDiff->EnableUp( true );
+                } );
+
+        dlgDiff->SetUpHandler(
+                [&]()
+                {
+                    if( drillBack.empty() )
+                        return;
+
+                    try
+                    {
+                        reloadDrillFrame( *dlgDiff, mySch, theme, drillBack.back() );
+                    }
+                    catch( ... )
+                    {
+                        schEditorFrame->ShowInfoBarError( _( "Could not open this sheet for comparison." ) );
+                        return;
+                    }
+
+                    drillCurrent = drillBack.back();
+                    drillBack.pop_back();
+                    dlgDiff->EnableUp( !drillBack.empty() );
                 } );
     }
 
-    dlgDiff->SetRevisionChooser( labels, startIndex,
+    dlgDiff->SetRevisionChooser(
+            labels, startIndex,
             [&]( int aIndex )
             {
+                if( aIndex == shownIndex )
+                    return;
+
                 std::unique_ptr<SCHEMATIC> newSch;
                 PROJECT*                   newPrj = nullptr;
                 wxString                   newTempDir;
@@ -1273,11 +1302,13 @@ int SCH_INSPECTION_TOOL::CompareSchematicWithHistory( const TOOL_EVENT& aEvent )
                 curSch = std::move( newSch );
                 curPrj = newPrj;
                 curTempDir = newTempDir;
+                shownIndex = aIndex;
 
                 // Restart drilling from the new revision's root.
-                drillEditorPath = schEditorFrame->GetCurrentSheet();
-                drillCompSch = curSch.get();
-                drillCompFile = curTempDir + wxS( "/" ) + rootRel;
+                drillBack.clear();
+                drillCurrent = { schEditorFrame->GetCurrentSheet(), curSch.get(), curTempDir + wxS( "/" ) + rootRel,
+                                 view.compScope };
+                dlgDiff->EnableUp( false );
             } );
 
     dlgDiff->ShowModal();
@@ -1392,9 +1423,8 @@ int SCH_INSPECTION_TOOL::ShowDatasheet( const TOOL_EVENT& aEvent )
         SCH_SYMBOL* symbol = (SCH_SYMBOL*) selection.Front();
         SCH_FIELD*  field = symbol->GetField( FIELD_T::DATASHEET );
 
-        // Use GetShownText() to resolve any text variables, but don't allow adding extra text
-        // (ie: the field name)
-        datasheet = field->GetShownText( &symbol->Schematic()->CurrentSheet(), false );
+        // Use GetShownText() to resolve any text variables
+        datasheet = field->GetShownText( &symbol->Schematic()->CurrentSheet(), FOR_GUI );
         filesStack.push_back( symbol->Schematic() );
 
         if( symbol->GetLibSymbolRef() )

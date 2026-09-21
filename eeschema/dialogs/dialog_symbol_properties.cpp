@@ -19,6 +19,7 @@
 
 #include "dialog_symbol_properties.h"
 
+#include <algorithm>
 #include <memory>
 
 #include <bitmaps.h>
@@ -35,6 +36,7 @@
 #include <widgets/grid_combobox.h>
 #include <widgets/std_bitmap_button.h>
 #include <settings/settings_manager.h>
+#include <project/project_file.h>
 #include <sch_collectors.h>
 #include <fields_grid_table.h>
 #include <sch_edit_frame.h>
@@ -43,7 +45,7 @@
 #include <sch_commit.h>
 #include <sch_sheet_path.h>
 #include <tool/tool_manager.h>
-#include <tool/actions.h>
+#include <tools/sch_actions.h>
 
 #include <dialog_sim_model.h>
 #include <panel_embedded_files.h>
@@ -328,18 +330,33 @@ DIALOG_SYMBOL_PROPERTIES::DIALOG_SYMBOL_PROPERTIES( SCH_EDIT_FRAME* aParent, SCH
     // wxASSERT( m_part );
 
     m_fields = new FIELDS_GRID_TABLE( this, aParent, m_fieldsGrid, m_symbol );
-
     m_fieldsGrid->SetTable( m_fields );
+    m_fieldsGrid->OverrideMinSize( 1.0, 1.0 );
     m_fieldsGrid->PushEventHandler( new FIELDS_GRID_TRICKS( m_fieldsGrid, this,
-                                                            { &aParent->Schematic(), m_part },
+                                                            m_fields->GetEmbeddedFilesStack(),
                                                             [&]( wxCommandEvent& aEvent )
                                                             {
                                                                 OnAddField( aEvent );
                                                             } ) );
     m_fieldsGrid->SetSelectionMode( wxGrid::wxGridSelectRows );
+
+    int minWidth = wxSystemSettings::GetMetric( wxSYS_VSCROLL_X );
+
+    for( int ii = 0; ii <= 7; ++ii )
+    {
+        if( m_fieldsGrid->IsColShown( ii ) )
+            minWidth += m_fieldsGrid->GetColSize( ii );
+    }
+
+    m_fieldsGrid->SetMinSize( wxSize( minWidth, -1 ) );
+
+    // Putting too many columns in wxFormBuilder results in the minimum dialog size getting set too
+    // large (even with the m_grid->SetMinSize() call above).
+    m_fieldsGrid->SetColSize( 13, 48 );     // "Color"
+    m_fieldsGrid->SetColSize( 14, 136 );    // "Allow Autoplace"
+    m_fieldsGrid->SetupColumnAutosizer( 1 );
+
     m_fieldsGrid->ShowHideColumns( "0 1 2 3 4 5 6 7" );
-    m_fieldsGrid->SetMinSize( wxSize( -1, 160 ) );
-    m_fieldsGrid->OverrideMinSize( 1.0, 1.0 );
     m_shownColumns = m_fieldsGrid->GetShownColumns();
 
     if( m_symbol->GetEmbeddedFiles() )
@@ -353,12 +370,18 @@ DIALOG_SYMBOL_PROPERTIES::DIALOG_SYMBOL_PROPERTIES( SCH_EDIT_FRAME* aParent, SCH
 
     if( m_part && m_part->IsMultiBodyStyle() )
     {
-        // Multiple body styles are a superclass of alternate pin assignments, so don't allow
-        // free-form alternate assignments as well.  (We won't know how to map the alternates
-        // back and forth when the body style is changed.)
-        m_pinTablePage->Disable();
-        m_pinTablePage->SetToolTip( _( "Alternate pin assignments are not available for symbols with multiple "
-                                       "body styles." ) );
+        wxSizer* altPinDefsSizer = m_pinGrid->GetContainingSizer();
+
+        // Multiple body styles are a superclass of alternate pin assignments, so don't allow free-form
+        // alternate assignments as well.  (We won't know how to map the alternates back and forth when
+        // the body style is changed.)
+        wxStaticText* hint = new wxStaticText( m_pinTablePage, wxID_ANY, NO_PIN_FUNCTIONS_WITH_MULTIPLE_BODY_STYLES );
+        hint->SetFont( KIUI::GetControlFont( this ).Italic() );
+        altPinDefsSizer->AddStretchSpacer( 1 );
+        altPinDefsSizer->Add( hint, 0, wxALIGN_CENTER_HORIZONTAL );
+        altPinDefsSizer->AddStretchSpacer( 2 );
+        m_pinGrid->Hide();
+        altPinDefsSizer->Layout();
     }
     else
     {
@@ -482,10 +505,13 @@ bool DIALOG_SYMBOL_PROPERTIES::TransferDataToWindow()
     std::optional<SCH_SYMBOL_VARIANT> variant = m_symbol->GetVariant( sheetPath, variantName );
     std::set<wxString> defined;
 
+    std::vector<SCH_FIELD*> orderedFields;
+    m_symbol->GetFields( orderedFields, false );
+
     // Push a copy of each field into m_updateFields
-    for( SCH_FIELD& srcField : m_symbol->GetFields() )
+    for( SCH_FIELD* srcField : orderedFields )
     {
-        SCH_FIELD field( srcField );
+        SCH_FIELD field( *srcField );
 
         // change offset to be symbol-relative
         field.Offset( -m_symbol->GetPosition() );
@@ -498,7 +524,7 @@ bool DIALOG_SYMBOL_PROPERTIES::TransferDataToWindow()
 
     // Add in any template fieldnames not yet defined:
     for( const TEMPLATE_FIELDNAME& templateFieldname :
-         schematic.Settings().m_TemplateFieldNames.GetTemplateFieldNames() )
+         schematic.Project().GetProjectFile().m_TemplateFieldNames.GetResolvedTemplateFieldNames() )
     {
         if( defined.count( templateFieldname.m_Name ) <= 0 )
         {
@@ -785,7 +811,10 @@ bool DIALOG_SYMBOL_PROPERTIES::TransferDataFromWindow()
 
     // Apply pin-map edits after the undo snapshot so undo restores them (issue #2282).
     if( m_part )
+    {
         m_pinMapPanel->ApplyToSymbol( m_part );
+        GetParent()->Schematic().SyncLibSymbolPinMaps( m_symbol->GetSchSymbolLibraryName(), *m_part, &commit );
+    }
 
     // Save current flags which could be modified by next change settings
     EDA_ITEM_FLAGS flags = m_symbol->GetFlags();
@@ -828,12 +857,15 @@ bool DIALOG_SYMBOL_PROPERTIES::TransferDataFromWindow()
 
     for( SCH_FIELD& field : *m_fields )
     {
-        const wxString& fieldName = field.GetCanonicalName();
+        const wxString& fieldName = field.GetUntranslatedName();
 
         if( fieldName.IsEmpty() && field.GetText().IsEmpty() )
             continue;
         else if( fieldName.IsEmpty() )
             field.SetName( _( "untitled" ) );
+
+        if( !field.IsMandatory() )
+            field.SetOrdinal( ordinal++, FIELD_T::USER );
 
         const SCH_FIELD* existingField = m_symbol->GetField( fieldName );
         SCH_FIELD* tmp;
@@ -859,9 +891,6 @@ bool DIALOG_SYMBOL_PROPERTIES::TransferDataFromWindow()
                 tmp->SetText( variantText, &currentSheet, currentVariant );
             }
         }
-
-        if( !field.IsMandatory() )
-            field.SetOrdinal( ordinal++ );
     }
 
     for( int ii = (int) m_symbol->GetFields().size() - 1; ii >= 0; ii-- )
@@ -883,8 +912,14 @@ bool DIALOG_SYMBOL_PROPERTIES::TransferDataFromWindow()
         }
 
         if( !found )
-            m_symbol->GetFields().erase( m_symbol->GetFields().begin() + ii );
+            m_symbol->RemoveField( symbolField.GetName() );
     }
+
+    std::stable_sort( m_symbol->GetFields().begin(), m_symbol->GetFields().end(),
+                      []( const SCH_FIELD& lhs, const SCH_FIELD& rhs )
+                      {
+                          return lhs.GetOrdinal() < rhs.GetOrdinal();
+                      } );
 
     if( currentVariant.IsEmpty() )
     {
@@ -956,8 +991,7 @@ void DIALOG_SYMBOL_PROPERTIES::OnGridCellChanging( wxGridEvent& event )
 
             if( FieldNamesAreDuplicates( newName, m_fieldsGrid->GetCellValue( i, FDC_NAME ) ) )
             {
-                DisplayError( this, wxString::Format( _( "Field name '%s' already in use." ),
-                                                      newName ) );
+                DisplayErrorMessage( this, wxString::Format( _( "Field name '%s' already in use." ), newName ) );
                 event.Veto();
                 wxCommandEvent *evt = new wxCommandEvent( SYMBOL_DELAY_FOCUS );
                 evt->SetClientData( new VECTOR2I( event.GetRow(), event.GetCol() ) );
@@ -972,8 +1006,7 @@ void DIALOG_SYMBOL_PROPERTIES::OnGridCellChanging( wxGridEvent& event )
 
 void DIALOG_SYMBOL_PROPERTIES::OnGridEditorShown( wxGridEvent& aEvent )
 {
-    if( m_fields->at( aEvent.GetRow() ).GetId() == FIELD_T::REFERENCE
-            && aEvent.GetCol() == FDC_VALUE )
+    if( m_fields->GetFieldRow( FIELD_T::REFERENCE ) == aEvent.GetRow() && aEvent.GetCol() == FDC_VALUE )
     {
         wxCommandEvent* evt = new wxCommandEvent( SYMBOL_DELAY_SELECTION );
         evt->SetClientData( new VECTOR2I( aEvent.GetRow(), aEvent.GetCol() ) );
@@ -995,7 +1028,7 @@ void DIALOG_SYMBOL_PROPERTIES::OnAddField( wxCommandEvent& event )
     m_fieldsGrid->OnAddRow(
             [&]() -> std::pair<int, int>
             {
-                SCH_FIELD newField( m_symbol, FIELD_T::USER, GetUserFieldName( m_fields->size(), DO_TRANSLATE ) );
+                SCH_FIELD newField( m_symbol, FIELD_T::USER, GetUserFieldName( m_fields->size(), TRANSLATED ) );
 
                 newField.SetTextAngle( m_fields->GetField( FIELD_T::REFERENCE )->GetTextAngle() );
                 newField.SetVisible( false );
@@ -1007,7 +1040,7 @@ void DIALOG_SYMBOL_PROPERTIES::OnAddField( wxCommandEvent& event )
                 m_fieldsGrid->ProcessTableMessage( msg );
                 OnModify();
 
-                return { m_fields->size() - 1, FDC_NAME };
+                return { m_fields->GetNumberRows() - 1, FDC_NAME };
             } );
 }
 
@@ -1019,8 +1052,8 @@ void DIALOG_SYMBOL_PROPERTIES::OnDeleteField( wxCommandEvent& event )
             {
                 if( row < m_fields->GetMandatoryRowCount() )
                 {
-                    DisplayError( this, wxString::Format( _( "The first %d fields are mandatory." ),
-                                                          m_fields->GetMandatoryRowCount() ) );
+                    DisplayErrorMessage( this, wxString::Format( _( "The first %d fields are mandatory." ),
+                                                                 m_fields->GetMandatoryRowCount() ) );
                     return false;
                 }
 
@@ -1028,7 +1061,8 @@ void DIALOG_SYMBOL_PROPERTIES::OnDeleteField( wxCommandEvent& event )
             },
             [&]( int row )
             {
-                m_fields->erase( m_fields->begin() + row );
+                if( !m_fields->EraseRow( row ) )
+                    return;
 
                 // notify the grid
                 wxGridTableMessage msg( m_fields, wxGRIDTABLE_NOTIFY_ROWS_DELETED, row, 1 );
@@ -1048,7 +1082,7 @@ void DIALOG_SYMBOL_PROPERTIES::OnMoveUp( wxCommandEvent& event )
             },
             [&]( int row )
             {
-                std::swap( *( m_fields->begin() + row ), *( m_fields->begin() + row - 1 ) );
+                m_fields->SwapRows( row, row - 1 );
                 m_fieldsGrid->ForceRefresh();
                 OnModify();
             } );
@@ -1064,9 +1098,9 @@ void DIALOG_SYMBOL_PROPERTIES::OnMoveDown( wxCommandEvent& event )
             },
             [&]( int row )
             {
-                    std::swap( *( m_fields->begin() + row ), *( m_fields->begin() + row + 1 ) );
-                    m_fieldsGrid->ForceRefresh();
-                    OnModify();
+                m_fields->SwapRows( row, row + 1 );
+                m_fieldsGrid->ForceRefresh();
+                OnModify();
             } );
 }
 

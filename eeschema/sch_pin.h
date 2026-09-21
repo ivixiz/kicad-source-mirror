@@ -23,32 +23,46 @@
 
 #pragma once
 
+#include <mutex>
 #include <memory>
 #include <set>
 #include <vector>
 
 #include <pin_type.h>
+#include <pin_comparison.h>
 #include <sch_item.h>
 
 class LIB_SYMBOL;
+class TRANSFORM;
 class SCH_SYMBOL;
 class LIB_ID;
 class SCH_SHEET_PATH;
 class PIN_LAYOUT_CACHE;
 
+namespace KIFONT
+{
+class FONT;
+}
+
 // Circle diameter drawn at the active end of pins:
 #define TARGET_PIN_RADIUS   schIUScale.MilsToIU( 15 )
+
+/**
+ * Break a stacked pin number of the form "[A,B,C]" into one number per line when it is too wide
+ * to sit alongside the pin.  Anything else, and anything that already fits, is returned as-is.
+ *
+ * Everything that draws, plots or measures a pin number goes through here.
+ */
+wxString FormatStackedPinForDisplay( const wxString& aPinNumber, int aPinLength, int aTextSize,
+                                     KIFONT::FONT* aFont, const KIFONT::METRICS& aFontMetrics );
 
 
 class SCH_PIN : public SCH_ITEM
 {
 public:
-    struct ALT
-    {
-        wxString            m_Name;
-        GRAPHIC_PINSHAPE    m_Shape;         // Shape drawn around pin
-        ELECTRICAL_PINTYPE  m_Type;          // Electrical type of the pin.
-    };
+    using ALT = PIN_ALTERNATE;
+
+    PIN_COMPARISON_DATA ComparisonData() const;
 
     SCH_PIN( LIB_SYMBOL* aParentSymbol );
 
@@ -191,6 +205,8 @@ public:
     /// Convenience overload using the parent symbol's current (variant-scoped) Footprint field
     /// and no loaded footprint (two-state form).
     wxString GetEffectivePadNumber( const SCH_SHEET_PATH& aSheet, const wxString& aVariantName = wxEmptyString ) const;
+
+    static bool HasIdentityPad( const wxString& aPinNumber, const std::set<wxString>& aPads );
 
     void SetNumber( const wxString& aNumber );
 
@@ -370,7 +386,7 @@ public:
     wxString GetDefaultNetName( const SCH_SHEET_PATH& aPath, bool aForceNoConnect = false );
 
     bool IsDangling() const override;
-    void SetIsDangling( bool aIsDangling );
+    bool SetIsDangling( bool aIsDangling );
 
     /**
      * @param aPin Comparison Pin

@@ -22,7 +22,7 @@
 #ifndef SCH_EDITOR_CONTROL_H
 #define SCH_EDITOR_CONTROL_H
 
-#include <sch_base_frame.h>
+#include <sch_edit_frame.h>
 #include <tools/sch_tool_base.h>
 #include <status_popup.h>
 
@@ -233,12 +233,9 @@ private:
     void setPastedSymbolInstances( const SCH_SCREEN* aScreen );
 
     /**
-     * Remove all pasted symbol instances that do not belong to the current project.
+     * Reconcile every pasted symbol's instances against the current project.
      *
-     * @warning This should **only** be called when cleaning up after a paste.  Otherwise it
-     *          could clobber symbol instances for schematics shared across projects.  Use
-     *          SCH_SCREENS::PruneOrphanedSymbolInstances() to clean up invalid instance for
-     *          the current project.
+     * @see PrunePastedSymbolInstances() for the rules and for when it is safe to call this.
      */
     void prunePastedSymbolInstances();
 

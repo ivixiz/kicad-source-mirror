@@ -56,8 +56,7 @@ size_t runDrc( const std::string& aDru, const std::string& aSubdir )
     }
 
     PCB_IO_KICAD_SEXPR     plugin;
-    std::unique_ptr<BOARD> board = std::make_unique<BOARD>();
-    plugin.LoadBoard( KI_TEST::GetPcbnewTestDataDir() + DUAL_ZONE_PCB, board.get() );
+    std::unique_ptr<BOARD> board = plugin.LoadBoard( KI_TEST::GetPcbnewTestDataDir() + DUAL_ZONE_PCB );
     board->BuildConnectivity();
 
     NETINFO_ITEM* sig = board->FindNet( wxS( "/CHAIN_RN" ) );

@@ -33,25 +33,23 @@ wxDECLARE_EVENT( EDA_EVT_CLOSE_DIALOG_FOOTPRINT_FIELDS_TABLE, wxCommandEvent );
 class PCBNEW_SETTINGS;
 class PCB_EDIT_FRAME;
 class JOB_EXPORT_BOM;
+class TEMPLATES;
 
 
 class DIALOG_FOOTPRINT_FIELDS_TABLE : public DIALOG_FIELDS_TABLE, public BOARD_LISTENER
 {
 public:
-    DIALOG_FOOTPRINT_FIELDS_TABLE( PCB_EDIT_FRAME* parent, JOB_EXPORT_BOM* aJob = nullptr );
+    DIALOG_FOOTPRINT_FIELDS_TABLE( PCB_EDIT_FRAME* aParent, JOB_EXPORT_BOM* aJob = nullptr );
     ~DIALOG_FOOTPRINT_FIELDS_TABLE() override;
 
     bool TransferDataToWindow() override;
     bool TransferDataFromWindow() override;
 
-    void ShowHideColumn( int aCol, bool aShow );
-
 private:
-    void SetupColumnProperties( int aCol );
-    void SetupAllColumnProperties();
-    void AddField( const wxString& displayName, const wxString& aCanonicalName, bool show,
-                   bool groupBy, bool addedByUser = false );
+    wxGridCellEditor* createDatasheetEditor() override;
+
     void setScope( FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::SCOPE aScope );
+    void updateSelectionItems();
 
     /**
      * Construct the rows of m_fieldsCtrl and the columns of m_dataModel from a union of all
@@ -59,38 +57,17 @@ private:
      */
     void LoadFieldNames();
 
-    void OnViewControlsCellChanged( wxGridEvent& aEvent ) override;
-    void OnAddField( wxCommandEvent& event ) override;
-    void OnRemoveField( wxCommandEvent& event ) override;
-    void OnRenameField( wxCommandEvent& event ) override;
+    void OnTableSelectionChanged( const std::set<int>& aRows ) override;
 
-    void OnColSort( wxGridEvent& aEvent );
-    void OnColMove( wxGridEvent& aEvent );
-    void OnTableRangeSelected( wxGridRangeSelectEvent& aEvent );
+    void OnScope( wxCommandEvent& aEvent ) override;
+    void OnMenu( wxCommandEvent& aEvent ) override;
 
-    void OnFilterText( wxCommandEvent& aEvent ) override;
-    void OnScope( wxCommandEvent& event ) override;
-    void OnGroupSymbolsToggled( wxCommandEvent& event ) override;
-    void OnRegroupSymbols( wxCommandEvent& aEvent ) override;
-    void OnMenu( wxCommandEvent& event ) override;
-
-    void OnTableCellClick( wxGridEvent& event ) override;
-    void OnGridMouseMove( wxMouseEvent& aEvent );
-
-    void OnSidebarToggle( wxCommandEvent& event ) override;
-    void OnExport( wxCommandEvent& aEvent ) override;
     void OnSaveAndContinue( wxCommandEvent& aEvent ) override;
     void OnCancel( wxCommandEvent& aEvent ) override;
     void OnOk( wxCommandEvent& aEvent ) override;
     void OnClose( wxCloseEvent& aEvent ) override;
 
-    void OnOutputFileBrowseClicked( wxCommandEvent& event ) override;
-    void OnPageChanged( wxNotebookEvent& event ) override;
-    void OnPreviewRefresh( wxCommandEvent& event ) override;
-    void PreviewRefresh();
-
-
-    // BOARD listener event handlers
+    // Board listener event handlers
     void OnBoardItemsAdded( BOARD& aPcb, std::vector<BOARD_ITEM*>& aPcbItem ) override;
     void OnBoardItemsRemoved( BOARD& aPcb, std::vector<BOARD_ITEM*>& aPcbItem ) override;
     void OnBoardItemsChanged( BOARD& aPcb, std::vector<BOARD_ITEM*>& aPcbItem ) override;
@@ -121,32 +98,25 @@ private:
         // the same UUID but a different pointer. Remove first so we get
         // rid of the old footprint/pointer from the data model and the fp ref list
         // before we add the new-same-UUID footprint.
-        if( !aRemoved.empty() ) OnBoardItemsRemoved( aPcb, aRemoved );
-        if( !aAdded.empty() ) OnBoardItemsAdded( aPcb, aAdded );
-        if( !aChanged.empty() ) OnBoardItemsChanged( aPcb, aChanged );
+        if( !aRemoved.empty() )
+            OnBoardItemsRemoved( aPcb, aRemoved );
+
+        if( !aAdded.empty() )
+            OnBoardItemsAdded( aPcb, aAdded );
+
+        if( !aChanged.empty() )
+            OnBoardItemsChanged( aPcb, aChanged );
     }
 
     void OnCurrentSchematicSheetChanged( wxCommandEvent& aEvent );
+    void OnBoardSelectionChanged( BOARD& aPcb ) override;
 
-    void EnableSelectionEvents();
-    void DisableSelectionEvents();
+    void rebuildRowsPreservingSelection();
+    void rebuildRowsPreservingSelection( const std::set<KIID_PATH>& aSavedSelection );
 
-    /**
-     * Saves the current grid selection as a set of footprint full paths for later restoration.
-     */
-    std::set<KIID> SaveGridSelection();
-
-    /**
-     * Restores the grid selection from a previously saved set of footprint full paths.
-     */
-    void RestoreGridSelection( const std::set<KIID>& aKIIDs );
+    FIELDS_TABLE_DATA_MODEL_BASE* getDataModel() const override { return m_dataModel; }
 
 private:
-    void       doApplyBomPreset( const BOM_PRESET& aPreset ) override;
-    void       doApplyBomFmtPreset( const BOM_FMT_PRESET& aPreset ) override;
-    BOM_PRESET getDataModelBomPreset() override;
-    void       savePresetsToBoard();
-
     void onAddVariant( wxCommandEvent& aEvent ) override;
     void onDeleteVariant( wxCommandEvent& aEvent ) override;
     void onRenameVariant( wxCommandEvent& aEvent ) override;
@@ -156,24 +126,16 @@ private:
 
     void updateVariantButtonStates();
 
-    wxString getSelectedVariant() const;
-
-    wxString resolveVariant() const;
+    wxString resolveVariant() const override;
+    bool     resolveTextVar( wxString* aToken ) const override;
 
 private:
     PCB_EDIT_FRAME* m_parent;
 
-    // Index in the fields list control for each MANDATORY_FIELD type
-    std::map<FIELD_T, int> m_mandatoryFieldListIndexes;
-
-    VIEW_CONTROLS_GRID_DATA_MODEL* m_viewControlsDataModel = nullptr;
-
     FOOTPRINT_REFERENCE_LIST                 m_footprintsList;
     FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL* m_dataModel = nullptr;
 
-    BOARD_DESIGN_SETTINGS& m_boardSettings;
-
-    JOB_EXPORT_BOM* m_job;
+    TEMPLATES&                               m_templateFieldNames;
 
     bool m_aborted = false;
 

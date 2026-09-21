@@ -369,9 +369,8 @@ public:
     /**
      * Create the SVG print file for the current edited symbol.
      * @param aFullFileName is the full filename
-     * @param aOffset is a plot offset, in iu
      */
-    void SVGPlotSymbol( const wxString& aFullFileName, const VECTOR2I& aOffset );
+    void SVGPlotSymbol( const wxString& aFullFileName );
 
     /**
      * Synchronize the library manager to the symbol library table, and then the symbol tree
@@ -443,9 +442,24 @@ public:
      *  - The symbol must not be from a legacy library.
      *
      * Note that many things are not editable in a non-root symbol (ie: an alias), but others
-     * are so this routine no longer returns false for an alias.
+     * are so this routine is true for an alias symbol.  Use #IsSymbolGraphicallyEditable()
+     * to test if a symbol's graphical elements can be edited.
      */
     bool IsSymbolEditable() const;
+
+    /**
+     * Test if a symbol is loaded and can be edited graphically.
+     *
+     * The following conditions are required for a symbol to be graphically editable:
+     *  - The symbol must be selected from either a library or the schematic.
+     *  - The symbol must not be from a legacy library.
+     *  - The symbol must not be an alias unless it is from a schematic.
+     *
+     * This returns false for an alias symbol that is not from a schematic, even
+     * though some of its fields can be edited.  Use #IsSymbolEditable() to test if a symbol
+     * can be edited in any way.
+     */
+    bool IsSymbolGraphicallyEditable() const;
 
     bool IsSymbolAlias() const;
 
@@ -612,9 +626,9 @@ private:
     bool promptAndCloseSymbolTab( int aIdx );
 
     /**
-     * Prompt to save each dirty instance (schematic) tab that is not the active one, since the active
-     * tab's unsaved state is handled by CanCloseSymbolFromSchematic. Returns false if the user cancels
-     * so the window close can be vetoed.
+     * Prompt to save each dirty instance (symbol from schematic) tab that is not the active one, since
+     * the active tab's unsaved state is handled by CanCloseSymbolFromSchematic. Returns false if the
+     * user cancels so the window close can be vetoed.
      */
     bool promptToSaveInactiveInstanceTabs();
 
@@ -669,29 +683,6 @@ private:
     DECLARE_EVENT_TABLE()
 
 public:
-    /**
-     * Set to true to synchronize pins at the same position when editing symbols with multiple
-     * units or multiple body styles.  Deleting or moving pins will affect all pins at the same
-     * location.
-     * When units are interchangeable, synchronizing editing of pins is usually the best way,
-     * because if units are interchangeable, it implies that all similar pins are at the same
-     * location.
-     * When units are not interchangeable, do not synchronize editing of pins, because each symbol
-     * is specific, and there are no (or few) similar pins between units.
-     *
-     * Setting this to false allows editing each pin per symbol or body style regardless other
-     * pins at the same location. This requires the user to open each symbol or body style to make
-     * changes to the other pins at the same location.
-     *
-     * To know if others pins must be coupled when editing a pin, use SynchronizePins() instead
-     * of m_syncPinEdit, because SynchronizePins() is more reliable (takes in account the fact
-     * units are interchangeable, there are more than one unit).
-     *
-     * @todo Determine why this member variable is public when all the rest are private and
-     *       either make it private or document why it needs to be public.
-     */
-    bool          m_SyncPinEdit;
-
 private:
     ///< Helper screen used when no symbol is loaded
     SCH_SCREEN*         m_dummyScreen;

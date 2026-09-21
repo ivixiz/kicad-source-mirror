@@ -21,8 +21,9 @@
 #ifndef PLOT_COMMON_H_
 #define PLOT_COMMON_H_
 
-#include <eda_shape.h>
 #include <vector>
+#include <eda_fill.h>
+#include <geometry/eda_angle.h>
 #include <math/box2.h>
 #include <gr_text.h>
 #include <page_info.h>
@@ -33,12 +34,14 @@
 
 
 class COLOR_SETTINGS;
+class EDA_SHAPE;
 class SHAPE_ARC;
 class SHAPE_POLY_SET;
 class SHAPE_LINE_CHAIN;
 class GBR_NETLIST_METADATA;
 class PROJECT;
 
+using KIGFX::COLOR4D;
 using KIGFX::RENDER_SETTINGS;
 
 
@@ -573,6 +576,17 @@ public:
 
     /// Set the number of digits for mantissa in coordinates in mm for SVG plotter
     virtual void SetSvgCoordinatesFormat( unsigned aPrecision )
+    {
+        // NOP for most plotters. Only for SVG plotter
+    }
+
+    /**
+     * Set an explicit bounding box for the plotted content (in IUs).
+     *
+     * Used by the SVG plotter to derive its viewBox from the content instead of the page
+     * size, so the content origin can stay at the SVG origin.
+     */
+    virtual void SetPlotBBox( const BOX2I& aBBoxIU )
     {
         // NOP for most plotters. Only for SVG plotter
     }

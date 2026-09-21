@@ -131,27 +131,23 @@ bool PCB_IO_EASYEDA::CanReadLibrary( const wxString& aFileName ) const
 }
 
 
-BOARD* PCB_IO_EASYEDA::LoadBoard( const wxString& aFileName, BOARD* aAppendToMe,
-                                  const std::map<std::string, UTF8>* aProperties, PROJECT* aProject )
+void PCB_IO_EASYEDA::loadBoard( const wxString& aFileName, BOARD& aBoard, bool aIsNewLoad,
+                                const std::map<std::string, UTF8>* aProperties, PROJECT* aProject )
 {
     m_loadedFootprints.clear();
 
     m_props = aProperties;
-    m_board = aAppendToMe ? aAppendToMe : new BOARD();
+    m_board = &aBoard;
 
     // Collect the font substitution warnings (RAII - automatically reset on scope exit)
     FONTCONFIG_REPORTER_SCOPE fontconfigScope( &LOAD_INFO_REPORTER::GetInstance() );
-
-    // Give the filename to the board if it's new
-    if( !aAppendToMe )
-        m_board->SetFileName( aFileName );
 
     if( m_progressReporter )
     {
         m_progressReporter->Report( wxString::Format( _( "Loading %s..." ), aFileName ) );
 
         if( !m_progressReporter->KeepRefreshing() )
-            THROW_IO_ERROR( _( "File import canceled by user." ) );
+            THROW_IO_CANCELLED();
     }
 
     PCB_IO_EASYEDA_PARSER parser( nullptr );
@@ -254,8 +250,6 @@ BOARD* PCB_IO_EASYEDA::LoadBoard( const wxString& aFileName, BOARD* aAppendToMe,
 
         m_board->Move( offset );
         bds.SetAuxOrigin( offset );
-
-        return m_board;
     }
     catch( nlohmann::json::exception& e )
     {
@@ -363,9 +357,9 @@ void PCB_IO_EASYEDA::FootprintEnumerate( wxArrayString&  aFootprintNames,
 }
 
 
-FOOTPRINT* PCB_IO_EASYEDA::FootprintLoad( const wxString& aLibraryPath,
-                                          const wxString& aFootprintName, bool aKeepUUID,
-                                          const std::map<std::string, UTF8>* aProperties )
+std::unique_ptr<FOOTPRINT> PCB_IO_EASYEDA::FootprintLoad( const wxString& aLibraryPath, const wxString& aFootprintName,
+                                                          bool                               aKeepUUID,
+                                                          const std::map<std::string, UTF8>* aProperties )
 {
     // Suppress font substitution warnings (RAII - automatically restored on scope exit)
     FONTCONFIG_REPORTER_SCOPE fontconfigScope( nullptr );
@@ -443,8 +437,8 @@ FOOTPRINT* PCB_IO_EASYEDA::FootprintLoad( const wxString& aLibraryPath,
                     {
                         parts.RemoveAt( 0 );
 
-                        FOOTPRINT* footprint = parser.ParseFootprint( origin, orientation, layer, nullptr,
-                                                                      paramMap, m_loadedFootprints, parts );
+                        std::unique_ptr<FOOTPRINT> footprint = parser.ParseFootprint(
+                                origin, orientation, layer, nullptr, paramMap, m_loadedFootprints, parts );
 
                         if( !footprint )
                             return nullptr;
@@ -487,8 +481,8 @@ FOOTPRINT* PCB_IO_EASYEDA::FootprintLoad( const wxString& aLibraryPath,
 
                 VECTOR2D origin( doc.head.x, doc.head.y );
 
-                FOOTPRINT* footprint = parser.ParseFootprint( origin, ANGLE_0, F_Cu, nullptr, *c_para,
-                                                              m_loadedFootprints, doc.shape );
+                std::unique_ptr<FOOTPRINT> footprint( parser.ParseFootprint( origin, ANGLE_0, F_Cu, nullptr, *c_para,
+                                                                             m_loadedFootprints, doc.shape ) );
 
                 if( !footprint )
                     return nullptr;

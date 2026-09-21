@@ -152,10 +152,17 @@ public:
     bool GetFixAllSegments() const { return m_fixAllSegments; }
     void SetFixAllSegments( bool aEnable ) { m_fixAllSegments = aEnable; }
 
+    bool GetRestrictAngles() const { return m_restrictAngles; }
+    void SetRestrictAngles( bool aEnable ) { m_restrictAngles = aEnable; }
+
     double WalkaroundHugLengthThreshold() const { return m_walkaroundHugLengthThreshold; }
 
     int ViaForcePropIterationLimit() const { return m_viaForcePropIterationLimit; }
     void SetViaForcePropIterationLimit(int aLimit) { m_viaForcePropIterationLimit = aLimit; }
+
+    double DiffPairGapPickupRatioThreshold() const { return m_diffPairGapPickupRatioThreshold; }
+    double DiffPairGapCouplingRecognitionThreshold() const { return m_diffPairGapCouplingRecognitionThreshold; }
+    double DiffPairWidthToMiterRatio() const { return m_diffPairWidthToMiterRatio; }
 
 private:
     bool m_shoveVias;
@@ -173,6 +180,7 @@ private:
     bool m_optimizeEntireDraggedTrack;
     bool m_autoPosture;
     bool m_fixAllSegments;
+    bool m_restrictAngles;
 
     DIRECTION_45::CORNER_MODE m_cornerMode;
 
@@ -182,7 +190,10 @@ private:
     int m_walkaroundIterationLimit;
     int m_shoveIterationLimit;
     int m_viaForcePropIterationLimit;
+    double m_diffPairGapPickupRatioThreshold;
+    double m_diffPairGapCouplingRecognitionThreshold;
     double m_walkaroundHugLengthThreshold;
+    double m_diffPairWidthToMiterRatio;
 
     TIME_LIMIT m_shoveTimeLimit;
     TIME_LIMIT m_walkaroundTimeLimit;

@@ -27,6 +27,7 @@
 #include <shared_mutex>
 
 #include <kicommon.h>
+#include <ki_error.h>
 #include <libraries/library_table.h>
 #include <io/io_base.h>
 
@@ -49,7 +50,7 @@ enum class LOAD_STATUS
 struct KICOMMON_API LIB_STATUS
 {
     LOAD_STATUS                  load_status = LOAD_STATUS::INVALID;
-    std::optional<LIBRARY_ERROR> error;
+    std::optional<LIBRARY_ERROR> error = std::nullopt;
 };
 
 
@@ -156,6 +157,9 @@ public:
 
     virtual std::optional<LIB_STATUS> LoadOne( LIB_DATA* aLib ) = 0;
 
+    /// Validates that a library is loadable.  May not necessarily load the library!
+    virtual std::optional<LIB_STATUS> CheckLibrary( LIB_DATA* aLib ) { return LoadOne( aLib ); }
+
     /// Returns async load progress between 0.0 and 1.0, or nullopt if load is not in progress
     std::optional<float> AsyncLoadProgress() const;
 
@@ -174,8 +178,9 @@ public:
     std::vector<std::pair<wxString, LIB_STATUS>> GetLibraryStatuses() const;
 
     /// Returns all library load errors as newline-separated strings for display
-    wxString GetLibraryLoadErrors() const;
+    std::vector<KI_ERROR> GetLibraryLoadErrors() const;
 
+    /// Synchronously recreates the plugin for and reloads the given library
     void ReloadLibraryEntry( const wxString& aNickname,
                              LIBRARY_TABLE_SCOPE aScope = LIBRARY_TABLE_SCOPE::BOTH );
 
@@ -191,7 +196,7 @@ public:
 
     virtual bool SupportsConfigurationDialog( const wxString& aNickname ) const { return false; }
 
-    virtual void ShowConfigurationDialog( const wxString& aNickname, wxWindow* aParent ) const {};
+    virtual int ShowConfigurationDialog( const wxString& aNickname, wxWindow* aParent ) const { return wxID_CANCEL; }
 
     virtual std::optional<LIBRARY_ERROR> LibraryError( const wxString& aNickname ) const;
 
@@ -206,7 +211,7 @@ protected:
     ///             since URI expansion accesses PROJECT data that is not thread-safe).
     virtual void enumerateLibrary( LIB_DATA* aLib, const wxString& aUri ) = 0;
 
-    static wxString getUri( const LIBRARY_TABLE_ROW* aRow );
+    wxString getUri( const LIBRARY_TABLE_ROW* aRow ) const;
 
     std::optional<const LIB_DATA*> fetchIfLoaded( const wxString& aNickname ) const;
 
@@ -249,7 +254,9 @@ protected:
     /// and tree refreshes. Keyed by nickname, a safe over-approximation of the real resource (the
     /// plugin instance): sharing one mutex across two distinct resources can only over-serialize,
     /// never under-protect. Static because global-library plugins are shared process-wide.
-    static std::mutex& pluginMutex( const wxString& aNickname );
+    /// Recursive because database/http libraries resolve references back through the adapter into
+    /// other plugins' LoadSymbol paths while already holding their own mutex.
+    static std::recursive_mutex& pluginMutex( const wxString& aNickname );
 
     LIBRARY_MANAGER& m_manager;
 
@@ -270,7 +277,11 @@ protected:
 class KICOMMON_API LIBRARY_MANAGER
 {
 public:
-    LIBRARY_MANAGER();
+    /// An explicit project is borrowed until this manager and its adapters are destroyed.
+    explicit LIBRARY_MANAGER( const PROJECT* aProject = nullptr );
+
+    const PROJECT& Project() const;
+    bool IsProjectScoped() const { return m_project != nullptr; }
 
     ~LIBRARY_MANAGER();
 
@@ -370,6 +381,7 @@ public:
     std::optional<LIBRARY_TABLE_ROW*> FindRowByURI( LIBRARY_TABLE_TYPE aType, const wxString &aUri,
                                                     LIBRARY_TABLE_SCOPE aScope = LIBRARY_TABLE_SCOPE::BOTH ) const;
 
+    /// Synchronously recreates the plugin for and reloads the given library
     void ReloadLibraryEntry( LIBRARY_TABLE_TYPE aType, const wxString& aNickname,
                              LIBRARY_TABLE_SCOPE aScope = LIBRARY_TABLE_SCOPE::BOTH );
 
@@ -393,7 +405,8 @@ public:
     std::optional<wxString> GetFullURI( LIBRARY_TABLE_TYPE aType, const wxString& aNickname,
                                         bool aSubstituted = false );
 
-    static wxString GetFullURI( const LIBRARY_TABLE_ROW* aRow, bool aSubstituted = false );
+    static wxString GetFullURI( const LIBRARY_TABLE_ROW* aRow, bool aSubstituted = false,
+                               const PROJECT* aProject = nullptr );
 
     static wxString ExpandURI( const wxString& aShortURI, const PROJECT& aProject );
 
@@ -444,6 +457,7 @@ private:
 
     void createEmptyTable( LIBRARY_TABLE_TYPE aType, LIBRARY_TABLE_SCOPE aScope );
 
+    const PROJECT* const m_project;
     std::map<LIBRARY_TABLE_TYPE, std::unique_ptr<LIBRARY_TABLE>> m_tables;
 
     /// Map of full URI to table object for tables that are referenced by global or project tables

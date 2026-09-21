@@ -27,6 +27,8 @@
 #include <settings/snap_settings.h>
 #include <pcb_display_options.h>
 
+#include <set>
+
 namespace PNS
 {
     class ROUTING_SETTINGS;
@@ -98,6 +100,9 @@ public:
 
     VIEWERS_DISPLAY_OPTIONS m_ViewersDisplay;
 
+    /// Keyed as "family/Property Name"; see MATCH_PROPERTIES_CATALOG.
+    std::set<wxString> m_MatchProperties;
+
     PCB_VIEWERS_SETTINGS_BASE( const std::string& aFilename, int aSchemaVersion ):
         APP_SETTINGS_BASE( aFilename, aSchemaVersion ),
         m_FootprintViewerZoom( 1.0 ),
@@ -111,6 +116,11 @@ public:
     }
 
     virtual ~PCB_VIEWERS_SETTINGS_BASE() {};
+
+protected:
+    /// Opt-in.  The two editors share one key and one default.  cvpcb derives from this class
+    /// but cannot edit, so it keeps the key out of its file.
+    void addMatchPropertiesParam();
 };
 
 
@@ -137,16 +147,6 @@ public:
         int   design_blocks_panel_docked_width;
         int   design_blocks_panel_float_width;
         int   design_blocks_panel_float_height;
-    };
-
-    struct PANEL_FOOTPRINT_FIELDS_TABLE
-    {
-        std::map<std::string, int> field_widths;
-        wxString                   export_filename;
-        int                        selection_mode;
-        int                        sash_pos;
-        bool                       sidebar_collapsed;
-        int                        variant_sash_pos;
     };
 
     struct DIALOG_EXPORT_D356
@@ -235,7 +235,7 @@ public:
 
     DISPLAY_OPTIONS    m_Display;
 
-    PANEL_FOOTPRINT_FIELDS_TABLE m_FieldEditorPanel;
+    FIELDS_TABLE_SETTINGS m_FieldEditorPanel;
 
     MAGNETIC_SETTINGS  m_MagneticItems;
     SNAP_INFERENCE_SETTINGS m_SnapInference;

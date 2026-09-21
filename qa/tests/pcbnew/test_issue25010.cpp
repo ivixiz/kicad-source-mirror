@@ -17,6 +17,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <qa_utils/file_utils.h>
 #include <qa_utils/wx_utils/unit_test_utils.h>
 
 #include <base_units.h>
@@ -51,9 +52,9 @@ static FOOTPRINT* addFootprint( BOARD& aBoard, const wxString& aReference )
 
     PAD* pad = new PAD( fp );
     pad->SetNumber( wxS( "1" ) );
+    pad->SetPadstackMode( PADSTACK::MODE::NORMAL );
     pad->SetShape( PADSTACK::ALL_LAYERS, PAD_SHAPE::RECTANGLE );
-    pad->SetSize( PADSTACK::ALL_LAYERS,
-                  VECTOR2I( pcbIUScale.mmToIU( 1 ), pcbIUScale.mmToIU( 1 ) ) );
+    pad->SetSize( PADSTACK::ALL_LAYERS, VECTOR2I( pcbIUScale.mmToIU( 1 ), pcbIUScale.mmToIU( 1 ) ) );
     pad->SetLayerSet( LSET( { F_Cu } ) );
     fp->Add( pad );
 
@@ -102,9 +103,9 @@ BOOST_AUTO_TEST_CASE( GerberPlaceFileHonorsExclusions )
     addFootprint( board, wxS( "R3" ) )->SetExcludedFromBOM( true );
     addFootprint( board, wxS( "R4" ) )->SetExcludedFromPosFiles( true );
 
-    KI_TEST::TEMPORARY_DIRECTORY tmpDir( "kicad_qa_issue25010", "" );
+    KI_TEST::SCOPED_TEMP_DIR tmpDir( "kicad_qa_issue25010" );
 
-    wxFileName tmpFile( tmpDir.GetPath().string(), wxS( "pnp.gbr" ) );
+    wxFileName tmpFile( tmpDir.PathStr(), wxS( "pnp.gbr" ) );
 
     PLACEFILE_GERBER_WRITER writer( &board );
 

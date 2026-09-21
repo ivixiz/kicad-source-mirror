@@ -26,7 +26,51 @@
 #include <template_fieldnames.h>
 
 #include <nlohmann/json.hpp>
+#include <widgets/grid_striped_renderer.h>
 #include <widgets/ui_common.h>
+#include <wx/dc.h>
+#include <wx/settings.h>
+
+
+GRID_CELL_RESOLVED_TEXT_RENDERER::GRID_CELL_RESOLVED_TEXT_RENDERER() :
+        wxGridCellStringRenderer()
+{
+}
+
+
+void GRID_CELL_RESOLVED_TEXT_RENDERER::Draw( wxGrid& aGrid, wxGridCellAttr& aAttr, wxDC& aDC, const wxRect& aRect,
+                                             int aRow, int aCol, bool isSelected )
+{
+    wxString value = aGrid.GetCellValue( aRow, aCol );
+
+    if( auto* model = dynamic_cast<FIELDS_TABLE_DATA_MODEL_BASE*>( aGrid.GetTable() ) )
+        value = model->GetResolvedValue( aRow, aCol );
+
+    wxRect rect = aRect;
+    rect.Inflate( -1 );
+
+    wxGridCellRenderer::Draw( aGrid, aAttr, aDC, aRect, aRow, aCol, isSelected );
+    SetTextColoursAndFont( aGrid, aAttr, aDC, isSelected );
+    aGrid.DrawTextRectangle( aDC, value, rect, wxALIGN_LEFT, wxALIGN_CENTRE );
+}
+
+
+wxSize GRID_CELL_RESOLVED_TEXT_RENDERER::GetBestSize( wxGrid& aGrid, wxGridCellAttr& aAttr, wxDC& aDC, int aRow,
+                                                      int aCol )
+{
+    wxString value = aGrid.GetCellValue( aRow, aCol );
+
+    if( auto* model = dynamic_cast<FIELDS_TABLE_DATA_MODEL_BASE*>( aGrid.GetTable() ) )
+        value = model->GetResolvedValue( aRow, aCol );
+
+    return wxGridCellStringRenderer::DoGetBestSize( aAttr, aDC, value );
+}
+
+
+wxGridCellRenderer* GRID_CELL_RESOLVED_TEXT_RENDERER::Clone() const
+{
+    return new GRID_CELL_RESOLVED_TEXT_RENDERER();
+}
 
 
 const wxString FIELDS_TABLE_DATA_MODEL_BASE::QUANTITY_VARIABLE = wxS( "${QUANTITY}" );
@@ -34,8 +78,12 @@ const wxString FIELDS_TABLE_DATA_MODEL_BASE::ITEM_NUMBER_VARIABLE = wxS( "${ITEM
 
 
 FIELDS_TABLE_DATA_MODEL_BASE::FIELDS_TABLE_DATA_MODEL_BASE() :
+        m_stripedRenderer( nullptr ),
+        m_resolvedTextRenderer( nullptr ),
+        m_edited( false ),
         m_sortColumn( 0 ),
         m_sortAscending( false ),
+        m_filterScope( BOM_FILTER_SCOPE::REFERENCE ),
         m_groupingEnabled( false ),
         m_excludeDNP( false ),
         m_includeExcluded( false ),
@@ -44,20 +92,166 @@ FIELDS_TABLE_DATA_MODEL_BASE::FIELDS_TABLE_DATA_MODEL_BASE() :
 }
 
 
+FIELDS_TABLE_DATA_MODEL_BASE::~FIELDS_TABLE_DATA_MODEL_BASE()
+{
+    wxSafeDecRef( m_stripedRenderer );
+    wxSafeDecRef( m_resolvedTextRenderer );
+}
+
+
+bool FIELDS_TABLE_DATA_MODEL_BASE::cellUsesResolvedTextRenderer( int aRow, int aCol )
+{
+    wxCHECK( aRow >= 0 && aRow < GetNumberRows(), false );
+    wxCHECK( aCol >= 0 && aCol < GetNumberCols(), false );
+
+    return !ColIsItemIdentifier( aCol ) && !ColIsQuantity( aCol ) && !ColIsItemNumber( aCol )
+           && ( ColIsComputed( aCol ) || IsGeneratedValue( GetValue( aRow, aCol ) ) );
+}
+
+
+void FIELDS_TABLE_DATA_MODEL_BASE::applyResolvedTextRenderer( wxGridCellAttr* aAttr, bool aApplyTint )
+{
+    wxCHECK_RET( aAttr, wxS( "Cannot apply a renderer to a null cell attribute" ) );
+
+    if( !m_resolvedTextRenderer )
+        m_resolvedTextRenderer = new GRID_CELL_RESOLVED_TEXT_RENDERER();
+
+    m_resolvedTextRenderer->IncRef();
+    aAttr->SetRenderer( m_resolvedTextRenderer );
+
+    if( aApplyTint )
+    {
+        wxColour bg = wxSystemSettings::GetColour( wxSYS_COLOUR_WINDOW );
+        bool     isDark = ( bg.Red() + bg.Green() + bg.Blue() ) < 384;
+
+        aAttr->SetBackgroundColour( isDark ? FIELDS_TABLE_COLOR::TEXT_VARIABLE_DARK_AMBER
+                                           : FIELDS_TABLE_COLOR::TEXT_VARIABLE_LIGHT_YELLOW );
+    }
+}
+
+
+bool FIELDS_TABLE_DATA_MODEL_BASE::cellUsesUrlEditor( int aRow, int aCol )
+{
+    wxCHECK( aRow >= 0 && aRow < GetNumberRows(), false );
+    wxCHECK( aCol >= 0 && aCol < GetNumberCols(), false );
+
+    int datasheetCol = GetFieldNameCol( GetDefaultFieldName( FIELD_T::DATASHEET, UNTRANSLATED ) );
+
+    if( datasheetCol < 0 )
+        return false;
+
+    auto attrIt = m_colAttrs.find( datasheetCol );
+
+    if( attrIt == m_colAttrs.end() || !attrIt->second )
+        return false;
+
+    return aCol == datasheetCol || IsURL( GetValue( aRow, aCol ) );
+}
+
+
+wxGridCellAttr* FIELDS_TABLE_DATA_MODEL_BASE::cloneUrlEditorAttr()
+{
+    int datasheetCol = GetFieldNameCol( GetDefaultFieldName( FIELD_T::DATASHEET, UNTRANSLATED ) );
+    wxCHECK( datasheetCol >= 0, nullptr );
+
+    auto attrIt = m_colAttrs.find( datasheetCol );
+    wxCHECK( attrIt != m_colAttrs.end() && attrIt->second, nullptr );
+
+    return attrIt->second->Clone();
+}
+
+
+wxGridCellAttr* FIELDS_TABLE_DATA_MODEL_BASE::applyFieldPresenceRenderer( wxGridCellAttr* aAttr, int aRow, int aCol )
+{
+    if( !IsCellClear( aRow, aCol ) || ColIsAttribute( aCol ) || ColIsComputed( aCol ) )
+        return aAttr;
+
+    wxGridCellAttr* stripedAttr = aAttr ? aAttr->Clone() : new wxGridCellAttr;
+    wxSafeDecRef( aAttr );
+
+    if( !m_stripedRenderer )
+    {
+        m_stripedRenderer = new STRIPED_STRING_RENDERER( FIELDS_TABLE_COLOR::CLEARED_FIELD_STRIPE_ON_DARK_LIGHT_RED,
+                                                         FIELDS_TABLE_COLOR::CLEARED_FIELD_STRIPE_ON_LIGHT_DARK_RED );
+    }
+
+    m_stripedRenderer->IncRef();
+    stripedAttr->SetRenderer( m_stripedRenderer );
+
+    if( !stripedAttr->HasBackgroundColour() )
+        stripedAttr->SetBackgroundColour( wxSystemSettings::GetColour( wxSYS_COLOUR_WINDOW ) );
+
+    return stripedAttr;
+}
+
+
+wxGridCellAttr* FIELDS_TABLE_DATA_MODEL_BASE::applyCellDecorations( wxGridCellAttr* aAttr, int aRow, int aCol )
+{
+    constexpr double ROW_HINT_OPACITY = 0.1;
+    constexpr double COLUMN_HINT_OPACITY = 0.05;
+
+    aAttr = applyFieldPresenceRenderer( aAttr, aRow, aCol );
+
+    WX_GRID* grid = dynamic_cast<WX_GRID*>( GetView() );
+
+    if( !grid || !grid->IsCursorRowColumnHighlightEnabled()
+        || ( aRow != grid->GetGridCursorRow() && aCol != grid->GetGridCursorCol() ) )
+    {
+        return aAttr;
+    }
+
+    wxColour background = aAttr && aAttr->HasBackgroundColour() ? aAttr->GetBackgroundColour()
+                                                                : grid->GetDefaultCellBackgroundColour();
+    wxColour highlight = wxSystemSettings::GetColour( wxSYS_COLOUR_HIGHLIGHT );
+    double   hintOpacity = aRow == grid->GetGridCursorRow() ? ROW_HINT_OPACITY : COLUMN_HINT_OPACITY;
+
+    wxColour hintedBackground( wxColour::AlphaBlend( highlight.Red(), background.Red(), hintOpacity ),
+                               wxColour::AlphaBlend( highlight.Green(), background.Green(), hintOpacity ),
+                               wxColour::AlphaBlend( highlight.Blue(), background.Blue(), hintOpacity ) );
+
+    wxGridCellAttr* hintedAttr = aAttr ? aAttr->Clone() : new wxGridCellAttr;
+    wxSafeDecRef( aAttr );
+    hintedAttr->SetBackgroundColour( hintedBackground );
+
+    return hintedAttr;
+}
+
+
+void FIELDS_TABLE_DATA_MODEL_BASE::commitPendingGridChanges()
+{
+    if( wxGrid* grid = GetView() )
+        static_cast<WX_GRID*>( grid )->CommitPendingChanges( true );
+}
+
+
 void FIELDS_TABLE_DATA_MODEL_BASE::MoveColumn( int aCol, int aNewPos )
 {
     wxCHECK_RET( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), "Invalid Column Number" );
+    wxCHECK_RET( aNewPos >= 0 && aNewPos < static_cast<int>( m_cols.size() ), "Invalid New Column Position" );
 
     if( aCol == aNewPos )
     {
         return;
     }
-    else if( aCol < aNewPos )
+
+    commitPendingGridChanges();
+
+    if( aCol < aNewPos )
     {
+        if( m_sortColumn == aCol )
+            m_sortColumn = aNewPos;
+        else if( m_sortColumn > aCol && m_sortColumn <= aNewPos )
+            m_sortColumn--;
+
         std::rotate( std::begin( m_cols ) + aCol, std::begin( m_cols ) + aCol + 1, std::begin( m_cols ) + aNewPos + 1 );
     }
     else
     {
+        if( m_sortColumn == aCol )
+            m_sortColumn = aNewPos;
+        else if( m_sortColumn >= aNewPos && m_sortColumn < aCol )
+            m_sortColumn++;
+
         std::rotate( std::begin( m_cols ) + aNewPos, std::begin( m_cols ) + aCol, std::begin( m_cols ) + aCol + 1 );
     }
 }
@@ -65,36 +259,83 @@ void FIELDS_TABLE_DATA_MODEL_BASE::MoveColumn( int aCol, int aNewPos )
 
 void FIELDS_TABLE_DATA_MODEL_BASE::RemoveColumn( int aCol )
 {
+    wxCHECK_RET( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), "Invalid Column Number" );
+
+    commitPendingGridChanges();
+
     for( auto& [unused, fieldsStore] : m_dataStore )
     {
-        fieldsStore.erase( m_cols[aCol].m_fieldName );
+        FIELD_STORE_VALUE& field = fieldsStore[m_cols[aCol].m_fieldName];
+        field.m_present = false;
+
+        for( auto& [variant, state] : field.m_variants )
+            state.m_value = state.m_baseline;
     }
 
     m_cols.erase( m_cols.begin() + aCol );
+
+    if( m_sortColumn == aCol )
+        m_sortColumn = 0;
+    else if( m_sortColumn > aCol )
+        m_sortColumn--;
+
+    if( auto attrIt = m_colAttrs.find( aCol ); attrIt != m_colAttrs.end() )
+    {
+        wxSafeDecRef( attrIt->second );
+        m_colAttrs.erase( attrIt );
+    }
+
+    std::map<int, wxGridCellAttr*> shiftedColAttrs;
+
+    for( const auto& [col, attr] : m_colAttrs )
+        shiftedColAttrs[col > aCol ? col - 1 : col] = attr;
+
+    m_colAttrs.swap( shiftedColAttrs );
 
     if( wxGrid* grid = GetView() )
     {
         wxGridTableMessage msg( this, wxGRIDTABLE_NOTIFY_COLS_DELETED, aCol, 1 );
         grid->ProcessTableMessage( msg );
     }
+
+    m_edited = true;
 }
 
 
 void FIELDS_TABLE_DATA_MODEL_BASE::RenameColumn( int aCol, const wxString& newName )
 {
+    wxCHECK_RET( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), "Invalid Column Number" );
+
+    commitPendingGridChanges();
+
+    const wxString oldName = m_cols[aCol].m_fieldName;
+    bool           wasComputed = ColIsComputed( aCol );
+    bool           willBeComputed = IsGeneratedField( newName ) && !fieldIsItemProperty( newName );
+
     for( auto& [unused, fieldsStore] : m_dataStore )
     {
-        auto node = fieldsStore.extract( m_cols[aCol].m_fieldName );
+        auto fieldIt = fieldsStore.find( oldName );
 
-        if( !node.empty() )
+        if( fieldIt == fieldsStore.end() )
+            continue;
+
+        FIELD_STORE_VALUE& oldField = fieldIt->second;
+        FIELD_STORE_VALUE& newField = fieldsStore[newName];
+        newField.m_present = oldField.m_present || wasComputed || willBeComputed;
+
+        // Computed columns are virtual, their stored values are only placeholders for the
+        // generated field name. Don't copy that placeholder into an ordinary field, or
+        // keep ordinary per-item values when the destination is computed.
+        for( const auto& [variant, state] : oldField.m_variants )
         {
-            node.key() = newName;
-            fieldsStore.insert( std::move( node ) );
+            newField.m_variants[variant].m_value = willBeComputed ? newName : wasComputed ? wxString() : state.m_value;
         }
+
+        oldField.m_present = false;
     }
 
     m_cols[aCol].m_fieldName = newName;
-    m_cols[aCol].m_label = newName;
+    m_edited = true;
 }
 
 
@@ -121,25 +362,10 @@ wxString FIELDS_TABLE_DATA_MODEL_BASE::GetColFieldName( int aCol )
 
 int FIELDS_TABLE_DATA_MODEL_BASE::GetColDataWidth( int aCol )
 {
-    int width = 0;
+    int width = KIUI::GetTextSize( GetColLabelValue( aCol ), GetView() ).x;
 
-    if( ColIsReference( aCol ) )
-    {
-        for( int row = 0; row < GetNumberRows(); ++row )
-            width = std::max( width, KIUI::GetTextSize( GetValue( row, aCol ), GetView() ).x );
-    }
-    else
-    {
-        wxString fieldName = GetColFieldName( aCol ); // symbol fieldName or Qty string
-
-        for( auto& [unused, fieldStore] : m_dataStore )
-        {
-            auto it = fieldStore.find( fieldName );
-
-            if( it != fieldStore.end() )
-                width = std::max( width, KIUI::GetTextSize( it->second, GetView() ).x );
-        }
-    }
+    for( int row = 0; row < GetNumberRows(); ++row )
+        width = std::max( width, KIUI::GetTextSize( GetResolvedValue( row, aCol ), GetView() ).x );
 
     return width;
 }
@@ -170,6 +396,8 @@ std::vector<BOM_FIELD> FIELDS_TABLE_DATA_MODEL_BASE::GetFieldsOrdered()
 
 void FIELDS_TABLE_DATA_MODEL_BASE::SetFieldsOrder( const std::vector<wxString>& aNewOrder )
 {
+    commitPendingGridChanges();
+
     size_t foundCount = 0;
 
     for( const wxString& newField : aNewOrder )
@@ -190,64 +418,117 @@ void FIELDS_TABLE_DATA_MODEL_BASE::SetFieldsOrder( const std::vector<wxString>& 
 }
 
 
-bool FIELDS_TABLE_DATA_MODEL_BASE::ColIsReference( int aCol )
+bool FIELDS_TABLE_DATA_MODEL_BASE::ColIsReference( int aCol ) const
 {
     wxCHECK( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), false );
-    return m_cols[aCol].m_fieldName == GetCanonicalFieldName( FIELD_T::REFERENCE );
+    return m_cols[aCol].m_fieldName == GetDefaultFieldName( FIELD_T::REFERENCE, UNTRANSLATED );
 }
 
 
-bool FIELDS_TABLE_DATA_MODEL_BASE::ColIsQuantity( int aCol )
+bool FIELDS_TABLE_DATA_MODEL_BASE::ColIsQuantity( int aCol ) const
 {
     wxCHECK( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), false );
     return m_cols[aCol].m_fieldName == QUANTITY_VARIABLE;
 }
 
 
-bool FIELDS_TABLE_DATA_MODEL_BASE::ColIsItemNumber( int aCol )
+bool FIELDS_TABLE_DATA_MODEL_BASE::ColIsItemNumber( int aCol ) const
 {
     wxCHECK( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), false );
     return m_cols[aCol].m_fieldName == ITEM_NUMBER_VARIABLE;
 }
 
 
-bool FIELDS_TABLE_DATA_MODEL_BASE::ColIsValue( int aCol )
+bool FIELDS_TABLE_DATA_MODEL_BASE::ColIsValue( int aCol ) const
 {
     wxCHECK( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), false );
-    return m_cols[aCol].m_fieldName == GetCanonicalFieldName( FIELD_T::VALUE );
+    return m_cols[aCol].m_fieldName == GetDefaultFieldName( FIELD_T::VALUE, UNTRANSLATED );
 }
 
 
-bool FIELDS_TABLE_DATA_MODEL_BASE::ColIsFootprint( int aCol )
+bool FIELDS_TABLE_DATA_MODEL_BASE::ColIsFootprint( int aCol ) const
 {
     wxCHECK( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), false );
-    return m_cols[aCol].m_fieldName == GetCanonicalFieldName( FIELD_T::FOOTPRINT );
+    return m_cols[aCol].m_fieldName == GetDefaultFieldName( FIELD_T::FOOTPRINT, UNTRANSLATED );
 }
 
 
-bool FIELDS_TABLE_DATA_MODEL_BASE::ColIsAttribute( int aCol )
+bool FIELDS_TABLE_DATA_MODEL_BASE::ColIsAttribute( int aCol ) const
 {
     wxCHECK( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), false );
-    return isAttribute( m_cols[aCol].m_fieldName );
+
+    return fieldIsAttribute( m_cols[aCol].m_fieldName );
 }
 
 
-bool FIELDS_TABLE_DATA_MODEL_BASE::IsExpanderColumn( int aCol ) const
+bool FIELDS_TABLE_DATA_MODEL_BASE::ColIsItemProperty( int aCol ) const
 {
-    // Check if aCol is the first visible column
-    for( int col = 0; col < aCol; ++col )
+    wxCHECK( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), false );
+
+    return fieldIsItemProperty( m_cols[aCol].m_fieldName );
+}
+
+
+bool FIELDS_TABLE_DATA_MODEL_BASE::ColIsComputed( int aCol ) const
+{
+    wxCHECK( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), false );
+
+    return IsGeneratedField( m_cols[aCol].m_fieldName ) && !ColIsItemProperty( aCol );
+}
+
+
+bool FIELDS_TABLE_DATA_MODEL_BASE::ColIsReadOnly( int aCol ) const
+{
+    wxCHECK( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), true );
+
+    return ColIsItemIdentifier( aCol ) || ColIsComputed( aCol );
+}
+
+
+bool FIELDS_TABLE_DATA_MODEL_BASE::IsCellReadOnly( int aRow, int aCol )
+{
+    wxCHECK( aRow >= 0 && aRow < GetNumberRows(), true );
+    wxCHECK( aCol >= 0 && aCol < GetNumberCols(), true );
+
+    return ColIsReadOnly( aCol );
+}
+
+
+bool FIELDS_TABLE_DATA_MODEL_BASE::CanClearCell( int aRow, int aCol )
+{
+    wxCHECK( aRow >= 0 && aRow < GetNumberRows(), false );
+    wxCHECK( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), false );
+
+    if( IsCellReadOnly( aRow, aCol ) || IsCellClear( aRow, aCol )
+        || IsGeneratedField( m_cols[aCol].m_fieldName ) )
     {
-        if( m_cols[col].m_show )
+        return false;
+    }
+
+    for( FIELD_T fieldId : MANDATORY_FIELDS )
+    {
+        if( m_cols[aCol].m_fieldName == GetDefaultFieldName( fieldId, UNTRANSLATED ) )
             return false;
     }
+
+    // Template fields are added by default to symbols, but it's unclear whether or not
+    // that means they should be mandatory. For now, allow them to be cleared.
 
     return true;
 }
 
 
-bool FIELDS_TABLE_DATA_MODEL_BASE::isCellReadOnly( int, int aCol )
+bool FIELDS_TABLE_DATA_MODEL_BASE::IsRowEdited( int aRow )
 {
-    return IsExpanderColumn( aCol );
+    wxCHECK( aRow >= 0 && aRow < GetNumberRows(), false );
+
+    for( int col = 0; col < GetNumberCols(); ++col )
+    {
+        if( IsCellEdited( aRow, col ) )
+            return true;
+    }
+
+    return false;
 }
 
 
@@ -274,6 +555,10 @@ void FIELDS_TABLE_DATA_MODEL_BASE::DisableRebuilds()
 void FIELDS_TABLE_DATA_MODEL_BASE::SetGroupColumn( int aCol, bool aGroup )
 {
     wxCHECK_RET( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), "Invalid Column Number" );
+
+    if( ColIsQuantity( aCol ) || ColIsItemNumber( aCol ) )
+        aGroup = false;
+
     m_cols[aCol].m_group = aGroup;
 }
 
@@ -327,7 +612,7 @@ void FIELDS_TABLE_DATA_MODEL_BASE::ApplyBomPreset( const BOM_PRESET& aPreset )
         // design anyway.
         if( col == -1 )
         {
-            AddColumn( field.name, field.label, true );
+            AddColumn( field.name, field.label, false );
             col = GetFieldNameCol( field.name );
         }
         else
@@ -345,11 +630,21 @@ void FIELDS_TABLE_DATA_MODEL_BASE::ApplyBomPreset( const BOM_PRESET& aPreset )
     int sortCol = GetFieldNameCol( aPreset.sortField );
 
     if( sortCol == -1 )
-        sortCol = GetFieldNameCol( GetCanonicalFieldName( FIELD_T::REFERENCE ) );
+    {
+        for( int col = 0; col < GetNumberCols(); ++col )
+        {
+            if( ColIsItemIdentifier( col ) )
+            {
+                sortCol = col;
+                break;
+            }
+        }
+    }
 
     SetSorting( sortCol, aPreset.sortAsc );
 
     SetFilter( aPreset.filterString );
+    SetFilterScope( aPreset.filterScope );
     SetExcludeDNP( aPreset.excludeDNP );
     SetIncludeExcludedFromBOM( aPreset.includeExcludedFromBOM );
 
@@ -368,6 +663,7 @@ BOM_PRESET FIELDS_TABLE_DATA_MODEL_BASE::GetBomSettings()
 
     current.sortAsc = GetSortAsc();
     current.filterString = GetFilter();
+    current.filterScope = GetFilterScope();
     current.groupSymbols = GetGroupingEnabled();
     current.excludeDNP = GetExcludeDNP();
     current.includeExcludedFromBOM = GetIncludeExcludedFromBOM();
@@ -450,11 +746,108 @@ wxString FIELDS_TABLE_DATA_MODEL_BASE::Export( const BOM_FMT_PRESET& aSettings )
 }
 
 
-bool FIELDS_TABLE_DATA_MODEL_BASE::isAttribute( const wxString& aFieldName )
+bool FIELDS_TABLE_DATA_MODEL_BASE::fieldIsAttribute( const wxString& aFieldName ) const
 {
     return aFieldName == wxS( "${DNP}" ) || aFieldName == wxS( "${EXCLUDE_FROM_BOARD}" )
            || aFieldName == wxS( "${EXCLUDE_FROM_BOM}" ) || aFieldName == wxS( "${EXCLUDE_FROM_POS_FILES}" )
            || aFieldName == wxS( "${EXCLUDE_FROM_SIM}" );
+}
+
+
+bool FIELDS_TABLE_DATA_MODEL_BASE::fieldIsItemProperty( const wxString& aFieldName ) const
+{
+    return fieldIsAttribute( aFieldName );
+}
+
+
+wxString FIELDS_TABLE_DATA_MODEL_BASE::getAttributeResolvedValue( const wxString& aFieldName, bool aValue ) const
+{
+    if( !aValue )
+        return wxEmptyString;
+
+    if( aFieldName == wxS( "${DNP}" ) )
+        return wxS( "DNP" );
+    else if( aFieldName == wxS( "${EXCLUDE_FROM_BOARD}" ) )
+        return wxS( "Excluded from board" );
+    else if( aFieldName == wxS( "${EXCLUDE_FROM_BOM}" ) )
+        return wxS( "Excluded from BOM" );
+    else if( aFieldName == wxS( "${EXCLUDE_FROM_POS_FILES}" ) )
+        return wxS( "Excluded from position files" );
+    else if( aFieldName == wxS( "${EXCLUDE_FROM_SIM}" ) )
+        return wxS( "Excluded from simulation" );
+
+    return wxEmptyString;
+}
+
+
+wxString FIELDS_TABLE_DATA_MODEL_BASE::fieldVariant( const wxString& aFieldName, const wxString& aVariantName ) const
+{
+    return fieldSupportsVariants( aFieldName ) ? aVariantName : wxString();
+}
+
+
+void FIELDS_TABLE_DATA_MODEL_BASE::updateEditedState()
+{
+    m_edited = false;
+
+    for( const auto& [key, fields] : m_dataStore )
+    {
+        for( const auto& [name, field] : fields )
+        {
+            if( field.m_present != field.m_baselinePresent )
+            {
+                m_edited = true;
+                return;
+            }
+
+            if( field.m_present )
+            {
+                for( const auto& [variant, state] : field.m_variants )
+                {
+                    if( state.m_value != state.m_baseline )
+                    {
+                        m_edited = true;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+void FIELDS_TABLE_DATA_MODEL_BASE::RenameStoredVariant( const wxString& aOldName, const wxString& aNewName )
+{
+    commitPendingGridChanges();
+
+    for( auto& [key, fields] : m_dataStore )
+    {
+        for( auto& [name, field] : fields )
+        {
+            if( auto it = field.m_variants.find( aOldName ); it != field.m_variants.end() )
+            {
+                field.m_variants[aNewName] = it->second;
+                field.m_variants.erase( it );
+            }
+        }
+    }
+
+    if( m_currentVariant == aOldName )
+        m_currentVariant = aNewName;
+}
+
+
+void FIELDS_TABLE_DATA_MODEL_BASE::DeleteStoredVariant( const wxString& aName )
+{
+    commitPendingGridChanges();
+
+    for( auto& [key, fields] : m_dataStore )
+    {
+        for( auto& [name, field] : fields )
+            field.m_variants.erase( aName );
+    }
+
+    updateEditedState();
 }
 
 
@@ -468,8 +861,19 @@ wxString FIELDS_TABLE_DATA_MODEL_BASE::SerializeUndoState() const
     {
         nlohmann::json jfields = nlohmann::json::object();
 
-        for( const auto& [name, value] : fields )
-            jfields[std::string( name.ToUTF8() )] = std::string( value.ToUTF8() );
+        for( const auto& [name, field] : fields )
+        {
+            auto& stored = jfields[std::string( name.ToUTF8() )];
+            stored["present"] = field.m_present;
+            stored["baseline_present"] = field.m_baselinePresent;
+            stored["variants"] = nlohmann::json::object();
+
+            for( const auto& [variant, state] : field.m_variants )
+            {
+                stored["variants"][std::string( variant.ToUTF8() )] = { std::string( state.m_value.ToUTF8() ),
+                                                                        std::string( state.m_baseline.ToUTF8() ) };
+            }
+        }
 
         j[std::string( key.AsString().ToUTF8() )] = jfields;
     }
@@ -485,17 +889,32 @@ void FIELDS_TABLE_DATA_MODEL_BASE::RestoreUndoState( const wxString& aState )
     if( !j.is_object() )
         return;
 
+    // We want to wipe out key/value presence so we can properly test for
+    // empty vs. not-present
+    m_dataStore.clear();
+
     for( auto it = j.begin(); it != j.end(); ++it )
     {
-        KIID_PATH                     key( wxString::FromUTF8( it.key().c_str() ) );
-        std::map<wxString, wxString>& fields = m_dataStore[key];
+        KIID_PATH key( wxString::FromUTF8( it.key().c_str() ) );
+        auto&     fields = m_dataStore[key];
 
         for( auto fit = it.value().begin(); fit != it.value().end(); ++fit )
-            fields[wxString::FromUTF8( fit.key().c_str() )] =
-                    wxString::FromUTF8( fit.value().get<std::string>().c_str() );
+        {
+            FIELD_STORE_VALUE& field = fields[wxString::FromUTF8( fit.key().c_str() )];
+            field.m_present = fit.value().at( "present" ).get<bool>();
+            field.m_baselinePresent = fit.value().at( "baseline_present" ).get<bool>();
+
+            for( const auto& [variant, state] : fit.value().at( "variants" ).items() )
+            {
+                field.m_variants[wxString::FromUTF8( variant )] = {
+                    wxString::FromUTF8( state.at( 0 ).get<std::string>() ),
+                    wxString::FromUTF8( state.at( 1 ).get<std::string>() )
+                };
+            }
+        }
     }
 
-    m_edited = true;
+    SetCurrentVariant( m_currentVariant );
     RebuildRows();
 
     if( GetView() )

@@ -36,7 +36,7 @@
 
 
 ///! Update the schema version whenever a migration is required
-const int projectFileSchemaVersion = 3;
+const int projectFileSchemaVersion = 4;
 
 
 PROJECT_FILE::PROJECT_FILE( const wxString& aFullPath ) :
@@ -63,11 +63,51 @@ PROJECT_FILE::PROJECT_FILE( const wxString& aFullPath ) :
     m_params.emplace_back( new PARAM_WXSTRING_MAP( "text_variables",
             &m_TextVars, {}, false, true /* array behavior, even though stored as a map */ ) );
 
+    m_params.emplace_back( new PARAM_LAMBDA<nlohmann::json>( "schematic.drawing.field_names",
+            [&]() -> nlohmann::json
+            {
+                nlohmann::json ret = nlohmann::json::array();
+
+                for( const TEMPLATE_FIELDNAME& field :
+                     m_TemplateFieldNames.GetTemplateFieldNames( TEMPLATES::SCOPE::PROJECT ) )
+                {
+                    ret.push_back( nlohmann::json( {
+                                { "name",    field.m_Name },
+                                { "visible", field.m_Visible },
+                                { "url",     field.m_URL }
+                            } ) );
+                }
+
+                return ret;
+            },
+            [&]( const nlohmann::json& aJson )
+            {
+                if( !aJson.empty() && aJson.is_array() )
+                {
+                    m_TemplateFieldNames.DeleteFieldNameTemplates( TEMPLATES::SCOPE::PROJECT );
+
+                    for( const nlohmann::json& entry : aJson )
+                    {
+                        if( entry.contains( "name" ) && entry.contains( "url" )
+                                && entry.contains( "visible" ) )
+                        {
+                            TEMPLATE_FIELDNAME field( entry["name"].get<wxString>() );
+                            field.m_URL     = entry["url"].get<bool>();
+                            field.m_Visible = entry["visible"].get<bool>();
+                            m_TemplateFieldNames.AddTemplateFieldName( field, TEMPLATES::SCOPE::PROJECT );
+                        }
+                    }
+                }
+            }, {} ) );
+
     m_params.emplace_back( new PARAM_LIST<wxString>( "libraries.pinned_symbol_libs",
             &m_PinnedSymbolLibs, {} ) );
 
     m_params.emplace_back( new PARAM_LIST<wxString>( "libraries.pinned_footprint_libs",
             &m_PinnedFootprintLibs, {} ) );
+
+    m_params.emplace_back( new PARAM_LIST<wxString>( "libraries.pinned_design_block_libs",
+            &m_PinnedDesignBlockLibs, {} ) );
 
     m_params.emplace_back(
             new PARAM_LIST<wxString>( "pcbnew.find_by_properties.recent_queries", &m_FindByPropertiesQueries, {} ) );
@@ -122,6 +162,10 @@ PROJECT_FILE::PROJECT_FILE( const wxString& aFullPath ) :
     m_params.emplace_back( new PARAM_LAMBDA<nlohmann::json>( "schematic.bus_aliases",
             [&]() -> nlohmann::json
             {
+                // A project may be saved before its legacy schematic aliases are imported
+                if( !m_BusAliasesDefined && m_BusAliases.empty() )
+                    return nlohmann::json();
+
                 nlohmann::json ret = nlohmann::json::object();
 
                 for( const auto& alias : m_BusAliases )
@@ -138,10 +182,11 @@ PROJECT_FILE::PROJECT_FILE( const wxString& aFullPath ) :
             },
             [&]( const nlohmann::json& aJson )
             {
-                if( aJson.empty() || !aJson.is_object() )
-                    return;
-
+                m_BusAliasesDefined = aJson.is_object();
                 m_BusAliases.clear();
+
+                if( !aJson.is_object() )
+                    return;
 
                 for( auto it = aJson.begin(); it != aJson.end(); ++it )
                 {
@@ -169,6 +214,9 @@ PROJECT_FILE::PROJECT_FILE( const wxString& aFullPath ) :
                         m_BusAliases.emplace( name, std::move( members ) );
                 }
             }, {} ) );
+
+    // Let the save drop deleted aliases instead of merging them back in
+    m_params.back()->SetClearUnknownKeys();
 
     m_NetSettings = std::make_shared<NET_SETTINGS>( this, "net_settings" );
 
@@ -206,9 +254,22 @@ PROJECT_FILE::PROJECT_FILE( const wxString& aFullPath ) :
     m_params.emplace_back( new PARAM<wxString>( "board.ipc2581.sch_revision",
             &m_IP2581Bom.schRevision, wxEmptyString ) );
 
+    m_params.emplace_back( new PARAM<wxString>( "board.ipc2581.mode",
+            &m_IP2581Bom.mode, wxEmptyString ) );
+
+    m_params.emplace_back( new PARAM<wxString>( "board.ipc2581.sections",
+            &m_IP2581Bom.sections, wxEmptyString ) );
+
+    m_params.emplace_back( new PARAM<wxString>( "board.ipc2581.net_names",
+            &m_IP2581Bom.netNames, wxEmptyString ) );
+
+    m_params.emplace_back( new PARAM<wxString>( "board.ipc2581.ref_des",
+            &m_IP2581Bom.refDes, wxEmptyString ) );
+
 
     registerMigration( 1, 2, std::bind( &PROJECT_FILE::migrateSchema1To2, this ) );
     registerMigration( 2, 3, std::bind( &PROJECT_FILE::migrateSchema2To3, this ) );
+    registerMigration( 3, 4, std::bind( &PROJECT_FILE::migrateSchema3To4, this ) );
 }
 
 
@@ -243,6 +304,21 @@ bool PROJECT_FILE::migrateSchema2To3()
         PARAM_LAYER_PRESET::MigrateToNamedRenderLayers( entry );
 
     m_wasMigrated = true;
+
+    return true;
+}
+
+
+bool PROJECT_FILE::migrateSchema3To4()
+{
+    const auto aliases = GetJson( "schematic.bus_aliases" );
+
+    if( aliases && aliases->is_object() && aliases->empty() )
+    {
+        // Older project-only saves wrote empty tables before importing legacy sheet aliases
+        Set( "schematic.bus_aliases", nlohmann::json() );
+        m_wasMigrated = true;
+    }
 
     return true;
 }
@@ -755,6 +831,16 @@ bool PROJECT_FILE::LoadFromFile( const wxString& aDirectory )
 }
 
 
+bool PROJECT_FILE::Store()
+{
+    // An absent alias table permits legacy imports; an explicitly empty table suppresses them
+    if( m_BusAliasesDefined && !GetJson( "schematic.bus_aliases" ) )
+        m_modified = true;
+
+    return JSON_SETTINGS::Store();
+}
+
+
 bool PROJECT_FILE::SaveToFile( const wxString& aDirectory, bool aForce )
 {
     wxASSERT( m_project );
@@ -769,6 +855,26 @@ bool PROJECT_FILE::SaveToFile( const wxString& aDirectory, bool aForce )
     m_wasMigrated = false;
 
     return JSON_SETTINGS::SaveToFile( aDirectory, force );
+}
+
+
+std::string PROJECT_FILE::SerializeToString()
+{
+    wxASSERT( m_project );
+
+    Set( "meta.filename", m_project->GetProjectName() + "." + FILEEXT::ProjectFileExtension );
+
+    m_modified |= flushToStore();
+
+    try
+    {
+        return formatFileContents();
+    }
+    catch( ... )
+    {
+        wxLogTrace( traceSettings, wxT( "Error: could not serialize %s" ), GetFullFilename() );
+        return std::string();
+    }
 }
 
 

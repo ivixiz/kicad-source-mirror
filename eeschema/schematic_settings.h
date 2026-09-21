@@ -23,7 +23,6 @@
 #include <default_values.h>
 #include <settings/nested_settings.h>
 #include <settings/bom_settings.h>
-#include <template_fieldnames.h>
 #include <font/font_metrics.h>
 
 class NGSPICE_SETTINGS;
@@ -62,7 +61,7 @@ public:
  * These are loaded from Eeschema settings but then overwritten by the project settings.
  * All of the values are stored in IU, but the backing file stores in mils.
  */
-class SCHEMATIC_SETTINGS : public NESTED_SETTINGS
+class SCHEMATIC_SETTINGS : public NESTED_SETTINGS, public FIELDS_TABLE_BOM_SETTINGS
 {
 public:
     SCHEMATIC_SETTINGS( JSON_SETTINGS* aParent, const std::string& aPath );
@@ -97,6 +96,7 @@ public:
 
     int       m_JunctionSizeChoice;     // none = 0, smallest = 1, small = 2, etc.
     int       m_HopOverSizeChoice;      // none = 0, smallest = 1, etc.
+    bool      m_ShowDNPMarkers;
 
     int       m_ConnectionGridSize;     // usually 50mils (IU internally; mils in the JSON file)
 
@@ -126,18 +126,6 @@ public:
 
     wxString  m_SchDrawingSheetFileName;
     wxString  m_PlotDirectoryName;
-
-    TEMPLATES m_TemplateFieldNames;
-
-    wxString  m_BomExportFileName;
-
-    /// List of stored BOM presets
-    BOM_PRESET                  m_BomSettings;
-    std::vector<BOM_PRESET>     m_BomPresets;
-
-    /// List of stored BOM format presets
-    BOM_FMT_PRESET              m_BomFmtSettings;
-    std::vector<BOM_FMT_PRESET> m_BomFmtPresets;
 
     KIFONT::METRICS             m_FontMetrics;
 

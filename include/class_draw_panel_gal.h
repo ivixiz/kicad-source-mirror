@@ -32,6 +32,7 @@
 #include <widgets/msgpanel.h>
 #include <memory>
 #include <mutex>
+#include <chrono>
 
 #include <gal/cursors.h>
 
@@ -40,6 +41,14 @@ class EDA_DRAW_FRAME;
 class TOOL_DISPATCHER;
 class PROF_COUNTER;
 class wxImage;
+
+namespace KIPLATFORM
+{
+namespace UI
+{
+class TOUCHPAD_GESTURE_HANDLER;
+}
+}
 
 namespace KIGFX
 {
@@ -100,11 +109,28 @@ public:
     }
 
     /**
+     * Convert a stored canvas type setting into a backend that can actually be used.
+     *
+     * A settings file may have been written by hand or by another version of KiCad, so a value
+     * outside the supported range is bad data rather than a programming error.  It resolves to
+     * the accelerated canvas, as does the retired wxDC canvas (#GAL_TYPE_NONE).
+     *
+     * @param aStoredCanvasType is the raw COMMON_SETTINGS graphics.canvas_type value.
+     * @return a GAL type that #SwitchBackend() implements.
+     */
+    static GAL_TYPE ResolveStoredCanvasType( int aStoredCanvasType );
+
+    /**
      * Switch method of rendering graphics.
      *
      * @param aGalType is a type of rendering engine that you want to use.
      */
     virtual bool SwitchBackend( GAL_TYPE aGalType );
+
+    /**
+     * Apply the current native touchpad gesture preference to the active backend window.
+     */
+    void UpdateTouchpadGestureHandler();
 
     /**
      * Return the type of backend currently used by GAL canvas.
@@ -155,6 +181,13 @@ public:
      * Make sure a refresh gets done on the next idle event if it hasn't already.
      */
     void RequestRefresh();
+
+    /**
+     * Tell the backend which areas of this panel are covered by an overlaid infobar.
+     *
+     * Must be called whenever an infobar is shown, hidden or moved.
+     */
+    void UpdateOverlayExclusions();
 
     /**
      * Resize the GAL to the current client size of this panel.
@@ -300,9 +333,9 @@ protected:
     wxWindow*                m_parent;           ///< Pointer to the parent window
     EDA_DRAW_FRAME*          m_edaFrame;         ///< Parent EDA_DRAW_FRAME (if available)
 
-    wxLongLong               m_lastRepaintStart; ///< Timestamp of the last repaint start
-    wxLongLong               m_lastRepaintEnd;   ///< Timestamp of the last repaint end
-    wxTimer                  m_refreshTimer;     ///< Timer to prevent too-frequent refreshing
+    std::chrono::steady_clock::time_point m_lastRepaintStart; ///< Timestamp of the last repaint start
+    std::chrono::steady_clock::time_point m_lastRepaintEnd;   ///< Timestamp of the last repaint end
+    wxTimer                               m_refreshTimer;     ///< Timer to prevent too-frequent refreshing
 
     std::mutex               m_refreshMutex;     ///< Blocks multiple calls to the draw
 
@@ -344,6 +377,12 @@ protected:
     /// Set after an OpenGL recovery attempt to prevent infinite retry loops
     bool                     m_glRecoveryAttempted;
 
+    /// Consecutive frames dropped because the GL context could not be made current
+    int                      m_contextBindFailures;
+
+    /// Set when a size change could not be applied because the GL context was unavailable
+    bool                     m_pendingResize;
+
     /// Flag to indicate whether the panel should take focus at certain times (when moused over,
     /// and on various mouse/key events)
     bool                     m_stealsFocus;
@@ -352,6 +391,8 @@ protected:
 
     /// Optional overlay for drawing transient debug objects
     std::shared_ptr<KIGFX::VIEW_OVERLAY> m_debugOverlay;
+
+    std::unique_ptr<KIPLATFORM::UI::TOUCHPAD_GESTURE_HANDLER> m_touchpadGestureHandler;
 };
 
 #endif

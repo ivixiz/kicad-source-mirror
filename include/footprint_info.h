@@ -79,19 +79,11 @@ public:
         return m_keywords;
     }
 
+    /**
+     * Returns the cache itself, not a copy.
+     * Lets ScoreTerms() cache normalization across calls.
+     */
     std::vector<SEARCH_TERM>& GetSearchTerms() override;
-
-    unsigned GetPadCount()
-    {
-        ensure_loaded();
-        return m_pad_count;
-    }
-
-    unsigned GetUniquePadCount()
-    {
-        ensure_loaded();
-        return m_unique_pad_count;
-    }
 
     unsigned GetNumberedPadCount()
     {
@@ -130,18 +122,22 @@ protected:
     /// lazily load stuff not filled in by constructor.  This may throw IO_ERRORS.
     virtual void load() { };
 
-    FOOTPRINT_LIST* m_owner; ///< provides access to FP_LIB_TABLE
+    /**
+     * Safe to build once and keep.  Name fields come from the constructor.  Keyword and description fields
+     * come from load(), one-shot behind m_loaded.  All source fields are final by the time this runs.
+     */
+    void cacheSearchTerms();
+
+    FOOTPRINT_LIST* m_owner;              ///< provides access to FP_LIB_TABLE
 
     bool            m_loaded;
 
-    wxString        m_nickname;         ///< library as known in FP_LIB_TABLE
-    wxString        m_fpname;           ///< Module name.
-    int             m_num;              ///< Order number in the display list.
-    unsigned        m_pad_count;        ///< Number of pads
-    unsigned        m_unique_pad_count; ///< Number of unique pads
+    wxString        m_nickname;           ///< library as known in FP_LIB_TABLE
+    wxString        m_fpname;             ///< Module name.
+    int             m_num;                ///< Order number in the display list.
     unsigned        m_numbered_pad_count; ///< Number of unique electrical pads (numeric or BGA-style numbers)
-    wxString        m_doc;              ///< Footprint description.
-    wxString        m_keywords;         ///< Footprint keywords.
+    wxString        m_doc;                ///< Footprint description.
+    wxString        m_keywords;           ///< Footprint keywords.
 
     std::vector<SEARCH_TERM> m_searchTerms;
 };

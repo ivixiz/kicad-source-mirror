@@ -18,6 +18,9 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <sch_edit_frame.h>
+#include <settings/common_settings.h>
+#include <tools/sch_selection_tool.h>
 #include "tools/symbol_editor_control.h"
 
 #include <advanced_config.h>
@@ -709,7 +712,9 @@ int SYMBOL_EDITOR_CONTROL::ToggleSyncedPinsMode( const TOOL_EVENT& aEvent )
         return 0;
 
     SYMBOL_EDIT_FRAME* editFrame = getEditFrame<SYMBOL_EDIT_FRAME>();
-    editFrame->m_SyncPinEdit = !editFrame->m_SyncPinEdit;
+
+    if( SYMBOL_EDITOR_SETTINGS* cfg = editFrame->GetSettings() )
+        cfg->m_SyncPinEdit = !cfg->m_SyncPinEdit;
 
     return 0;
 }
@@ -839,24 +844,8 @@ int SYMBOL_EDITOR_CONTROL::ExportSymbolAsSVG( const TOOL_EVENT& aEvent )
 
     if( !fullFileName.IsEmpty() )
     {
-        PAGE_INFO pageSave = editFrame->GetScreen()->GetPageSettings();
-        PAGE_INFO pageTemp = pageSave;
-
-        BOX2I symbolBBox = symbol->GetUnitBoundingBox( editFrame->GetUnit(),
-                                                       editFrame->GetBodyStyle(), false );
-
-        // Add a small margin (10% of size)to the plot bounding box
-        symbolBBox.Inflate( symbolBBox.GetSize().x * 0.1, symbolBBox.GetSize().y * 0.1 );
-
-        pageTemp.SetWidthMils( schIUScale.IUToMils( symbolBBox.GetSize().x ) );
-        pageTemp.SetHeightMils( schIUScale.IUToMils( symbolBBox.GetSize().y ) );
-
-        // Add an offet to plot the symbol centered on the page.
-        VECTOR2I plot_offset = symbolBBox.GetOrigin();
-
-        editFrame->GetScreen()->SetPageSettings( pageTemp );
-        editFrame->SVGPlotSymbol( fullFileName, -plot_offset );
-        editFrame->GetScreen()->SetPageSettings( pageSave );
+        // The symbol origin is kept at the SVG origin; the page/viewBox is sized to the symbol.
+        editFrame->SVGPlotSymbol( fullFileName );
     }
 
     return 0;
@@ -1000,10 +989,12 @@ int SYMBOL_EDITOR_CONTROL::NextSymbol( const TOOL_EVENT& aEvent )
 
 int SYMBOL_EDITOR_CONTROL::ShowLibraryTable( const TOOL_EVENT& aEvent )
 {
-    DIALOG_LIB_FIELDS_TABLE::SCOPE scope = DIALOG_LIB_FIELDS_TABLE::SCOPE_LIBRARY;
+    using SCOPE = LIB_FIELDS_EDITOR_GRID_DATA_MODEL::SCOPE;
+
+    SCOPE scope = SCOPE::SCOPE_LIBRARY;
 
     if( aEvent.IsAction( &SCH_ACTIONS::showRelatedLibFieldsTable ) )
-        scope = DIALOG_LIB_FIELDS_TABLE::SCOPE_RELATED_SYMBOLS;
+        scope = SCOPE::SCOPE_RELATED_SYMBOLS;
 
     DIALOG_LIB_FIELDS_TABLE dlg( getEditFrame<SYMBOL_EDIT_FRAME>(), scope );
 
@@ -1152,14 +1143,14 @@ int SYMBOL_EDITOR_CONTROL::CompareLibraryWithFile( const TOOL_EVENT& aEvent )
     KICAD_DIFF::SYM_LIB_DIFFER differ( beforeMap, afterMap, otherPath );
     KICAD_DIFF::DOCUMENT_DIFF  result = differ.Diff();
 
+    auto cloneHolder = std::make_shared<std::vector<std::unique_ptr<LIB_SYMBOL>>>();
+
     DIALOG_KICAD_DIFF dlgDiff( editFrame, currentLib, otherPath, result );
 
     std::map<KIID_PATH, const KICAD_DIFF::ITEM_CHANGE*> changesById;
 
     for( const KICAD_DIFF::ITEM_CHANGE& c : result.changes )
         changesById[c.id] = &c;
-
-    auto cloneHolder = std::make_shared<std::vector<std::unique_ptr<LIB_SYMBOL>>>();
 
     dlgDiff.SetChangeSelectedHandler(
             [&, cloneHolder]( const KIID_PATH& aId )

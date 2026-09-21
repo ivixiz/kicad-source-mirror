@@ -64,6 +64,7 @@ public:
      */
     void ExcludeMarker( SCH_MARKER* aMarker = nullptr );
 
+    void DeleteAllMarkers( bool aIncludeExclusions );
     void UpdateData();
     void UpdateAnnotationWarning();
 
@@ -103,8 +104,6 @@ private:
     void redrawDrawPanel();
 
     void testErc();
-
-    void deleteAllMarkers( bool aIncludeExclusions );
 
     void syncCheckboxes();
     void updateDisplayedCounts();

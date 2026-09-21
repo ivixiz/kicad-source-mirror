@@ -67,7 +67,6 @@
 #include <widgets/net_inspector_panel.h>
 #include <widgets/filedlg_hook_new_library.h>
 #include <wx/event.h>
-#include <wx/snglinst.h>
 #include <widgets/ui_common.h>
 #include <widgets/search_pane.h>
 #include <wx/dirdlg.h>
@@ -75,7 +74,6 @@
 #include <wx/debug.h>
 #include <wx/socket.h>
 
-#include <wx/snglinst.h>
 #include <wx/fdrepdlg.h>
 #include <tool/editor_conditions.h>
 
@@ -282,15 +280,6 @@ bool EDA_DRAW_FRAME::LockFile( const wxString& aFileName )
 
     m_file_checker = std::make_unique<LOCKFILE>( aFileName );
 
-    if( !m_file_checker->Valid() && m_file_checker->IsLockedByMe() )
-    {
-        // If we cannot acquire the lock but we appear to be the one who locked it, check to see if
-        // there is another KiCad instance running.  If there is not, then we can override the lock.
-        // This could happen if KiCad crashed or was interrupted.
-        if( !Pgm().SingleInstance()->IsAnotherRunning() )
-            m_file_checker->OverrideLock();
-    }
-
     // If the file is valid, return true.  This could mean that the file is locked or it could mean
     // that the file is read-only.
     return m_file_checker->Valid();
@@ -356,6 +345,7 @@ void EDA_DRAW_FRAME::CommonSettingsChanged( int aFlags )
     }
 
     viewControls->LoadSettings();
+    GetCanvas()->UpdateTouchpadGestureHandler();
 
     m_galDisplayOptions.ReadCommonConfig( *settings, this );
 
@@ -369,7 +359,9 @@ void EDA_DRAW_FRAME::CommonSettingsChanged( int aFlags )
         m_lastToolbarIconSize = settings->m_Appearance.toolbar_icon_size;
     }
 
+#ifndef __WXMAC__
     resolveCanvasType();
+#endif
 
     // Notify all tools the preferences have changed
     if( m_toolManager )
@@ -952,22 +944,10 @@ EDA_DRAW_PANEL_GAL::GAL_TYPE EDA_DRAW_FRAME::loadCanvasTypeSetting()
     return EDA_DRAW_PANEL_GAL::GAL_TYPE_OPENGL;
 #endif
 
-    EDA_DRAW_PANEL_GAL::GAL_TYPE canvasType = EDA_DRAW_PANEL_GAL::GAL_TYPE_NONE;
-    COMMON_SETTINGS* cfg = Pgm().GetCommonSettings();
+    EDA_DRAW_PANEL_GAL::GAL_TYPE canvasType = EDA_DRAW_PANEL_GAL::GAL_TYPE_OPENGL;
 
-    if( cfg )
-        canvasType = static_cast<EDA_DRAW_PANEL_GAL::GAL_TYPE>( cfg->m_Graphics.canvas_type );
-
-    if( canvasType < EDA_DRAW_PANEL_GAL::GAL_TYPE_NONE
-            || canvasType >= EDA_DRAW_PANEL_GAL::GAL_TYPE_LAST )
-    {
-        wxASSERT( false );
-        canvasType = EDA_DRAW_PANEL_GAL::GAL_TYPE_NONE;
-    }
-
-    // Legacy canvas no longer supported.  Switch to OpenGL, falls back to Cairo on failure
-    if( canvasType == EDA_DRAW_PANEL_GAL::GAL_TYPE_NONE )
-        canvasType = EDA_DRAW_PANEL_GAL::GAL_TYPE_OPENGL;
+    if( COMMON_SETTINGS* cfg = Pgm().GetCommonSettings() )
+        canvasType = EDA_DRAW_PANEL_GAL::ResolveStoredCanvasType( cfg->m_Graphics.canvas_type );
 
     wxString envCanvasType;
 
@@ -1370,7 +1350,6 @@ void EDA_DRAW_FRAME::resolveCanvasType()
     if( m_openGLFailureOccured && m_canvasType == EDA_DRAW_PANEL_GAL::GAL_TYPE_OPENGL )
         m_canvasType = EDA_DRAW_PANEL_GAL::GAL_FALLBACK;
 
-#ifndef __WXMAC__
     if( m_canvasType != GetCanvas()->GetBackend() )
     {
         // Try to switch (will automatically fallback if necessary)
@@ -1382,7 +1361,6 @@ void EDA_DRAW_FRAME::resolveCanvasType()
             m_openGLFailureOccured = true; // Store failure for other EDA_DRAW_FRAMEs
         }
     }
-#endif
 }
 
 

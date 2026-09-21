@@ -71,6 +71,7 @@ void FOOTPRINT_EDIT_FRAME::doReCreateMenuBar()
     submenuExport->SetIcon( BITMAPS::export_file );
 
     submenuExport->Add( PCB_ACTIONS::exportFootprint, ACTION_MENU::NORMAL, _( "Footprint..." ) );
+    submenuExport->Add( PCB_ACTIONS::exportFootprintAsSVG, ACTION_MENU::NORMAL, _( "Footprint as &SVG..." ) );
     submenuExport->Add( _( "View as &PNG..." ),
                         _( "Create a PNG file from the current view" ),
                         ID_FPEDIT_SAVE_PNG,
@@ -118,8 +119,11 @@ void FOOTPRINT_EDIT_FRAME::doReCreateMenuBar()
 
     editMenu->AppendSeparator();
     editMenu->Add( PCB_ACTIONS::editTextAndGraphics );
+    editMenu->Add( PCB_ACTIONS::showLibFootprintFieldsTable );
     editMenu->Add( PCB_ACTIONS::padTable );
     editMenu->Add( PCB_ACTIONS::defaultPadProperties );
+    editMenu->Add( PCB_ACTIONS::extendGraphic );
+    editMenu->Add( PCB_ACTIONS::trimGraphic );
     editMenu->Add( PCB_ACTIONS::enumeratePads );
     editMenu->Add( ACTIONS::gridOrigin );
 

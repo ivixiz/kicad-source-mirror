@@ -67,6 +67,7 @@ SCHEMATIC_SETTINGS::SCHEMATIC_SETTINGS( JSON_SETTINGS* aParent, const std::strin
         m_PinSymbolSize( DEFAULT_TEXT_SIZE * schIUScale.IU_PER_MILS / 2 ),
         m_JunctionSizeChoice( 3 ),
         m_HopOverSizeChoice( 0 ),
+        m_ShowDNPMarkers( true ),
         m_ConnectionGridSize( DEFAULT_CONNECTION_GRID_MILS * schIUScale.IU_PER_MILS ),
         m_AnnotateStartNum( 0 ),
         m_AnnotateSortOrder( 0 ),
@@ -122,6 +123,8 @@ SCHEMATIC_SETTINGS::SCHEMATIC_SETTINGS( JSON_SETTINGS* aParent, const std::strin
     m_params.emplace_back( new PARAM<double>( "drawing.dashed_lines_gap_length_ratio",
             &m_DashedLineGapRatio, 3.0 ) );     // Default from ISO 128-2
 
+    m_params.emplace_back( new PARAM<bool>( "drawing.show_dnp_markers", &m_ShowDNPMarkers, true ) );
+
     m_params.emplace_back( new PARAM<int>( "drawing.operating_point_overlay_v_precision",
             &m_OPO_VPrecision, 3 ) );
 
@@ -166,48 +169,6 @@ SCHEMATIC_SETTINGS::SCHEMATIC_SETTINGS( JSON_SETTINGS* aParent, const std::strin
 
     m_params.emplace_back( new PARAM<int>( "drawing.hop_over_size_choice",
             &m_HopOverSizeChoice, defaultHopOverSizeChoice ) );
-
-    m_params.emplace_back( new PARAM_LAMBDA<nlohmann::json>( "drawing.field_names",
-            [&]() -> nlohmann::json
-            {
-                nlohmann::json ret = nlohmann::json::array();
-
-                for( const TEMPLATE_FIELDNAME& field : m_TemplateFieldNames.GetTemplateFieldNames( false ) )
-                {
-                    ret.push_back( nlohmann::json( {
-                                { "name",    field.m_Name },
-                                { "visible", field.m_Visible },
-                                { "url",     field.m_URL }
-                            } ) );
-                }
-
-                return ret;
-            },
-            [&]( const nlohmann::json& aJson )
-            {
-                if( !aJson.empty() && aJson.is_array() )
-                {
-                    m_TemplateFieldNames.DeleteAllFieldNameTemplates( false );
-
-                    for( const nlohmann::json& entry : aJson )
-                    {
-                        if( entry.contains( "name" ) && entry.contains( "url" ) && entry.contains( "visible" ) )
-                        {
-                            TEMPLATE_FIELDNAME field( entry["name"].get<wxString>() );
-                            field.m_URL     = entry["url"].get<bool>();
-                            field.m_Visible = entry["visible"].get<bool>();
-                            m_TemplateFieldNames.AddTemplateFieldName( field, false );
-                        }
-                    }
-                }
-
-                // Read global fieldname templates
-                if( EESCHEMA_SETTINGS* curr_cfg = GetAppSettings<EESCHEMA_SETTINGS>( "eeschema" ) )
-                {
-                    if( !curr_cfg->m_Drawing.field_names.IsEmpty() )
-                        m_TemplateFieldNames.AddTemplateFieldNames( curr_cfg->m_Drawing.field_names );
-                }
-            }, {} ) );
 
     m_params.emplace_back( new PARAM<bool>( "compare_symbols.missing_fields",
             &m_SymbolParity.m_MissingFields, true ) );

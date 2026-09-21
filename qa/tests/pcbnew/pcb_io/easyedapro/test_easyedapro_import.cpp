@@ -56,8 +56,8 @@ BOOST_AUTO_TEST_CASE( PolygonPadImport )
     std::string dataPath = KI_TEST::GetPcbnewTestDataDir()
                            + "plugins/easyedapro/PDFN-8_L3.2-W3.1-P0.65-LS3.4-BL-EP2.efoo";
 
-    wxString fpName = wxS( "PDFN-8_L3.2-W3.1-P0.65-LS3.4-BL-EP2" );
-    FOOTPRINT* fp = plugin.FootprintLoad( dataPath, fpName, false, nullptr );
+    wxString                   fpName = wxS( "PDFN-8_L3.2-W3.1-P0.65-LS3.4-BL-EP2" );
+    std::unique_ptr<FOOTPRINT> fp = plugin.FootprintLoad( dataPath, fpName, false, nullptr );
 
     BOOST_REQUIRE( fp );
 
@@ -80,8 +80,6 @@ BOOST_AUTO_TEST_CASE( PolygonPadImport )
     // Check that primitives were added to the custom pads
     BOOST_CHECK( !pad9->GetPrimitives( PADSTACK::ALL_LAYERS ).empty() );
     BOOST_CHECK( !pad10->GetPrimitives( PADSTACK::ALL_LAYERS ).empty() );
-
-    delete fp;
 }
 
 

@@ -20,6 +20,7 @@
 #include <memory>
 #include <vector>
 
+#include <qa_utils/file_utils.h>
 #include <qa_utils/wx_utils/unit_test_utils.h>
 
 #include <wx/dir.h>
@@ -32,6 +33,7 @@
 #include <pgm_base.h>
 #include <project.h>
 #include <project_sch.h>
+#include <reporter.h>
 #include <schematic.h>
 #include <sch_io/sch_io.h>
 #include <sch_io/sch_io_mgr.h>
@@ -50,25 +52,17 @@
 
 namespace
 {
-/// Stage a fresh, private project directory and wire up the global library manager for it.
-wxString stageProject( const wxString& aStem )
+/// Stage a fresh, private project and wire up the global library manager for it.
+struct STAGED_PROJECT_FIXTURE
 {
-    wxString sep = wxFileName::GetPathSeparator();
-    wxString dir = wxFileName::GetTempDir() + sep + aStem + wxT( "-symreconcile-qa" );
+    STAGED_PROJECT_FIXTURE() :
+            m_staged( Pgm().GetSettingsManager(), wxS( "symreconcile-qa" ), wxS( "symreconcile" ) )
+    {
+        Pgm().GetLibraryManager().LoadProjectTables( m_staged.Project().GetProjectDirectory() );
+    }
 
-    if( wxDirExists( dir ) )
-        wxFileName::Rmdir( dir, wxPATH_RMDIR_RECURSIVE );
-
-    wxFileName::Mkdir( dir, wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL );
-
-    wxString projectPath = dir + sep + aStem + wxT( ".kicad_pro" );
-
-    Pgm().GetSettingsManager().LoadProject( projectPath );
-    Pgm().GetLibraryManager().LoadProjectTables(
-            Pgm().GetSettingsManager().Prj().GetProjectDirectory() );
-
-    return Pgm().GetSettingsManager().Prj().GetProjectPath();
-}
+    KI_TEST::SCOPED_TEMP_PROJECT m_staged;
+};
 
 
 wxString easyEdaProV3Archive()
@@ -166,7 +160,7 @@ void publishLibrary( PROJECT& aProject, SYMBOL_LIBRARY_ADAPTER& aAdapter, const 
 
     auto copy = std::make_unique<LIB_SYMBOL>( aSymbol );
     copy->SetLibId( LIB_ID( aNickname, copy->GetName() ) );
-    pi->SaveSymbol( libFn.GetFullPath(), copy.release() );
+    pi->SaveSymbol( libFn.GetFullPath(), std::move( copy ) );
 
     LIBRARY_TABLE* table = aAdapter.ProjectTable().value_or( nullptr );
     BOOST_REQUIRE( table );
@@ -223,15 +217,14 @@ COLLISION_CANDIDATE findCandidate( IMPORTED_SAMPLE& aSample )
 } // namespace
 
 
-BOOST_AUTO_TEST_SUITE( SymbolImportReconciler )
+BOOST_FIXTURE_TEST_SUITE( SymbolImportReconciler, STAGED_PROJECT_FIXTURE )
 
 
 // EasyEDA Pro v3 hands definitions over the standard hook, leaving the source directory untouched
 // fails on revert, since LoadSchematicFile then publishes its own .kicad_sym beside the archive
 BOOST_AUTO_TEST_CASE( EasyEdaProV3SchematicResolvesToGeneratedCache )
 {
-    wxString projectPath = stageProject( wxS( "easyedapro_v3" ) );
-    PROJECT& project = Pgm().GetSettingsManager().Prj();
+    PROJECT& project = m_staged.Project();
 
     IMPORTED_SAMPLE sample = importSample( project );
     SCHEMATIC&      schematic = *sample.m_schematic;
@@ -293,19 +286,16 @@ BOOST_AUTO_TEST_CASE( EasyEdaProV3SchematicResolvesToGeneratedCache )
 
     BOOST_CHECK_GT( resolved, 0 );
     BOOST_CHECK_EQUAL( result.m_unresolved, 0 );
-
-    wxFileName::Rmdir( projectPath, wxPATH_RMDIR_RECURSIVE );
 }
 
 
 // EasyEDA Pro v2 wrote its .kicad_sym beside the source archive, exactly as v3 did
 BOOST_AUTO_TEST_CASE( EasyEdaProV2LeavesSourceDirectoryClean )
 {
-    wxString projectPath = stageProject( wxS( "easyedapro_v2" ) );
-    PROJECT& project = Pgm().GetSettingsManager().Prj();
+    PROJECT& project = m_staged.Project();
 
     wxString sep = wxFileName::GetPathSeparator();
-    wxString srcDir = projectPath + wxT( "import-src" );
+    wxString srcDir = project.GetProjectPath() + wxT( "import-src" );
     BOOST_REQUIRE( wxFileName::Mkdir( srcDir, wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL ) );
 
     wxString source = wxString::FromUTF8(
@@ -336,8 +326,6 @@ BOOST_AUTO_TEST_CASE( EasyEdaProV2LeavesSourceDirectoryClean )
 
     for( LIB_SYMBOL* symbol : raw )
         delete symbol;
-
-    wxFileName::Rmdir( projectPath, wxPATH_RMDIR_RECURSIVE );
 }
 
 
@@ -345,8 +333,7 @@ BOOST_AUTO_TEST_CASE( EasyEdaProV2LeavesSourceDirectoryClean )
 // the imported definition; without the provenance check the symbol relinks to the wrong part
 BOOST_AUTO_TEST_CASE( CollidingNicknameDoesNotStealTheLink )
 {
-    wxString projectPath = stageProject( wxS( "symreconcile_collide" ) );
-    PROJECT& project = Pgm().GetSettingsManager().Prj();
+    PROJECT& project = m_staged.Project();
 
     IMPORTED_SAMPLE     sample = importSample( project );
     COLLISION_CANDIDATE candidate = findCandidate( sample );
@@ -374,8 +361,6 @@ BOOST_AUTO_TEST_CASE( CollidingNicknameDoesNotStealTheLink )
     LIB_SYMBOL* linked = adapter->LoadSymbol( cacheNick, candidate.m_name );
     BOOST_REQUIRE( linked );
     BOOST_CHECK_GT( linked->GetPins().size(), 0 );
-
-    wxFileName::Rmdir( projectPath, wxPATH_RMDIR_RECURSIVE );
 }
 
 
@@ -383,8 +368,7 @@ BOOST_AUTO_TEST_CASE( CollidingNicknameDoesNotStealTheLink )
 // so the equivalence escape hatch keeps a genuine match out of the generated cache
 BOOST_AUTO_TEST_CASE( EquivalentNamesakeTakesTheLink )
 {
-    wxString projectPath = stageProject( wxS( "symreconcile_equivalent" ) );
-    PROJECT& project = Pgm().GetSettingsManager().Prj();
+    PROJECT& project = m_staged.Project();
 
     IMPORTED_SAMPLE     sample = importSample( project );
     COLLISION_CANDIDATE candidate = findCandidate( sample );
@@ -405,8 +389,97 @@ BOOST_AUTO_TEST_CASE( EquivalentNamesakeTakesTheLink )
 
     BOOST_CHECK_EQUAL( candidate.m_symbol->GetLibId().GetUniStringLibNickname(), sourceNick );
     BOOST_CHECK_GT( result.m_linkedToSource, 0 );
+}
 
-    wxFileName::Rmdir( projectPath, wxPATH_RMDIR_RECURSIVE );
+
+// Two source libraries supplying different symbols under one bare name must both survive the
+// cache; keying the cache by the bare name alone dropped the second and relinked its instance
+BOOST_AUTO_TEST_CASE( SameNameFromDifferentLibrariesKeepsBothDefinitions )
+{
+    PROJECT& project = m_staged.Project();
+
+    IMPORTED_SAMPLE sample = importSample( project );
+
+    // two real imported symbols that a pin count tells apart
+    SCH_SYMBOL* firstPlaced = nullptr;
+    SCH_SYMBOL* secondPlaced = nullptr;
+
+    for( SCH_SYMBOL* symbol : placedSymbols( *sample.m_schematic ) )
+    {
+        const std::unique_ptr<LIB_SYMBOL>& part = symbol->GetLibSymbolRef();
+
+        if( !part || part->GetPins().empty() )
+            continue;
+
+        if( !firstPlaced )
+            firstPlaced = symbol;
+        else if( part->GetPins().size() != firstPlaced->GetLibSymbolRef()->GetPins().size() )
+            secondPlaced = symbol;
+
+        if( secondPlaced )
+            break;
+    }
+
+    BOOST_REQUIRE( firstPlaced );
+    BOOST_REQUIRE( secondPlaced );
+
+    const wxString sharedName = wxS( "SHARED_SYM" );
+    const size_t   firstPins = firstPlaced->GetLibSymbolRef()->GetPins().size();
+    const size_t   secondPins = secondPlaced->GetLibSymbolRef()->GetPins().size();
+
+    std::vector<std::unique_ptr<LIB_SYMBOL>> defs;
+
+    // the same bare name under two source libraries, both placed and defined
+    auto relabel = [&]( SCH_SYMBOL* aSymbol, const wxString& aNickname )
+    {
+        auto def = std::make_unique<LIB_SYMBOL>( *aSymbol->GetLibSymbolRef() );
+        def->SetName( sharedName );
+        def->SetLibId( LIB_ID( aNickname, sharedName ) );
+        defs.push_back( std::move( def ) );
+
+        aSymbol->SetLibId( LIB_ID( aNickname, sharedName ) );
+    };
+
+    relabel( firstPlaced, wxS( "libAlpha" ) );
+    relabel( secondPlaced, wxS( "libBeta" ) );
+
+    SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &project );
+    BOOST_REQUIRE( adapter );
+
+    const wxString           cacheNick = wxS( "namecollide-import-syms" );
+    WX_STRING_REPORTER       reporter;
+    SYMBOL_IMPORT_RECONCILER reconciler( *adapter, project.GetProjectPath(), reporter );
+
+    SYMBOL_IMPORT_RECONCILE_RESULT result =
+            reconciler.Reconcile( sample.m_schematic.get(), std::move( defs ), cacheNick, {} );
+
+    BOOST_CHECK_EQUAL( result.m_cacheNickname, cacheNick );
+
+    LIB_ID firstId = firstPlaced->GetLibId();
+    LIB_ID secondId = secondPlaced->GetLibId();
+
+    BOOST_CHECK_EQUAL( firstId.GetUniStringLibNickname(), cacheNick );
+    BOOST_CHECK_EQUAL( secondId.GetUniStringLibNickname(), cacheNick );
+    BOOST_CHECK_MESSAGE( firstId.GetUniStringLibItemName() != secondId.GetUniStringLibItemName(),
+                         "Symbols from two source libraries share one cache item name" );
+
+    // each instance still resolves to the symbol it was imported as
+    LIB_SYMBOL* firstLinked = adapter->LoadSymbol( cacheNick, firstId.GetUniStringLibItemName() );
+    LIB_SYMBOL* secondLinked = adapter->LoadSymbol( cacheNick, secondId.GetUniStringLibItemName() );
+
+    BOOST_REQUIRE( firstLinked );
+    BOOST_REQUIRE( secondLinked );
+    BOOST_CHECK_EQUAL( firstLinked->GetPins().size(), firstPins );
+    BOOST_CHECK_EQUAL( secondLinked->GetPins().size(), secondPins );
+
+    // the user is told which symbol the cache renamed
+    const wxString renamed = firstId.GetUniStringLibItemName() == sharedName
+                                     ? secondId.GetUniStringLibItemName()
+                                     : firstId.GetUniStringLibItemName();
+
+    BOOST_CHECK_MESSAGE( reporter.GetMessages().Contains(
+                                 wxString::Format( wxS( "renamed to '%s'" ), renamed ) ),
+                         "Cache rename was not reported" );
 }
 
 
@@ -414,8 +487,7 @@ BOOST_AUTO_TEST_CASE( EquivalentNamesakeTakesTheLink )
 // generated path, so publishing must not rewrite its URI
 BOOST_AUTO_TEST_CASE( ExistingUserRowIsNotRepurposed )
 {
-    wxString projectPath = stageProject( wxS( "symreconcile_row" ) );
-    PROJECT& project = Pgm().GetSettingsManager().Prj();
+    PROJECT& project = m_staged.Project();
 
     IMPORTED_SAMPLE sample = importSample( project );
 
@@ -448,16 +520,13 @@ BOOST_AUTO_TEST_CASE( ExistingUserRowIsNotRepurposed )
                           wxString( FILEEXT::KiCadSymbolLibFileExtension ) );
     BOOST_CHECK_MESSAGE( !wxFileExists( cacheFile.GetFullPath() ),
                          "Published a cache over a nickname the user already owns" );
-
-    wxFileName::Rmdir( projectPath, wxPATH_RMDIR_RECURSIVE );
 }
 
 
 // A cache whose table row cannot be persisted is gone on restart, so it must not be claimed
 BOOST_AUTO_TEST_CASE( UnsavableTableLeavesCacheUnclaimed )
 {
-    wxString projectPath = stageProject( wxS( "symreconcile_rotable" ) );
-    PROJECT& project = Pgm().GetSettingsManager().Prj();
+    PROJECT& project = m_staged.Project();
 
     SYMBOL_LIBRARY_ADAPTER* adapter = PROJECT_SCH::SymbolLibAdapter( &project );
     BOOST_REQUIRE( adapter );
@@ -475,7 +544,6 @@ BOOST_AUTO_TEST_CASE( UnsavableTableLeavesCacheUnclaimed )
         BOOST_TEST_MESSAGE( "Skipping read-only table check; file remains writable (running as "
                             "root?)" );
         tableFn.SetPermissions( wxS_IRUSR | wxS_IWUSR );
-        wxFileName::Rmdir( projectPath, wxPATH_RMDIR_RECURSIVE );
         return;
     }
 
@@ -492,15 +560,13 @@ BOOST_AUTO_TEST_CASE( UnsavableTableLeavesCacheUnclaimed )
     BOOST_CHECK_GT( result.m_unresolved, 0 );
 
     tableFn.SetPermissions( wxS_IRUSR | wxS_IWUSR );
-    wxFileName::Rmdir( projectPath, wxPATH_RMDIR_RECURSIVE );
 }
 
 
 // An unregistered library already sitting at the cache path must never be overwritten
 BOOST_AUTO_TEST_CASE( ExistingUserLibraryIsNotClobbered )
 {
-    wxString projectPath = stageProject( wxS( "symreconcile_clobber" ) );
-    PROJECT& project = Pgm().GetSettingsManager().Prj();
+    PROJECT& project = m_staged.Project();
 
     IMPORTED_SAMPLE sample = importSample( project );
 
@@ -528,8 +594,6 @@ BOOST_AUTO_TEST_CASE( ExistingUserLibraryIsNotClobbered )
     wxFile   readBack( victim.GetFullPath(), wxFile::read );
     BOOST_REQUIRE( readBack.ReadAll( &contents ) );
     BOOST_CHECK_EQUAL( contents, sentinel );
-
-    wxFileName::Rmdir( projectPath, wxPATH_RMDIR_RECURSIVE );
 }
 
 

@@ -70,8 +70,7 @@ BOOST_AUTO_TEST_CASE( ZoneSpatialFilterFiresForUnshadowedChain )
     }
 
     PCB_IO_KICAD_SEXPR     plugin;
-    std::unique_ptr<BOARD> board = std::make_unique<BOARD>();
-    plugin.LoadBoard( KI_TEST::GetPcbnewTestDataDir() + BOARD_FILE, board.get() );
+    std::unique_ptr<BOARD> board = plugin.LoadBoard( KI_TEST::GetPcbnewTestDataDir() + BOARD_FILE );
     board->BuildConnectivity();
 
     NETINFO_ITEM* coveredNet = board->FindNet( wxS( "/CHAIN_COVERED" ) );

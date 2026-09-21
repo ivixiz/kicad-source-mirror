@@ -77,8 +77,10 @@ LIBRARY_TABLE::LIBRARY_TABLE( const wxFileName &aPath, LIBRARY_TABLE_SCOPE aScop
         return;
     }
 
-    if( fn.GetSize() <= 1 ) // test for an empty file, 1 byte allowed for BOM
+    if( fn.GetSize() < 1 )
     {
+        // blank files are treated as "new" and "ok" as we want to allow the user to start
+        // fleshing them out and save
         m_ok = true;
         m_type = aExpectedType;
         return;
@@ -358,7 +360,7 @@ LIBRARY_RESULT<void> LIBRARY_TABLE::Save()
     catch( IO_ERROR& e )
     {
         wxLogTrace( traceLibraries, "Exception while saving: %s", e.What() );
-        return tl::unexpected( LIBRARY_ERROR( e.What() ) );
+        return tl::unexpected( LIBRARY_ERROR( e.Problem(), e.Where() ) );
     }
 
     return LIBRARY_RESULT<void>();

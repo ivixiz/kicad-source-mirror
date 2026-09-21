@@ -17,6 +17,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <font/font.h>
 #include <advanced_config.h>
 #include <common.h>
 #include <sch_edit_frame.h>
@@ -27,6 +28,9 @@
 #include <properties/property.h>
 #include <properties/property_mgr.h>
 
+#include <api/api_utils.h>
+#include <api/schematic/schematic_types.pb.h>
+
 
 SCH_TABLECELL::SCH_TABLECELL( int aLineWidth, FILL_T aFillType ) :
         SCH_TEXTBOX( LAYER_NOTES, aLineWidth, aFillType, wxEmptyString, SCH_TABLECELL_T ),
@@ -34,6 +38,53 @@ SCH_TABLECELL::SCH_TABLECELL( int aLineWidth, FILL_T aFillType ) :
         m_rowSpan( 1 )
 {
 }
+
+void SCH_TABLECELL::Serialize( kiapi::schematic::types::SchematicTableCell& aCell ) const
+{
+    aCell.set_column_span( m_colSpan );
+    aCell.set_row_span( m_rowSpan );
+
+    SCH_TEXTBOX::Serialize( *aCell.mutable_text_box(), schIUScale );
+    kiapi::common::PackCustomProperties( aCell.mutable_custom_properties(), *this );
+}
+
+
+void SCH_TABLECELL::Serialize( google::protobuf::Any& aContainer ) const
+{
+    kiapi::schematic::types::SchematicTableCell cell;
+    Serialize( cell );
+    aContainer.PackFrom( cell );
+}
+
+
+bool SCH_TABLECELL::Deserialize( const kiapi::schematic::types::SchematicTableCell& aCell )
+{
+    if( !aCell.has_text_box() )
+        return false;
+
+    if( !SCH_TEXTBOX::Deserialize( aCell.text_box(), schIUScale ) )
+        return false;
+
+    SetColSpan( aCell.column_span() );
+    SetRowSpan( aCell.row_span() );
+
+    kiapi::common::UnpackCustomProperties( aCell.custom_properties(), *this );
+
+    return true;
+}
+
+
+bool SCH_TABLECELL::Deserialize( const google::protobuf::Any& aContainer )
+{
+    kiapi::schematic::types::SchematicTableCell cell;
+
+    if( !aContainer.UnpackTo( &cell ) )
+        return false;
+
+    return Deserialize( cell );
+}
+
+
 
 
 void SCH_TABLECELL::swapData( SCH_ITEM* aItem )
@@ -148,7 +199,7 @@ static bool parseCellAddress( const wxString& aAddr, int& aRow, int& aCol )
 
 
 wxString SCH_TABLECELL::GetShownText( const RENDER_SETTINGS* aSettings, const SCH_SHEET_PATH* aPath,
-                                      bool aAllowExtraText, int aDepth ) const
+                                      RESOLUTION_CONTEXT aContext, int aDepth ) const
 {
     // Local depth counter for ResolveTextVars iteration tracking (separate from cross-cell aDepth)
     int depth = 0;
@@ -260,7 +311,7 @@ wxString SCH_TABLECELL::GetShownText( const RENDER_SETTINGS* aSettings, const SC
                             return true;
                         }
 
-                        *token = targetCell->GetShownText( aSettings, aPath, aAllowExtraText, aDepth + 1 );
+                        *token = targetCell->GetShownText( aSettings, aPath, aContext, aDepth + 1 );
                         return true;
                     }
                     else
@@ -280,28 +331,30 @@ wxString SCH_TABLECELL::GetShownText( const RENDER_SETTINGS* aSettings, const SC
                 return false;
             };
 
-    wxString text = EDA_TEXT::GetShownText( aAllowExtraText, depth );
+    wxString text = EDA_TEXT::GetShownText( aContext, depth );
 
-    if( HasTextVars() )
+    if( HasTextVars() && aContext != RAW_VALUE )
+    {
         text = ResolveTextVars( text, &tableCellResolver, depth );
 
-    VECTOR2I size = GetEnd() - GetStart();
-    int      colWidth;
+        // Only do this at the top level (aDepth == 0) to avoid premature unescaping in nested CELL() calls
+        if( aDepth == 0 )
+            FinalizeTextVarExpansion( text, aContext );
+    }
 
-    if( GetTextAngle().IsVertical() )
-        colWidth = abs( size.y ) - ( GetMarginTop() + GetMarginBottom() );
-    else
-        colWidth = abs( size.x ) - ( GetMarginLeft() + GetMarginRight() );
-
-    GetDrawFont( aSettings )
-            ->LinebreakText( text, colWidth, GetTextSize(), GetEffectiveTextPenWidth(), IsBold(), IsItalic() );
-
-    // Convert escape markers back to literal ${} and @{} for final display
-    // Only do this at the top level (aDepth == 0) to avoid premature unescaping in nested CELL() calls
+    // Only linebreak when at top level
     if( aDepth == 0 )
     {
-        text.Replace( wxT( "<<<ESC_DOLLAR:" ), wxT( "${" ) );
-        text.Replace( wxT( "<<<ESC_AT:" ), wxT( "@{" ) );
+        VECTOR2I size = GetEnd() - GetStart();
+        int      colWidth;
+
+        if( GetTextAngle().IsVertical() )
+            colWidth = abs( size.y ) - ( GetMarginTop() + GetMarginBottom() );
+        else
+            colWidth = abs( size.x ) - ( GetMarginLeft() + GetMarginRight() );
+
+        GetDrawFont( aSettings )->LinebreakText( text, colWidth, GetTextSize(), GetEffectiveTextPenWidth(),
+                                                 IsBold(), IsItalic() );
     }
 
     return text;
@@ -448,26 +501,23 @@ static struct SCH_TABLECELL_DESC
 
         const wxString tableProps = _( "Table" );
 
-        propMgr.AddProperty( new PROPERTY<SCH_TABLECELL, int>( _HKI( "Column Width" ), &SCH_TABLECELL::SetColumnWidth,
-                                                               &SCH_TABLECELL::GetColumnWidth,
-                                                               PROPERTY_DISPLAY::PT_SIZE ),
-                             tableProps );
+        propMgr.AddProperty( new PROPERTY<SCH_TABLECELL, int>( _HKI( "Column Width" ),
+                    &SCH_TABLECELL::SetColumnWidth, &SCH_TABLECELL::GetColumnWidth, PROPERTY_DISPLAY::PT_SIZE ),
+                    tableProps );
 
-        propMgr.AddProperty( new PROPERTY<SCH_TABLECELL, int>( _HKI( "Row Height" ), &SCH_TABLECELL::SetRowHeight,
-                                                               &SCH_TABLECELL::GetRowHeight,
-                                                               PROPERTY_DISPLAY::PT_SIZE ),
-                             tableProps );
+        propMgr.AddProperty( new PROPERTY<SCH_TABLECELL, int>( _HKI( "Row Height" ),
+                    &SCH_TABLECELL::SetRowHeight, &SCH_TABLECELL::GetRowHeight, PROPERTY_DISPLAY::PT_SIZE ),
+                    tableProps );
 
         const wxString cellProps = _( "Cell Properties" );
 
-        propMgr.AddProperty( new PROPERTY<SCH_TABLECELL, bool, EDA_SHAPE>(
-                                     _HKI( "Background Fill" ), &EDA_SHAPE::SetFilled, &EDA_SHAPE::IsSolidFill ),
-                             cellProps );
+        propMgr.AddProperty( new PROPERTY<SCH_TABLECELL, bool, EDA_SHAPE>( _HKI( "Background Fill" ),
+                    &EDA_SHAPE::SetFilled, &EDA_SHAPE::IsSolidFill ),
+                    cellProps );
 
         propMgr.AddProperty( new PROPERTY<SCH_TABLECELL, COLOR4D, EDA_SHAPE>( _HKI( "Background Fill Color" ),
-                                                                              &EDA_SHAPE::SetFillColor,
-                                                                              &EDA_SHAPE::GetFillColor ),
-                             cellProps )
+                    &EDA_SHAPE::SetFillColor, &EDA_SHAPE::GetFillColor ),
+                    cellProps )
                 .SetIsHiddenFromRulesEditor();
     }
 } _SCH_TABLECELL_DESC;

@@ -66,11 +66,16 @@ public:
         // Positions measured from constraint_via_style.png bitmap
         // Format: { xStart, xEnd, yCenter }
         return {
-            { 155, 210, 22, wxS( "mm" ), LABEL_POSITION::RIGHT },                // [0] min_via_diameter
-            { 265, 320, 22, wxS( "mm" ), LABEL_POSITION::RIGHT, wxS( "–  " ) },  // [1] max_via_diameter
-            { 195, 250, 202, wxS( "mm" ), LABEL_POSITION::RIGHT },               // [2] min_via_hole
-            { 305, 360, 202, wxS( "mm" ), LABEL_POSITION::RIGHT, wxS( "–  " ) }, // [3] max_via_hole
-            { 420, 525, 122, _( "Via type:" ), LABEL_POSITION::LEFT },           // [4] via_type dropdown
+            { 155, 210, 22, wxS( "mm" ), LABEL_POSITION::RIGHT,
+              _( "Smallest allowed via diameter" ) }, // [0] min_via_diameter
+            { 265, 320, 22, wxS( "mm" ), LABEL_POSITION::RIGHT, _( "Largest allowed via diameter" ),
+              wxS( "–  " ) }, // [1] max_via_diameter
+            { 195, 250, 202, wxS( "mm" ), LABEL_POSITION::RIGHT,
+              _( "Smallest allowed via hole diameter" ) }, // [2] min_via_hole
+            { 305, 360, 202, wxS( "mm" ), LABEL_POSITION::RIGHT, _( "Largest allowed via hole diameter" ),
+              wxS( "–  " ) }, // [3] max_via_hole
+            { 420, 525, 122, _( "Via type:" ), LABEL_POSITION::LEFT,
+              _( "Restrict this rule to a single via type" ) }, // [4] via_type dropdown
         };
     }
 
@@ -108,6 +113,18 @@ public:
         if( !hasDiameter && !hasHoleSize )
             result.AddError( _( "At least one constraint must be specified" ) );
 
+        if( m_optViaDiameter > 0 && ( m_optViaDiameter < m_minViaDiameter || m_optViaDiameter > m_maxViaDiameter ) )
+        {
+            result.AddError( wxString::Format( _( "The rule's optimum via diameter (%smm) is outside the new limits" ),
+                                               formatDouble( m_optViaDiameter ) ) );
+        }
+
+        if( m_optViaHoleSize > 0 && ( m_optViaHoleSize < m_minViaHoleSize || m_optViaHoleSize > m_maxViaHoleSize ) )
+        {
+            result.AddError( wxString::Format( _( "The rule's optimum via hole size (%smm) is outside the new limits" ),
+                                               formatDouble( m_optViaHoleSize ) ) );
+        }
+
         return result;
     }
 
@@ -122,16 +139,35 @@ public:
 
         if( m_minViaDiameter > 0 && m_maxViaDiameter > 0 )
         {
-            clauses.push_back( wxString::Format( wxS( "(constraint via_diameter (min %s) (max %s))" ),
-                                                 formatDimension( m_minViaDiameter ),
-                                                 formatDimension( m_maxViaDiameter ) ) );
+            if( m_optViaDiameter > 0 )
+            {
+                clauses.push_back( wxString::Format( wxS( "(constraint via_diameter (min %s) (opt %s) (max %s))" ),
+                                                     formatDimension( m_minViaDiameter ),
+                                                     formatDimension( m_optViaDiameter ),
+                                                     formatDimension( m_maxViaDiameter ) ) );
+            }
+            else
+            {
+                clauses.push_back( wxString::Format( wxS( "(constraint via_diameter (min %s) (max %s))" ),
+                                                     formatDimension( m_minViaDiameter ),
+                                                     formatDimension( m_maxViaDiameter ) ) );
+            }
         }
 
         if( m_minViaHoleSize > 0 && m_maxViaHoleSize > 0 )
         {
-            clauses.push_back( wxString::Format( wxS( "(constraint hole_size (min %s) (max %s))" ),
-                                                 formatDimension( m_minViaHoleSize ),
-                                                 formatDimension( m_maxViaHoleSize ) ) );
+            if( m_optViaHoleSize > 0 )
+            {
+                clauses.push_back( wxString::Format(
+                        wxS( "(constraint hole_size (min %s) (opt %s) (max %s))" ), formatDimension( m_minViaHoleSize ),
+                        formatDimension( m_optViaHoleSize ), formatDimension( m_maxViaHoleSize ) ) );
+            }
+            else
+            {
+                clauses.push_back( wxString::Format( wxS( "(constraint hole_size (min %s) (max %s))" ),
+                                                     formatDimension( m_minViaHoleSize ),
+                                                     formatDimension( m_maxViaHoleSize ) ) );
+            }
         }
 
         return clauses;
@@ -170,6 +206,16 @@ public:
 
     void SetMaxViaHoleSize( double aMaxViaHoleSize ) { m_maxViaHoleSize = aMaxViaHoleSize; }
 
+    // The panel has no fields for the optimums, so a loaded rule's values are carried
+    // through an edit unchanged.
+    double GetOptViaDiameter() const { return m_optViaDiameter; }
+
+    void SetOptViaDiameter( double aOptViaDiameter ) { m_optViaDiameter = aOptViaDiameter; }
+
+    double GetOptViaHoleSize() const { return m_optViaHoleSize; }
+
+    void SetOptViaHoleSize( double aOptViaHoleSize ) { m_optViaHoleSize = aOptViaHoleSize; }
+
     VIA_STYLE_TYPE GetViaType() const { return m_viaType; }
 
     void SetViaType( VIA_STYLE_TYPE aType ) { m_viaType = aType; }
@@ -197,6 +243,8 @@ public:
         m_maxViaDiameter = source.m_maxViaDiameter;
         m_minViaHoleSize = source.m_minViaHoleSize;
         m_maxViaHoleSize = source.m_maxViaHoleSize;
+        m_optViaDiameter = source.m_optViaDiameter;
+        m_optViaHoleSize = source.m_optViaHoleSize;
 
         m_viaType = source.m_viaType;
     }
@@ -206,6 +254,8 @@ private:
     double         m_maxViaDiameter{ 0 };
     double         m_minViaHoleSize{ 0 };
     double         m_maxViaHoleSize{ 0 };
+    double         m_optViaDiameter{ 0 };
+    double         m_optViaHoleSize{ 0 };
     VIA_STYLE_TYPE m_viaType{ VIA_STYLE_TYPE::ANY };
 };
 

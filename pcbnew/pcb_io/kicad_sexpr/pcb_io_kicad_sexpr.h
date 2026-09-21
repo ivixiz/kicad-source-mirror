@@ -47,7 +47,7 @@ class PCB_POINT;
 class PCB_REFERENCE_IMAGE;
 class PCB_SHAPE;
 class PCB_TARGET;
-class PCB_GRIDITEM;
+class PCB_GRID_ITEM;
 class PAD;
 class PADSTACK;
 class PCB_GROUP;
@@ -58,6 +58,8 @@ class ZONE;
 class PCB_TEXT;
 class PCB_TEXTBOX;
 class PCB_TABLE;
+class PCB_DRILL_CHART;
+class PCB_DRILL_MAP;
 class PCB_BARCODE;
 class EDA_TEXT;
 class SHAPE_LINE_CHAIN;
@@ -210,7 +212,14 @@ class PCB_IO_KICAD_SEXPR;   // forward decl
 //#define SEXPR_BOARD_FILE_VERSION    20260616  // Footprint affine transform: lib-frame storage and (transform) block
 //#define SEXPR_BOARD_FILE_VERSION    20260623  // Migrate reference image scale for PNG pixel-density fix
 //#define SEXPR_BOARD_FILE_VERSION    20260624  // Geometric constraints (#2329)
-#define SEXPR_BOARD_FILE_VERSION      20260728  // Grid items
+//#define SEXPR_BOARD_FILE_VERSION    20260728  // Grid items
+//#define SEXPR_BOARD_FILE_VERSION    20260816  // Via stitching and guarding
+//#define SEXPR_BOARD_FILE_VERSION    20260818  // Line ending shapes
+//#define SEXPR_BOARD_FILE_VERSION    20260826  // Bold is a stroke-width multiplier; thickness stores the base width
+//#define SEXPR_BOARD_FILE_VERSION    20260828  // Exclude-from-simulation footprint attribute
+//#define SEXPR_BOARD_FILE_VERSION    20260830  // Microvia stack generator (via_stack)
+//#define SEXPR_BOARD_FILE_VERSION    20260831  // Custom user properties
+#define SEXPR_BOARD_FILE_VERSION      20260901  // Drill charts and maps
 
 #define BOARD_FILE_HOST_VERSION       20200825  ///< Earlier files than this include the host tag
 #define LEGACY_ARC_FORMATTING         20210925  ///< These were the last to use old arc formatting
@@ -361,7 +370,7 @@ public:
 
     bool CanReadBoard( const wxString& aFileName ) const override;
 
-    void SaveBoard( const wxString& aFileName, BOARD* aBoard,
+    void SaveBoard( const wxString& aFileName, BOARD& aBoard,
                     const std::map<std::string, UTF8>* aProperties = nullptr ) override;
 
     /** Serialize a BOARD to an OUTPUTFORMATTER without file I/O or Prettify.
@@ -371,16 +380,11 @@ public:
     void FormatBoardToFormatter( OUTPUTFORMATTER* aOut, BOARD* aBoard,
                                  const std::map<std::string, UTF8>* aProperties = nullptr );
 
-    BOARD* LoadBoard( const wxString& aFileName, BOARD* aAppendToMe,
-                      const std::map<std::string, UTF8>* aProperties = nullptr,
-                      PROJECT* aProject = nullptr ) override;
+    void DoLoad( LINE_READER& aReader, BOARD& aBoard, bool aIsNewLoad, const std::map<std::string, UTF8>* aProperties,
+                 PROGRESS_REPORTER* aProgressReporter, unsigned aLineCount );
 
-    BOARD* DoLoad( LINE_READER& aReader, BOARD* aAppendToMe, const std::map<std::string,
-                   UTF8>* aProperties, PROGRESS_REPORTER* aProgressReporter, unsigned aLineCount );
-
-    void FootprintEnumerate( wxArrayString& aFootprintNames, const wxString& aLibraryPath,
-                             bool aBestEfforts, const std::map<std::string,
-                             UTF8>* aProperties = nullptr ) override;
+    void FootprintEnumerate( wxArrayString& aFootprintNames, const wxString& aLibraryPath, bool aBestEfforts,
+                             const std::map<std::string, UTF8>* aProperties = nullptr ) override;
 
     const FOOTPRINT* GetEnumeratedFootprint( const wxString& aLibraryPath,
                                              const wxString& aFootprintName,
@@ -392,12 +396,12 @@ public:
     bool FootprintExists( const wxString& aLibraryPath, const wxString& aFootprintName,
                           const std::map<std::string, UTF8>* aProperties = nullptr ) override;
 
-    FOOTPRINT* ImportFootprint( const wxString& aFootprintPath, wxString& aFootprintNameOut,
-                                const std::map<std::string, UTF8>* aProperties = nullptr ) override;
+    std::unique_ptr<FOOTPRINT> ImportFootprint( const wxString& aFootprintPath, wxString& aFootprintNameOut,
+                                                const std::map<std::string, UTF8>* aProperties = nullptr ) override;
 
-    FOOTPRINT* FootprintLoad( const wxString& aLibraryPath, const wxString& aFootprintName,
-                              bool  aKeepUUID = false,
-                              const std::map<std::string, UTF8>* aProperties = nullptr ) override;
+    std::unique_ptr<FOOTPRINT> FootprintLoad( const wxString& aLibraryPath, const wxString& aFootprintName,
+                                              bool                               aKeepUUID = false,
+                                              const std::map<std::string, UTF8>* aProperties = nullptr ) override;
 
     void FootprintSave( const wxString& aLibraryPath, const FOOTPRINT* aFootprint,
                         const std::map<std::string, UTF8>* aProperties = nullptr ) override;
@@ -444,16 +448,20 @@ public:
     BOARD_ITEM* Parse( const wxString& aClipboardSourceInput );
 
 protected:
+    void loadBoard( const wxString& aFileName, BOARD& aBoard, bool aIsNewLoad,
+                    const std::map<std::string, UTF8>* aProperties = nullptr, PROJECT* aProject = nullptr ) override;
+
     void validateCache( const wxString& aLibraryPath, bool checkModified = true );
 
     const FOOTPRINT* getFootprint( const wxString& aLibraryPath, const wxString& aFootprintName,
-                                   const std::map<std::string, UTF8>* aProperties,
-                                   bool checkModified );
+                                   const std::map<std::string, UTF8>* aProperties, bool checkModified );
 
     void init( const std::map<std::string, UTF8>* aProperties );
 
     /// formats the board setup information
     void formatSetup( const BOARD* aBoard ) const;
+
+    void formatDrillSymbolProfile( const BOARD_DESIGN_SETTINGS& aSettings ) const;
 
     /// formats the General section of the file
     void formatGeneral( const BOARD* aBoard ) const;
@@ -488,7 +496,7 @@ private:
     void format( const PCB_TARGET* aTarget ) const;
     void format( const PCB_POINT* aPoint ) const;
 
-    void format( const PCB_GRIDITEM* aGridItem ) const;
+    void format( const PCB_GRID_ITEM* aGridItem ) const;
 
     void format( const FOOTPRINT* aFootprint ) const;
 
@@ -500,6 +508,13 @@ private:
     void format( const PCB_TEXTBOX* aTextBox ) const;
 
     void format( const PCB_TABLE* aTable ) const;
+    void format( const PCB_DRILL_CHART* aChart ) const;
+    void format( const PCB_DRILL_MAP* aMap ) const;
+
+    /**
+     * Geometry and cells with no identity, so an enclosing form owns uuid/layer/locked.
+     */
+    void formatTableData( const PCB_TABLE* aTable ) const;
 
     void format( const PCB_GENERATOR* aGenerator ) const;
 
@@ -507,11 +522,9 @@ private:
 
     void format( const ZONE* aZone ) const;
 
-    void format( const ZONE_LAYER_PROPERTIES& aZoneLayerProperties, int aNestLevel,
-                 PCB_LAYER_ID aLayer ) const;
+    void format( const ZONE_LAYER_PROPERTIES& aZoneLayerProperties, int aNestLevel, PCB_LAYER_ID aLayer ) const;
 
-    void formatPolyPts( const SHAPE_LINE_CHAIN& outline,
-                        const FOOTPRINT* aParentFP = nullptr ) const;
+    void formatPolyPts( const SHAPE_LINE_CHAIN& outline, const FOOTPRINT* aParentFP = nullptr ) const;
 
     void formatRenderCache( const EDA_TEXT* aText ) const;
 

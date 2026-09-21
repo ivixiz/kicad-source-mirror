@@ -21,6 +21,9 @@
 #ifndef SCH_SHEEET_H
 #define SCH_SHEEET_H
 
+#include <map>
+#include <memory>
+
 #include <sch_field.h>
 
 class KIID_PATH;
@@ -31,6 +34,7 @@ class SCH_SHEET_PIN;
 class SCH_SHEET_PATH;
 class EDA_DRAW_FRAME;
 class SCH_NO_CONNECT;
+class SCH_SHEET_FIELD_PROPERTY;
 
 
 #define MIN_SHEET_WIDTH  500    // Units are mils.
@@ -97,12 +101,14 @@ public:
     /**
      * Return a field in this sheet.
      *
-     * @param aFieldName is the canonical name of the field.
+     * @param aFieldName is the untranslated name of the field.
      *
      * @return Both non-const and const versions return nullptr if the field is not found.
      */
     SCH_FIELD* GetField( const wxString& aFieldName );
     const SCH_FIELD* GetField( const wxString& aFieldName ) const;
+
+    std::vector<PROPERTY_BASE*> GetDynamicProperties() const override;
 
     /**
      * Return the next ordinal for a user field for this sheet
@@ -129,9 +135,9 @@ public:
     wxString GetFieldText( const wxString& aFieldName, const SCH_SHEET_PATH* aPath = nullptr,
                            const wxString& aVariantName = wxEmptyString ) const;
 
-    wxString GetShownName( bool aAllowExtraText ) const
+    wxString GetShownName( RESOLUTION_CONTEXT aContext ) const
     {
-        return GetField( FIELD_T::SHEET_NAME )->GetShownText( aAllowExtraText );
+        return GetField( FIELD_T::SHEET_NAME )->GetShownText( aContext );
     }
     wxString GetName() const { return GetField( FIELD_T::SHEET_NAME )->GetText(); }
     void SetName( const wxString& aName ) { GetField( FIELD_T::SHEET_NAME )->SetText( aName ); }
@@ -178,6 +184,14 @@ public:
      * @param aScreen The new screen to associate with the sheet.
      */
     void SetScreen( SCH_SCREEN* aScreen );
+
+    /**
+     * Take the identity of the screen this sheet owns.
+     *
+     * A sheet and its screen are one object to the rest of the schematic, so loaders and
+     * importers that build the pair together have to give them a single UUID.
+     */
+    void SyncUuidToScreen();
 
     /**
      * Return the number of times the associated screen for the sheet is being used.
@@ -504,6 +518,12 @@ public:
      */
     const std::vector<SCH_SHEET_INSTANCE>& GetInstances() const { return m_instances; }
 
+    /// Return this sheet's placement record under @a aParentPath, or nullptr if it has none.
+    const SCH_SHEET_INSTANCE* GetInstance( const KIID_PATH& aParentPath ) const
+    {
+        return getInstance( aParentPath );
+    }
+
     /**
      * Check to see if this sheet has a root sheet instance.
      *
@@ -530,6 +550,10 @@ public:
     void AddInstance( const SCH_SHEET_INSTANCE& aInstance );
 
     void DeleteVariant( const KIID_PATH& aPath, const wxString& aVariantName );
+
+    // Remove a variant's override of one field
+    void ClearVariantField( const KIID_PATH& aPath, const wxString& aVariantName,
+                            const wxString& aFieldName );
 
     void RenameVariant( const KIID_PATH& aPath, const wxString& aOldName, const wxString& aNewName );
 
@@ -562,6 +586,10 @@ public:
      */
     bool HasPageNumberChanges( const SCH_SHEET& aOther ) const;
 
+    bool HasHierarchyChanges( const SCH_SHEET& aOther ) const;
+
+    bool HasPinIdentityChanges( const SCH_SHEET& aOther ) const;
+
     /**
      * Compare page numbers of schematic sheets.
      *
@@ -580,6 +608,7 @@ public:
 protected:
     friend SCH_SHEET_PATH;
     friend SCH_IO_KICAD_SEXPR_PARSER;
+    friend SCHEMATIC;          // Only to swap a staged screen in, see SCHEMATIC::AdoptContent().
 
     void setInstances( const std::vector<SCH_SHEET_INSTANCE>& aInstances )
     {
@@ -625,6 +654,9 @@ protected:
 
     bool getInstance( SCH_SHEET_INSTANCE& aInstance, const KIID_PATH& aSheetPath,
                       bool aTestFromEnd = false ) const;
+
+    void setVariantAttribute( bool aEnable, const SCH_SHEET_PATH* aInstance, const wxString& aVariantName,
+                              bool SCH_SHEET::*aBase, bool SCH_SHEET_VARIANT::*aOverride );
 
     SCH_SHEET_INSTANCE* getInstance( const KIID_PATH& aPath );
     const SCH_SHEET_INSTANCE* getInstance( const KIID_PATH& aPath ) const;
@@ -676,6 +708,8 @@ private:
     KIGFX::COLOR4D              m_backgroundColor;
 
     std::vector<SCH_SHEET_INSTANCE> m_instances;
+
+    mutable std::map<wxString, std::unique_ptr<SCH_SHEET_FIELD_PROPERTY>> m_dynamicPropertyCache;
 };
 
 

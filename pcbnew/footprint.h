@@ -22,6 +22,8 @@
 #define FOOTPRINT_H
 
 #include <deque>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <unordered_set>
@@ -31,6 +33,7 @@
 #include <board_item_container.h>
 #include <board_item.h>
 #include <embedded_files.h>
+#include <jumper_group.h>
 #include <layer_ids.h> // ALL_LAYERS definition.
 #include <lset.h>
 #include <lib_id.h>
@@ -57,6 +60,7 @@ class MSG_PANEL_ITEM;
 class SHAPE;
 class REPORTER;
 class COMPONENT_CLASS_CACHE_PROXY;
+class PCB_FOOTPRINT_FIELD_PROPERTY;
 class PCB_POINT;
 
 namespace KIGFX {
@@ -67,11 +71,10 @@ namespace KIFONT {
 class OUTLINE_FONT;
 }
 
-enum INCLUDE_NPTH_T
+namespace kiapi::board::types
 {
-    DO_NOT_INCLUDE_NPTH = false,
-    INCLUDE_NPTH = true
-};
+class Footprint;
+}
 
 /**
  * The set of attributes allowed within a FOOTPRINT, using FOOTPRINT::SetAttributes()
@@ -86,8 +89,18 @@ enum FOOTPRINT_ATTR_T
     FP_EXCLUDE_FROM_BOM         = 0x0008,
     FP_BOARD_ONLY               = 0x0010,   // Footprint has no corresponding symbol
     FP_JUST_ADDED               = 0x0020,   // Footprint just added by netlist update
-    FP_DNP                      = 0x0040
+    FP_DNP                      = 0x0040,
+    FP_EXCLUDE_FROM_SIM         = 0x0080
 };
+
+
+enum class FOOTPRINT_TYPE
+{
+    UNSPECIFIED,
+    THROUGH_HOLE,
+    SMD
+};
+
 
 enum class EXTRUSION_MATERIAL
 {
@@ -218,6 +231,7 @@ public:
             m_name( aName ),
             m_dnp( false ),
             m_excludedFromBOM( false ),
+            m_excludedFromSim( false ),
             m_excludedFromPosFiles( false )
     {
     }
@@ -230,6 +244,9 @@ public:
 
     bool GetExcludedFromBOM() const { return m_excludedFromBOM; }
     void SetExcludedFromBOM( bool aExclude ) { m_excludedFromBOM = aExclude; }
+
+    bool GetExcludedFromSim() const { return m_excludedFromSim; }
+    void SetExcludedFromSim( bool aExclude ) { m_excludedFromSim = aExclude; }
 
     bool GetExcludedFromPosFiles() const { return m_excludedFromPosFiles; }
     void SetExcludedFromPosFiles( bool aExclude ) { m_excludedFromPosFiles = aExclude; }
@@ -259,6 +276,14 @@ public:
         m_fields[aFieldName] = aValue;
     }
 
+    /**
+     * Remove a field value override for this variant.
+     */
+    void RemoveFieldValue( const wxString& aFieldName )
+    {
+        m_fields.erase( aFieldName );
+    }
+
     bool HasFieldValue( const wxString& aFieldName ) const
     {
         return m_fields.find( aFieldName ) != m_fields.end();
@@ -271,6 +296,7 @@ public:
         return m_name == aOther.m_name
                 && m_dnp == aOther.m_dnp
                 && m_excludedFromBOM == aOther.m_excludedFromBOM
+                && m_excludedFromSim == aOther.m_excludedFromSim
                 && m_excludedFromPosFiles == aOther.m_excludedFromPosFiles
                 && m_fields == aOther.m_fields;
     }
@@ -279,6 +305,7 @@ private:
     wxString                     m_name;
     bool                         m_dnp;
     bool                         m_excludedFromBOM;
+    bool                         m_excludedFromSim;
     bool                         m_excludedFromPosFiles;
     std::map<wxString, wxString> m_fields;  ///< Field value overrides for this variant
 };
@@ -303,6 +330,9 @@ public:
 
     void Serialize( google::protobuf::Any &aContainer ) const override;
     bool Deserialize( const google::protobuf::Any &aContainer ) override;
+
+    void SerializeDefinition( kiapi::board::types::Footprint* aOutput ) const;
+    bool DeserializeDefinition( const kiapi::board::types::Footprint& aInput );
 
     static inline bool ClassOf( const EDA_ITEM* aItem )
     {
@@ -416,8 +446,8 @@ public:
 
     void SetLayer( PCB_LAYER_ID aLayer ) override;
 
-    // to make property magic work
-    PCB_LAYER_ID GetLayer() const override { return BOARD_ITEM::GetLayer(); }
+    // A footprint's m_layer is set to F_Cu or B_Cu to encode which side of the board it's on.
+    PCB_LAYER_ID GetLayer() const override { return m_layer; }
 
     const TRANSFORM_TRS& GetTransform() const { return m_transform; }
 
@@ -467,6 +497,17 @@ public:
     const KIID_PATH& GetPath() const { return m_path; }
     void SetPath( const KIID_PATH& aPath ) { m_path = aPath; }
 
+    /**
+     * Test whether this footprint's symbol lives on \a aSheetPath or any sheet below it.
+     *
+     * @param aSheetPath is a schematic sheet path as returned by SCH_SHEET_PATH::Path(), which
+     *                   leads with the root sheet UUID.  Board paths never record the root sheet,
+     *                   so it is stripped before comparing.
+     * @return true if the footprint's path is at or below \a aSheetPath, false if \a aSheetPath
+     *         is empty.
+     */
+    bool IsWithinSchematicSheet( const KIID_PATH& aSheetPath ) const;
+
     wxString GetSheetname() const { return m_sheetname; }
     void SetSheetname( const wxString& aSheetname ) { m_sheetname = aSheetname; }
 
@@ -509,6 +550,9 @@ public:
 
     int GetAttributes() const { return m_attributes; }
     void SetAttributes( int aAttributes ) { m_attributes = aAttributes; }
+
+    FOOTPRINT_TYPE GetFootprintType() const;
+    void           SetFootprintType( FOOTPRINT_TYPE aFootprintType );
 
     bool AllowMissingCourtyard() const { return m_allowMissingCourtyard; }
     void SetAllowMissingCourtyard( bool aAllow ) { m_allowMissingCourtyard = aAllow; }
@@ -696,7 +740,7 @@ public:
      * Footprints with plated through-hole pads should usually be marked through hole even if they
      * also have SMD because they might not be auto-placed.  Exceptions to this might be shielded
      * connectors.  Otherwise, footprints with SMD pads should be marked SMD.
-     * Footprints with no connecting pads should be marked "Other"
+     * Footprints with no connecting pads should be marked "Unspecified"
      *
      * @param aErrorHandler callback to handle the error messages generated
      */
@@ -816,6 +860,7 @@ public:
      * @param aDepth a counter to limit recursion and circular references.
      */
     bool ResolveTextVar( wxString* token, int aDepth = 0 ) const;
+    bool ResolveTextVar( wxString* token, const wxString& aVariantName, int aDepth = 0 ) const;
 
     /// @copydoc EDA_ITEM::GetMsgPanelInfo
     void GetMsgPanelInfo( EDA_DRAW_FRAME* aFrame, std::vector<MSG_PANEL_ITEM>& aList ) override;
@@ -872,6 +917,8 @@ public:
      * Bump the current reference by \a aDelta.
      */
     void IncrementReference( int aDelta );
+
+    bool IsAnnotated() const { return !GetReference().IsEmpty() && GetReference().Last() != '?'; }
 
     /**
      * @return the value text.
@@ -932,6 +979,21 @@ public:
     std::deque<PCB_FIELD*>& GetFields() { return m_fields; }
 
     /**
+     * Replace the fields with \a aFields, reusing the existing mandatory field objects.
+     *
+     * Destroying and recreating a mandatory field invalidates every pointer to it, including
+     * the board's item-by-id cache entry, and leaves the footprint without a reference or a
+     * value for as long as the rebuild takes.  The const field accessors return nullptr in
+     * that state, so anything reading the footprint meanwhile dereferences null.
+     *
+     * @param aFields is the new field set, mandatory fields included.
+     * @param aAdded receives the fields created here, which the footprint now owns.
+     * @param aDetached receives the fields dropped here, which the caller must dispose of.
+     */
+    void UpdateFields( const std::vector<PCB_FIELD>& aFields, std::vector<PCB_FIELD*>& aAdded,
+                       std::vector<PCB_FIELD*>& aDetached );
+
+    /**
      * Return the next ordinal for a user field for this footprint
      */
     int GetNextFieldOrdinal() const;
@@ -980,6 +1042,15 @@ public:
             m_attributes |= FP_EXCLUDE_FROM_BOM;
         else
             m_attributes &= ~FP_EXCLUDE_FROM_BOM;
+    }
+
+    bool IsExcludedFromSim() const { return m_attributes & FP_EXCLUDE_FROM_SIM; }
+    void SetExcludedFromSim( bool aExclude = true )
+    {
+        if( aExclude )
+            m_attributes |= FP_EXCLUDE_FROM_SIM;
+        else
+            m_attributes &= ~FP_EXCLUDE_FROM_SIM;
     }
 
     bool IsDNP() const { return m_attributes & FP_DNP; }
@@ -1069,6 +1140,16 @@ public:
     bool GetExcludedFromBOMForVariant( const wxString& aVariantName ) const;
 
     /**
+     * Get the exclude-from-simulation status for a specific variant.
+     *
+     * If the variant doesn't exist, returns the default exclude-from-simulation status.
+     *
+     * @param aVariantName The variant name (empty for default).
+     * @return true if excluded from simulation for the specified variant.
+     */
+    bool GetExcludedFromSimForVariant( const wxString& aVariantName ) const;
+
+    /**
      * Get the exclude-from-position-files status for a specific variant.
      *
      * If the variant doesn't exist, returns the default exclude-from-position-files status.
@@ -1083,6 +1164,9 @@ public:
      *
      * If the variant doesn't exist or doesn't override the field, returns the default field value.
      *
+     * NB: variant values do NOT resolve text variable references.  Any such refereneces are considered
+     * to be in schematic scope and are resolved before the footprint gets them.
+     *
      * @param aVariantName The variant name (empty for default).
      * @param aFieldName The field name.
      * @return The field value for the specified variant.
@@ -1091,6 +1175,8 @@ public:
 
     void SetFileFormatVersionAtLoad( int aVersion ) { m_fileFormatVersionAtLoad = aVersion; }
     int GetFileFormatVersionAtLoad() const { return m_fileFormatVersionAtLoad; }
+
+    std::vector<PROPERTY_BASE*> GetDynamicProperties() const override;
 
     /**
      * Return a #PAD with a matching number.
@@ -1117,31 +1203,17 @@ public:
     std::vector<const PAD*> GetPads( const wxString& aPadNumber, const PAD* aIgnore = nullptr ) const;
 
     /**
-     * Return the number of pads.
-     *
-     * @param aIncludeNPTH includes non-plated through holes when true.  Does not include
-     *                     non-plated through holes when false.
-     * @return the number of pads according to \a aIncludeNPTH.
+     * @return the number of pads.
      */
-    unsigned GetPadCount( INCLUDE_NPTH_T aIncludeNPTH = INCLUDE_NPTH_T(INCLUDE_NPTH) ) const;
+    unsigned GetPadCount() const;
 
     /**
-     * Return the number of unique non-blank pads.
-     *
      * A complex pad can be built with many pads having the same pad name to create a complex
      * shape or fragmented solder paste areas.
      *
-     * @param aIncludeNPTH includes non-plated through holes when true.  Does not include
-     *                     non-plated through holes when false.
-     * @return the number of unique pads according to \a aIncludeNPTH.
+     * @return the names of the unique, non-blank pads.
      */
-    unsigned GetUniquePadCount( INCLUDE_NPTH_T aIncludeNPTH = INCLUDE_NPTH_T(INCLUDE_NPTH) ) const;
-
-    /**
-     * Return the names of the unique, non-blank pads.
-     */
-    std::set<wxString>
-    GetUniquePadNumbers( INCLUDE_NPTH_T aIncludeNPTH = INCLUDE_NPTH_T(INCLUDE_NPTH) ) const;
+    std::set<wxString> GetUniquePadNumbers() const;
 
     /**
      * Return the number of unique pads whose pad number represents an electrical pin.
@@ -1154,11 +1226,7 @@ public:
     unsigned GetNumberedPadCount() const;
 
     /**
-     * Return the next available pad number in the footprint.
-     *
-     * @param aFillSequenceGaps true if the numbering should "fill in" gaps in the sequence,
-     *                          else return the highest value + 1
-     * @return the next available pad number
+     * @return the next available pad number in the footprint.
      */
     wxString GetNextPadNumber( const wxString& aLastPadName ) const;
 
@@ -1169,11 +1237,8 @@ public:
      * Each jumper pad group is a set of pad numbers that should be treated as internally connected.
      * @return The list of jumper pad groups in this footprint
      */
-    std::vector<std::set<wxString>>& JumperPadGroups() { return m_jumperPadGroups; }
-    const std::vector<std::set<wxString>>& JumperPadGroups() const { return m_jumperPadGroups; }
-
-    /// Retrieves the jumper group containing the specified pad number, if one exists
-    std::optional<const std::set<wxString>> GetJumperPadGroup( const wxString& aPadNumber ) const;
+    JUMPER_GROUP_SET&       JumperPadGroups() { return m_jumperPadGroups; }
+    const JUMPER_GROUP_SET& JumperPadGroups() const { return m_jumperPadGroups; }
 
     /**
      * Position Reference and Value fields at the top and bottom of footprint's bounding box.
@@ -1182,7 +1247,7 @@ public:
 
     /**
      * Get the type of footprint
-     * @return "SMD"/"Through hole"/"Other" based on attributes
+     * @return "SMD"/"Through hole"/"Unspecified" based on attributes
      */
     wxString GetTypeName() const;
 
@@ -1448,6 +1513,8 @@ private:
     mutable std::mutex                                     m_geometry_cache_mutex;
     mutable std::unique_ptr<FOOTPRINT_GEOMETRY_CACHE_DATA> m_geometry_cache;
 
+    mutable std::map<wxString, std::unique_ptr<PCB_FOOTPRINT_FIELD_PROPERTY>> m_dynamicPropertyCache;
+
     // A list of pad groups, each of which is allowed to short nets within their group.
     // A pad group is a comma-separated list of pad numbers.
     std::vector<wxString>  m_netTiePadGroups;
@@ -1457,7 +1524,7 @@ private:
 
     /// A list of jumper pad groups, each of which is a set of pad numbers that should be jumpered
     /// together (treated as internally connected for the purposes of connectivity)
-    std::vector<std::set<wxString>> m_jumperPadGroups;
+    JUMPER_GROUP_SET m_jumperPadGroups;
 
     /// Flag that this footprint should automatically treat sets of two or more pads with the same
     /// number as jumpered pin groups

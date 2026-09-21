@@ -365,7 +365,7 @@ SCH_SHEET* SCH_IO_EAGLE::LoadSchematicFile( const wxString& aFileName, SCHEMATIC
         m_progressReporter->Report( wxString::Format( _( "Loading %s..." ), aFileName ) );
 
         if( !m_progressReporter->KeepRefreshing() )
-            THROW_IO_ERROR( _( "Open canceled by user." ) );
+            THROW_IO_CANCELLED();
     }
 
     // Load the document
@@ -569,7 +569,7 @@ void SCH_IO_EAGLE::ensureLoadedLibrary( const wxString& aLibraryPath )
         m_progressReporter->Report( wxString::Format( _( "Loading %s..." ), aLibraryPath ) );
 
         if( !m_progressReporter->KeepRefreshing() )
-            THROW_IO_ERROR( ( "Open canceled by user." ) );
+            THROW_IO_CANCELLED();
     }
 
     // Load the document
@@ -600,9 +600,7 @@ wxXmlDocument SCH_IO_EAGLE::loadXmlDocument( const wxString& aFileName )
 
     // Pre-v6 schematics are a binary stream identified by a two-byte magic. Decode
     // them into an XML-compatible DOM and adopt that tree, mirroring PCB_IO_EAGLE.
-    // IsBinaryEagle consumes the two-byte magic, so rewind before reading on.
     bool isBinary = EAGLE_BIN_PARSER::IsBinaryEagle( stream );
-    stream.SeekI( 0 );
 
     if( isBinary )
     {
@@ -2149,7 +2147,7 @@ void SCH_IO_EAGLE::loadInstance( const std::unique_ptr<EINSTANCE>& aInstance,
             symbolVariant.m_DNP = true;
 
         if( variant->value )
-            symbolVariant.m_Fields[GetCanonicalFieldName( FIELD_T::VALUE )] = *variant->value;
+            symbolVariant.m_Fields[GetDefaultFieldName( FIELD_T::VALUE, UNTRANSLATED )] = *variant->value;
 
         if( variant->technology.has_value() )
         {
@@ -2418,22 +2416,39 @@ EAGLE_LIBRARY* SCH_IO_EAGLE::loadLibrary( const ELIBRARY* aLibrary, EAGLE_LIBRAR
                     std::map<std::string, UTF8> properties;
                     properties.emplace( SCH_IO_KICAD_SEXPR::PropBuffering, wxEmptyString );
 
-                    LIB_SYMBOL* parentSymbol = new LIB_SYMBOL( *libSymbol );
-                    m_pi->SaveSymbol( getLibFileName().GetFullPath(), parentSymbol, &properties );
 
-                    for( std::unique_ptr<LIB_SYMBOL>& symbol : derivedSymbols )
+                    std::unique_ptr<LIB_SYMBOL> parentSymbol = std::make_unique<LIB_SYMBOL>( *libSymbol );
+
+                    m_pi->SaveSymbol( getLibFileName().GetFullPath(), std::move( parentSymbol ),
+                                      &properties );
+
+                    // The plugin cache owns the parent symbol after the save, we cannot use it
+                    // safely after handing it to the plugin.
+                    // Borrow the parent symbol from the plugin cache.
+                    LIB_SYMBOL* parent = m_pi->LoadSymbol( getLibFileName().GetFullPath(), libSymbol->GetName() );
+
+                    if( !parent )
                     {
-                        if( m_pi->LoadSymbol( getLibFileName().GetFullPath(), symbol->GetName() ) )
+                        Report( wxString::Format( _( "Could not reload saved symbol '%s'" ),
+                                                  UnescapeString( libSymbol->GetName() ) ),
+                                RPT_SEVERITY_ERROR );
+                    }
+                    else
+                    {
+                        for( std::unique_ptr<LIB_SYMBOL>& symbol : derivedSymbols )
                         {
-                            wxString tmp = aEagleLibrary->name + wxT( "_" ) + symbol->GetName();
-                            tmp = EscapeString( tmp, CTX_LIBID );
-                            symbol->SetName( tmp );
+                            if( m_pi->LoadSymbol( getLibFileName().GetFullPath(), symbol->GetName() ) )
+                            {
+                                wxString tmp = aEagleLibrary->name + wxT( "_" ) + symbol->GetName();
+                                tmp = EscapeString( tmp, CTX_LIBID );
+                                symbol->SetName( tmp );
+                            }
+
+                            std::unique_ptr<LIB_SYMBOL> derivedSymbol = std::make_unique<LIB_SYMBOL>( *symbol );
+
+                            derivedSymbol->SetParent( parent );
+                            m_pi->SaveSymbol( getLibFileName().GetFullPath(), std::move( derivedSymbol ), &properties );
                         }
-
-                        LIB_SYMBOL* derivedSymbol = new LIB_SYMBOL( *symbol );
-
-                        derivedSymbol->SetParent( parentSymbol );
-                        m_pi->SaveSymbol( getLibFileName().GetFullPath(), derivedSymbol, &properties );
                     }
                 }
                 catch(...)
@@ -2555,16 +2570,16 @@ bool SCH_IO_EAGLE::loadSymbol( const std::unique_ptr<ESYMBOL>& aEsymbol, std::un
 
         if( libtext->GetText() == wxT( "${REFERENCE}" ) )
         {
-            // Move text & attributes to Reference field and discard LIB_TEXT item
-            aSymbol->GetReferenceField().EDA_TEXT::operator=( *libtext );
+            // Keep the deviceset prefix because the Eagle text is only a placeholder
+            aSymbol->GetReferenceField().SetAttributes( *libtext );
 
             // Show Reference field if Eagle reference was uppercase
             showRefDes = etext->text == wxT( ">NAME" );
         }
         else if( libtext->GetText() == wxT( "${VALUE}" ) )
         {
-            // Move text & attributes to Value field and discard LIB_TEXT item
-            aSymbol->GetValueField().EDA_TEXT::operator=( *libtext );
+            // Keep the field value because the Eagle text is only a placeholder
+            aSymbol->GetValueField().SetAttributes( *libtext );
 
             // Show Value field if Eagle reference was uppercase
             showValue = etext->text == wxT( ">VALUE" );
@@ -2579,7 +2594,7 @@ bool SCH_IO_EAGLE::loadSymbol( const std::unique_ptr<ESYMBOL>& aEsymbol, std::un
             {
                 SCH_FIELD* field = new SCH_FIELD( aSymbol.get(), FIELD_T::USER, fieldName );
 
-                field->EDA_TEXT::operator=( *libtext );
+                field->SetAttributes( *libtext );
 
                 // Field visibility is determined by the symbol instance attributes.
                 field->SetVisible( false );
@@ -3091,6 +3106,10 @@ bool SCH_IO_EAGLE::checkHeader( const wxString& aFileName ) const
 
     if( !input.IsOk() )
         return false;
+
+    // Pre-v6 schematics are a binary stream identified by a two-byte magic.
+    if( EAGLE_BIN_PARSER::IsBinaryEagle( input ) )
+        return true;
 
     wxTextInputStream text( input );
 

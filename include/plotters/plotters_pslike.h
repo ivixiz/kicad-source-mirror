@@ -27,6 +27,7 @@
 
 #include "plotter.h"
 #include <memory>
+#include <optional>
 #include <plotters/pdf_stroke_font.h>
 #include <plotters/pdf_outline_font.h>
 #include <math/vector3.h>
@@ -262,6 +263,7 @@ public:
             m_totalOutlineNodes( 0 ),
             m_3dModelHandle( -1 ),
             m_3dExportMode( false ),
+            m_usedBase14Fonts( false ),
             m_strokeFontManager( nullptr ),
             m_outlineFontManager( nullptr )
     {
@@ -616,6 +618,10 @@ protected:
 
     int  m_3dModelHandle;
     bool m_3dExportMode;
+
+    /// Set when the non-embeddable font fallback references the base-14 /KicadFont* resources.
+    bool m_usedBase14Fonts;
+
     std::unique_ptr<PDF_STROKE_FONT_MANAGER> m_strokeFontManager;
     std::unique_ptr<PDF_OUTLINE_FONT_MANAGER> m_outlineFontManager;
 };
@@ -689,6 +695,17 @@ public:
     virtual void SetSvgCoordinatesFormat( unsigned aPrecision ) override;
 
     /**
+     * Set an explicit bounding box for the plotted content (in IUs).
+     *
+     * When set, the SVG width/height and viewBox are derived from this box transformed to
+     * device units, so the plotted content keeps its origin at the SVG origin even when it
+     * extends to negative coordinates.  When not set, the page size is used.
+     *
+     * @param aBBoxIU the bounding box of the content to plot, in plotter coordinates.
+     */
+    virtual void SetPlotBBox( const BOX2I& aBBoxIU ) override;
+
+    /**
      * Calling this function allows one to define the beginning of a group
      * of drawing items (used in SVG format to separate components)
      * @param aData should be a string for the SVG ID tag
@@ -727,6 +744,8 @@ public:
                            void*                  aData = nullptr ) override;
 
 protected:
+    virtual VECTOR2D userToDeviceCoordinates( const VECTOR2I& aCoordinate ) override;
+
     /**
      * Initialize m_pen_rgb_color from reduced values r, g ,b
      * ( reduced values are 0.0 to 1.0 )
@@ -761,4 +780,6 @@ protected:
                                     // Use 3-6 (3 means um precision, 6 nm precision) in PcbNew
                                     // 3-4 in other modules (avoid values >4 to avoid overflow)
                                     // see also comment for m_useInch.
+
+    std::optional<BOX2I> m_plotBBoxIU; // Explicit plot content bounding box (IUs), when set.
 };

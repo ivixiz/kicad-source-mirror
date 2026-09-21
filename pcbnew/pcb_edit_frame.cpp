@@ -45,6 +45,7 @@
 #include <widgets/command_window.h>
 #include <3d_viewer/eda_3d_viewer_frame.h>
 #include <api/api_handler_common.h>
+#include <api/api_handler_libraries.h>
 #include <api/api_handler_pcb.h>
 #include <api/api_plugin_manager.h>
 #include <api/api_server.h>
@@ -70,6 +71,9 @@
 #include <dialogs/dialog_migrate_3d_models.h>
 #include <dialog_board_setup.h>
 #include <dialogs/dialog_dimension_properties.h>
+#include <pcb_drill_chart.h>
+#include <pcb_drill_map.h>
+#include <dialogs/dialog_drill_chart_properties.h>
 #include <dialogs/dialog_table_properties.h>
 #include <gal/graphics_abstraction_layer.h>
 #include <pad.h>
@@ -84,7 +88,7 @@
 #include <wildcards_and_files_ext.h>
 #include <functional>
 #include <pcb_barcode.h>
-#include <pcb_griditem.h>
+#include <pcb_grid_item.h>
 #include <pcb_painter.h>
 #include <project/project_file.h>
 #include <project/project_local_settings.h>
@@ -110,6 +114,7 @@
 #include <tools/pcb_group_tool.h>
 #include <tools/generator_tool.h>
 #include <tools/diff_phase_skew_tool.h>
+#include <generators/via_stitch_tool.h>
 #include <tools/drc_tool.h>
 #include <tools/drc_rule_editor_tool.h>
 #include <tools/global_edit_tool.h>
@@ -131,6 +136,8 @@
 #include <tools/position_relative_tool.h>
 #include <tools/zone_filler_tool.h>
 #include <tools/multichannel_tool.h>
+#include <tools/match_properties_tool.h>
+#include <tools/graphic_edit_tool.h>
 #include <router/router_tool.h>
 #include <autorouter/autoplace_tool.h>
 #include <netlist_reader/netlist_reader.h>
@@ -187,6 +194,7 @@ BEGIN_EVENT_TABLE( PCB_EDIT_FRAME, PCB_BASE_FRAME )
     // Horizontal toolbar
     EVT_CHOICE( ID_AUX_TOOLBAR_PCB_TRACK_WIDTH, PCB_EDIT_FRAME::Tracks_and_Vias_Size_Event )
     EVT_CHOICE( ID_AUX_TOOLBAR_PCB_VIA_SIZE, PCB_EDIT_FRAME::Tracks_and_Vias_Size_Event )
+    EVT_CHOICE( ID_AUX_TOOLBAR_PCB_VIA_STACK, PCB_EDIT_FRAME::SelectViaStack_Event )
     EVT_CHOICE( ID_AUX_TOOLBAR_PCB_VARIANT_SELECT, PCB_EDIT_FRAME::onVariantSelected )
 
     // Tracks and vias sizes general options
@@ -225,6 +233,7 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
     m_showBorderAndTitleBlock = true;   // true to display sheet references
     m_SelTrackWidthBox = nullptr;
     m_SelViaSizeBox = nullptr;
+    m_SelViaStackBox = nullptr;
     m_CurrentVariantCtrl = nullptr;
     m_ShowLayerManagerTools = true;
     m_supportsAutoSave = true;
@@ -317,14 +326,7 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
     // Secondary infobar stacked above the main one.  Load-time notices (such as
     // the WRL -> STEP migration prompt) belong here so they aren't clobbered by
     // the main infobar's read-only warnings, DRC rule errors, etc.
-#if defined( __WXOSX_MAC__ )
-    m_loadNoticeInfoBar = new WX_INFOBAR( GetToolCanvas() );
-#else
-    m_loadNoticeInfoBar = new WX_INFOBAR( this, &m_auimgr );
-    m_auimgr.AddPane( m_loadNoticeInfoBar,
-                      EDA_PANE().InfoBar().Name( wxS( "LoadNoticeInfoBar" ) ).Top().Layer( 1 )
-                              .Row( 1 ) );
-#endif
+    m_loadNoticeInfoBar = new WX_INFOBAR( GetToolCanvas(), wxID_ANY, true );
 
     unsigned int auiFlags = wxAUI_MGR_DEFAULT;
 #if !defined( _WIN32 )
@@ -442,16 +444,6 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
     m_auimgr.GetPane( "SelectionFilter" ).dock_proportion = 0;
     FinishAUIInitialization();
 
-    // FinishAUIInitialization only hides the primary "InfoBar" pane; the
-    // stacked load-notice bar has to be hidden explicitly.
-#if !defined( __WXOSX_MAC__ )
-    if( wxAuiPaneInfo& pane = m_auimgr.GetPane( wxS( "LoadNoticeInfoBar" ) ); pane.IsOk() )
-    {
-        pane.Hide();
-        m_auimgr.Update();
-    }
-#endif
-
     if( aui_cfg.right_panel_width > 0 )
     {
         wxAuiPaneInfo& layersManager = m_auimgr.GetPane( wxS( "LayersManager" ) );
@@ -553,6 +545,8 @@ PCB_EDIT_FRAME::PCB_EDIT_FRAME( KIWAY* aKiway, wxWindow* aParent ) :
     {
         m_apiHandlerCommon = std::make_unique<API_HANDLER_COMMON>();
         Pgm().GetApiServer().RegisterHandler( m_apiHandlerCommon.get() );
+        m_apiLibrariesHandler = std::make_unique<API_HANDLER_LIBRARIES>( LIBRARY_TABLE_TYPE::DESIGN_BLOCK );
+        Pgm().GetApiServer().RegisterHandler( m_apiLibrariesHandler.get() );
     }
 
     resolveCanvasType();
@@ -914,6 +908,8 @@ void PCB_EDIT_FRAME::redrawNetnames()
     KIGFX::VIEW* view = GetCanvas()->GetView();
     BOX2D        viewport = view->GetViewport();
 
+    view->SyncLayerVisibilityCache();   // Required for ViewGetLOD() calls.
+
     // Inflate to catch most of the track width
     BOX2I_MINMAX clipbox( BOX2ISafe( viewport.Inflate( pcbIUScale.mmToIU( 2.0 ) ) ) );
 
@@ -1073,8 +1069,11 @@ void PCB_EDIT_FRAME::setupTools()
     m_toolManager->RegisterTool( new PCB_GROUP_TOOL );
     m_toolManager->RegisterTool( new CONSTRAINT_EDIT_TOOL );
     m_toolManager->RegisterTool( new GENERATOR_TOOL );
+    m_toolManager->RegisterTool( new VIA_STITCH_TOOL );
     m_toolManager->RegisterTool( new PROPERTIES_TOOL );
     m_toolManager->RegisterTool( new MULTICHANNEL_TOOL );
+    m_toolManager->RegisterTool( new MATCH_PROPERTIES_TOOL );
+    m_toolManager->RegisterTool( new GRAPHIC_EDIT_TOOL );
     m_toolManager->RegisterTool( new EMBED_TOOL );
     m_toolManager->RegisterTool( new DRC_RULE_EDITOR_TOOL );
     m_toolManager->RegisterTool( new DIFF_PHASE_SKEW_TOOL );
@@ -1481,6 +1480,7 @@ void PCB_EDIT_FRAME::setupUIConditions()
     CURRENT_EDIT_TOOL( PCB_ACTIONS::tuneSkew );
     CURRENT_EDIT_TOOL( PCB_ACTIONS::showDiffPhaseSkew );
     CURRENT_EDIT_TOOL( PCB_ACTIONS::drawVia );
+    CURRENT_EDIT_TOOL( PCB_ACTIONS::placeViaStack );
     CURRENT_EDIT_TOOL( PCB_ACTIONS::drawZone );
     CURRENT_EDIT_TOOL( PCB_ACTIONS::drawRuleArea );
     CURRENT_EDIT_TOOL( PCB_ACTIONS::drawLine );
@@ -1582,9 +1582,8 @@ bool PCB_EDIT_FRAME::canCloseWindow( wxCloseEvent& aEvent )
     }
 
     // Shutdown blocks must be determined and vetoed as early as possible
-    if( KIPLATFORM::APP::SupportsShutdownBlockReason()
-            && aEvent.GetId() == wxEVT_QUERY_END_SESSION
-            && IsContentModified() )
+    if( KIPLATFORM::APP::SupportsShutdownBlockReason() && aEvent.GetId() == wxEVT_QUERY_END_SESSION
+                                                       && IsContentModified() )
     {
         return false;
     }
@@ -1613,8 +1612,16 @@ bool PCB_EDIT_FRAME::canCloseWindow( wxCloseEvent& aEvent )
         // Use C-style cast due to Mac's inability to dynamic cast between compile modules
         FOOTPRINT_EDIT_FRAME* fpEditor = (FOOTPRINT_EDIT_FRAME*) Kiway().Player( FRAME_FOOTPRINT_EDITOR, false );
 
-        if( fpEditor && !fpEditor->Close() )   // Can close footprint editor?
-            return false;
+        if( fpEditor )
+        {
+            bool cancel = !fpEditor->Close();   // Can close footprint editor?
+
+            // If fp editor had unsaved changes it will have been fronted.  Bring board editor back to front.
+            Raise();
+
+            if( cancel )
+                return false;
+        }
 
         // Use C-style cast due to Mac's inability to dynamic cast between compile modules
         FOOTPRINT_VIEWER_FRAME* fpViewer = (FOOTPRINT_VIEWER_FRAME*) Kiway().Player( FRAME_FOOTPRINT_VIEWER, false );
@@ -1627,9 +1634,14 @@ bool PCB_EDIT_FRAME::canCloseWindow( wxCloseEvent& aEvent )
         // Use C-style cast due to Mac's inability to dynamic cast between compile modules
         FOOTPRINT_EDIT_FRAME* fpEditor = (FOOTPRINT_EDIT_FRAME*) Kiway().Player( FRAME_FOOTPRINT_EDITOR, false );
 
-        if( fpEditor && fpEditor->IsCurrentFPFromBoard() )
+        if( fpEditor )
         {
-            if( !fpEditor->CanCloseFPFromBoard( true ) )
+            bool cancel = !fpEditor->HandleUnsavedChanges( true );
+
+            // If fp editor had unsaved changes it will have been fronted.  Bring board editor back to front.
+            Raise();
+
+            if( cancel )
                 return false;
         }
     }
@@ -1641,6 +1653,8 @@ bool PCB_EDIT_FRAME::canCloseWindow( wxCloseEvent& aEvent )
     {
         wxFileName fileName = GetBoard()->GetFileName();
         wxString msg = _( "Save changes to '%s' before closing?" );
+
+        wxSafeYield( this, true );      // Allow frame to come to front before showing "Save Changes?"
 
         if( !HandleUnsavedChanges( this, wxString::Format( msg, fileName.GetFullName() ),
                                    [&]() -> bool
@@ -1789,6 +1803,32 @@ void PCB_EDIT_FRAME::ActivateGalCanvas()
 {
     PCB_BASE_EDIT_FRAME::ActivateGalCanvas();
     GetCanvas()->UpdateColors();
+    GetCanvas()->Refresh();
+}
+
+
+void PCB_EDIT_FRAME::RefreshDrillSymbols( int aUpdateFlags )
+{
+    BOARD*       board = GetBoard();
+    KIGFX::VIEW* view = GetCanvas()->GetView();
+
+    board->RefreshDrillSymbolLayers();
+
+    for( PCB_TRACK* track : board->Tracks() )
+    {
+        if( track->Type() == PCB_VIA_T )
+            view->Update( track, aUpdateFlags );
+    }
+
+    for( FOOTPRINT* footprint : board->Footprints() )
+    {
+        for( PAD* pad : footprint->Pads() )
+        {
+            if( pad->HasHole() )
+                view->Update( pad, aUpdateFlags );
+        }
+    }
+
     GetCanvas()->Refresh();
 }
 
@@ -2119,21 +2159,18 @@ void PCB_EDIT_FRAME::OnBoardLoaded()
         // STEP sibling.  Leaves ambiguous cases for the infobar below.
         DIALOG_MIGRATE_3D_MODELS::AutoMigrateByFilename( this );
 
-        const int unresolved = DIALOG_MIGRATE_3D_MODELS::CountUnresolvedWrlReferences( this );
-
-        if( unresolved > 0 )
+        if( int unresolved = DIALOG_MIGRATE_3D_MODELS::CountUnresolvedWrlReferences( this ) )
         {
-            wxString msg = wxString::Format( wxPLURAL( "%d WRL 3D model could not be matched "
-                                                       "to an equivalent STEP model.",
-                                                       "%d WRL 3D models could not be matched "
-                                                       "to equivalent STEP models.",
-                                                       unresolved ),
-                                             unresolved );
+            wxString msg = _( "WRL 3D model could not be matched to equivalent STEP model." );
 
-            wxHyperlinkCtrl* link = new wxHyperlinkCtrl( m_loadNoticeInfoBar, wxID_ANY,
-                                                         _( "Show options" ), wxEmptyString );
+            if( unresolved > 1 )
+            {
+                msg = wxString::Format( _( "%d WRL 3D models could not be matched to equivalent STEP models." ),
+                                        unresolved );
+            }
 
-            link->Bind( wxEVT_COMMAND_HYPERLINK, std::function<void( wxHyperlinkEvent& )>(
+            m_loadNoticeInfoBar->RemoveAllButtons();
+            m_loadNoticeInfoBar->AddLink( _( "Show options" ),
                     [this]( wxHyperlinkEvent& )
                     {
                         DIALOG_MIGRATE_3D_MODELS dlg( this );
@@ -2143,10 +2180,7 @@ void PCB_EDIT_FRAME::OnBoardLoaded()
                         // otherwise leave it so the user can try again.
                         if( DIALOG_MIGRATE_3D_MODELS::CountUnresolvedWrlReferences( this ) == 0 )
                             m_loadNoticeInfoBar->Dismiss();
-                    } ) );
-
-            m_loadNoticeInfoBar->RemoveAllButtons();
-            m_loadNoticeInfoBar->AddButton( link );
+                    } );
             m_loadNoticeInfoBar->AddCloseButton();
             m_loadNoticeInfoBar->ShowMessageFor( msg, 10000, wxICON_INFORMATION );
         }
@@ -2197,8 +2231,24 @@ void PCB_EDIT_FRAME::OnBoardLoaded()
     // Display the loaded board:
     Zoom_Automatique( false );
 
-    // Invalidate painting as loading the DRC engine will cause clearances to become valid
-    GetCanvas()->GetView()->UpdateAllItems( KIGFX::ALL );
+    // The DRC engine above makes clearances computable, so only the items that draw a
+    // clearance outline are stale; marking every item re-tessellates the whole board
+    {
+        KIGFX::VIEW* view = GetCanvas()->GetView();
+        const auto&  opts = GetPcbNewSettings()->m_Display;
+
+        for( FOOTPRINT* footprint : GetBoard()->Footprints() )
+        {
+            for( PAD* pad : footprint->Pads() )
+                view->Update( pad, KIGFX::REPAINT );
+        }
+
+        if( opts.m_TrackClearance == SHOW_WITH_VIA_ALWAYS )
+        {
+            for( PCB_TRACK* track : GetBoard()->Tracks() )
+                view->Update( track, KIGFX::REPAINT );
+        }
+    }
 
     Refresh();
 
@@ -2289,11 +2339,14 @@ void PCB_EDIT_FRAME::OnModify()
     if( m_isClosing )
         return;
 
+    // A chart reports the board, so an edit that moved a hole has already made it wrong.
+    // Costs one integer comparison per chart when nothing drill related changed.
+    RefreshDrillCharts( *GetBoard() );
+
     Update3DView( true, GetPcbNewSettings()->m_Display.m_Live3DRefresh );
 
     if( !GetTitle().StartsWith( wxT( "*" ) ) )
         UpdateTitle();
-
 }
 
 
@@ -2412,7 +2465,7 @@ void PCB_EDIT_FRAME::ShowFindDialog()
 
     PCB_SELECTION& selection = m_toolManager->GetTool<PCB_SELECTION_TOOL>()->GetSelection();
 
-    if( selection.Size() == 1 )
+    if( selection.Size() == 1 && selection.Front() != m_findDialog->GetItem() )
     {
         EDA_ITEM* front = selection.Front();
 
@@ -2695,16 +2748,12 @@ void PCB_EDIT_FRAME::CommonSettingsChanged( int aFlags )
     }
     catch( PARSE_ERROR& )
     {
-        wxHyperlinkCtrl* button = new wxHyperlinkCtrl( infobar, wxID_ANY, _( "Edit design rules" ), wxEmptyString );
-
-        button->Bind( wxEVT_COMMAND_HYPERLINK, std::function<void( wxHyperlinkEvent& aEvent )>(
+        infobar->RemoveAllButtons();
+        infobar->AddLink( _( "Edit design rules" ),
                 [&]( wxHyperlinkEvent& aEvent )
                 {
                     ShowBoardSetupDialog( _( "Custom Rules" ) );
-                } ) );
-
-        infobar->RemoveAllButtons();
-        infobar->AddButton( button );
+                } );
         infobar->AddCloseButton();
         infobar->ShowMessage( _( "Could not compile custom design rules." ), wxICON_ERROR,
                               WX_INFOBAR::MESSAGE_TYPE::DRC_RULES_ERROR );
@@ -3080,6 +3129,15 @@ void PCB_EDIT_FRAME::OnEditItemRequest( BOARD_ITEM* aItem )
         break;
     }
 
+    case PCB_DRILL_CHART_T:
+    {
+        // Not the generic table dialog, which would offer copper layers and direct editing of
+        // cells that the next rebuild discards
+        DIALOG_DRILL_CHART_PROPERTIES dlg( this, static_cast<PCB_DRILL_CHART*>( aItem ) );
+        dlg.ShowModal();
+        break;
+    }
+
     case PCB_PAD_T:
         ShowPadPropertiesDialog( static_cast<PAD*>( aItem ) );
         break;
@@ -3108,8 +3166,8 @@ void PCB_EDIT_FRAME::OnEditItemRequest( BOARD_ITEM* aItem )
         ShowGraphicItemPropertiesDialog( static_cast<PCB_SHAPE*>( aItem ) );
         break;
 
-    case PCB_GRIDITEM_T:
-        ShowGridItemPropertiesDialog( static_cast<PCB_GRIDITEM*>( aItem ) );
+    case PCB_GRID_ITEM_T:
+        ShowGridItemPropertiesDialog( static_cast<PCB_GRID_ITEM*>( aItem ) );
         break;
 
     case PCB_ZONE_T:

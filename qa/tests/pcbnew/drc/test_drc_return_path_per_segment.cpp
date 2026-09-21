@@ -71,8 +71,7 @@ size_t runReturnPathDrc( const char* aBoardFile, const wxString& aChainName,
     }
 
     PCB_IO_KICAD_SEXPR     plugin;
-    std::unique_ptr<BOARD> board = std::make_unique<BOARD>();
-    plugin.LoadBoard( KI_TEST::GetPcbnewTestDataDir() + aBoardFile, board.get() );
+    std::unique_ptr<BOARD> board = plugin.LoadBoard( KI_TEST::GetPcbnewTestDataDir() + aBoardFile );
     board->BuildConnectivity();
 
     NETINFO_ITEM* sig = board->FindNet( aChainName );

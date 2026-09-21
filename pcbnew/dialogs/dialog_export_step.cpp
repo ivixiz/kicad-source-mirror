@@ -491,7 +491,7 @@ wxString DIALOG_EXPORT_STEP::StageBoardForExport( const wxString& aBoardPath, bo
     try
     {
         IO_RELEASER<PCB_IO> pi( PCB_IO_MGR::FindPlugin( PCB_IO_MGR::KICAD_SEXP ) );
-        pi->SaveBoard( tempBoardFn.GetFullPath(), aBoard, nullptr );
+        pi->SaveBoard( tempBoardFn.GetFullPath(), *aBoard, nullptr );
     }
     catch( const IO_ERROR& ioe )
     {
@@ -542,7 +542,7 @@ void DIALOG_EXPORT_STEP::onExportButton( wxCommandEvent& aEvent )
                     return m_editFrame->GetBoard()->ResolveTextVar( token, 0 );
                 };
 
-        path = ExpandTextVars( path, &textResolver );
+        path = ExpandTextVars( path, &textResolver, INTERNAL );
         path = ExpandEnvVarSubstitutions( path, &Prj() );
         path = Prj().AbsolutePath( path );
 

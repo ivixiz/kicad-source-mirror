@@ -31,6 +31,7 @@
 #include <wildcards_and_files_ext.h>
 #include <confirm.h>
 #include <progress_reporter.h>
+#include <kiid.h>
 
 #include <kiplatform/io.h>
 
@@ -223,7 +224,9 @@ static bool isProjectDirectory( const wxString& aProjectPath )
 // "<projectname>-backups").
 static bool isRestoreProtectedEntry( const wxString& aName )
 {
-    return aName == wxS( ".history" ) || aName == wxS( ".git" ) || aName == wxS( "_restore_backup" )
+    return aName == wxS( ".history" ) || aName == wxS( ".history_old" )
+           || aName.StartsWith( wxS( ".history_old_" ) )
+           || aName == wxS( ".git" ) || aName == wxS( "_restore_backup" )
            || aName.StartsWith( wxS( "_restore_backup_" ) ) || aName == wxS( "_restore_temp" )
            || aName == wxS( "_restore_discard" ) || aName.EndsWith( PROJECT_BACKUPS_DIR_SUFFIX );
 }
@@ -1968,7 +1971,24 @@ bool LOCAL_HISTORY::EnforceSizeLimit( const wxString& aProjectPath, size_t aMaxB
     }
 
     if( parent )
+    {
+        git_tree*  newHeadTree = nullptr;
+        git_index* newIndex = nullptr;
+
+        if( git_commit_tree( &newHeadTree, parent ) == 0 && git_repository_index( &newIndex, newRepo ) == 0 )
+        {
+            git_index_read_tree( newIndex, newHeadTree );
+            git_index_write( newIndex );
+        }
+
+        if( newIndex )
+            git_index_free( newIndex );
+
+        if( newHeadTree )
+            git_tree_free( newHeadTree );
+
         git_commit_free( parent );
+    }
 
     // Recreate preserved tags pointing to new commit OIDs where possible.
     for( const auto& tt : tagTargets )
@@ -2012,10 +2032,27 @@ bool LOCAL_HISTORY::EnforceSizeLimit( const wxString& aProjectPath, size_t aMaxB
     lock.ReleaseRepository();
 
     // Replace old history dir with trimmed one
-    wxString backupOld = hist + wxS("_old");
-    wxRenameFile( hist, backupOld );
-    wxRenameFile( trimPath, hist );
-    wxFileName::Rmdir( backupOld, wxPATH_RMDIR_RECURSIVE );
+    wxString backupOld = hist + wxS( "_old_" ) + KIID().AsString();
+
+    if( wxFileExists( backupOld ) || wxDirExists( backupOld ) )
+        return false;
+
+    if( !wxRenameFile( hist, backupOld, false ) )
+        return false;
+
+    if( !wxRenameFile( trimPath, hist, false ) )
+    {
+        if( !wxRenameFile( backupOld, hist, false ) )
+            wxLogError( _( "Could not restore local history '%s'. The previous history is preserved at '%s'." ),
+                        hist, backupOld );
+
+        return false;
+    }
+
+    if( !wxFileName::Rmdir( backupOld, wxPATH_RMDIR_RECURSIVE ) )
+        wxLogTrace( traceAutoSave, wxS( "[history] Trimmed history installed; previous history retained at %s" ),
+                    backupOld );
+
     return true;
 }
 
@@ -2084,9 +2121,10 @@ bool checkForLockedFiles( const wxString& aProjectPath, std::vector<wxString>& a
                         baseName = baseName.BeforeLast( '.' );  // Remove .lck
                         wxFileName originalFile( dirPath, baseName );
 
-                        // Check if this is a valid LOCKFILE (not stale and not ours)
-                        LOCKFILE testLock( originalFile.GetFullPath() );
-                        if( testLock.Valid() && !testLock.IsLockedByMe() )
+                        // Inspect without taking the lock so we don't disturb another session
+                        LOCKFILE testLock = LOCKFILE::Inspect( originalFile.GetFullPath() );
+
+                        if( !testLock.Valid() && !testLock.IsLockedByMe() )
                         {
                             aLockedFiles.push_back( fullPath.GetFullPath() );
                         }

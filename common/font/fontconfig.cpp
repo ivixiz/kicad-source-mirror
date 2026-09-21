@@ -68,10 +68,10 @@ void fontconfig::FONTCONFIG::SetReporter( REPORTER* aReporter )
 }
 
 
-REPORTER* fontconfig::FONTCONFIG::GetReporter()
+REPORTER& fontconfig::FONTCONFIG::GetReporter()
 {
     std::lock_guard lock( g_fontConfigMutex );
-    return s_reporter;
+    return s_reporter ? *s_reporter : NULL_REPORTER::GetInstance();
 }
 
 
@@ -240,10 +240,10 @@ FONTCONFIG::FF_RESULT FONTCONFIG::FindFont( const wxString& aFontName, wxString&
     FcPattern* pat = FcPatternCreate();
 
     if( aBold )
-        FcPatternAddString( pat, FC_STYLE, (const FcChar8*) "Bold" );
+        FcPatternAddInteger( pat, FC_WEIGHT, FC_WEIGHT_BOLD );
 
     if( aItalic )
-        FcPatternAddString( pat, FC_STYLE, (const FcChar8*) "Italic" );
+        FcPatternAddInteger( pat, FC_SLANT, FC_SLANT_ITALIC );
 
     FcPatternAddString( pat, FC_FAMILY, (FcChar8*) fcBuffer.data() );
 
@@ -254,6 +254,7 @@ FONTCONFIG::FF_RESULT FONTCONFIG::FindFont( const wxString& aFontName, wxString&
     FcPattern* font = FcFontMatch( config, pat, &r );
 
     wxString fontName;
+    bool     familyMatched = false;
 
     if( font )
     {
@@ -333,13 +334,9 @@ FONTCONFIG::FF_RESULT FONTCONFIG::FindFont( const wxString& aFontName, wxString&
 
                     if( searchFont.Lower().StartsWith( aFontName.Lower() ) )
                     {
-                        if( ( aBold && !has_bold ) && ( aItalic && !has_ital ) )
-                            retval = FF_RESULT::FF_MISSING_BOLD_ITAL;
-                        else if( aBold && !has_bold )
-                            retval = FF_RESULT::FF_MISSING_BOLD;
-                        else if( aItalic && !has_ital )
-                            retval = FF_RESULT::FF_MISSING_ITAL;
-                        else if( ( aBold != has_bold ) || ( aItalic != has_ital ) )
+                        familyMatched = true;
+
+                        if( ( aBold != has_bold ) || ( aItalic != has_ital ) )
                             retval = FF_RESULT::FF_SUBSTITUTE;
                         else
                             retval = FF_RESULT::FF_OK;
@@ -347,6 +344,14 @@ FONTCONFIG::FF_RESULT FONTCONFIG::FindFont( const wxString& aFontName, wxString&
                         break;
                     }
                 }
+
+                // Fallback families need synthetic styles just as exact family matches do
+                if( ( aBold && !has_bold ) && ( aItalic && !has_ital ) )
+                    retval = FF_RESULT::FF_MISSING_BOLD_ITAL;
+                else if( aBold && !has_bold )
+                    retval = FF_RESULT::FF_MISSING_BOLD;
+                else if( aItalic && !has_ital )
+                    retval = FF_RESULT::FF_MISSING_ITAL;
             }
         }
 
@@ -358,7 +363,7 @@ FONTCONFIG::FF_RESULT FONTCONFIG::FindFont( const wxString& aFontName, wxString&
         if( s_reporter )
             s_reporter->Report( wxString::Format( _( "Error loading font '%s'." ), qualifiedFontName ) );
     }
-    else if( retval == FF_RESULT::FF_SUBSTITUTE )
+    else if( retval == FF_RESULT::FF_SUBSTITUTE || !familyMatched )
     {
         fontName.Replace( ':', ' ' );
 
@@ -366,7 +371,8 @@ FONTCONFIG::FF_RESULT FONTCONFIG::FindFont( const wxString& aFontName, wxString&
         // not substituting
         if( fontName.CmpNoCase( qualifiedFontName ) == 0 )
         {
-            retval = FF_RESULT::FF_OK;
+            if( retval == FF_RESULT::FF_SUBSTITUTE )
+                retval = FF_RESULT::FF_OK;
         }
         else if( s_reporter )
         {
@@ -499,4 +505,3 @@ void FONTCONFIG::ListFonts( std::vector<std::string>& aFonts, const std::string&
     for( const std::pair<const std::string, FONTINFO>& entry : m_fontInfoCache )
         aFonts.push_back( entry.second.Family() );
 }
-

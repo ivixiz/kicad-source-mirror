@@ -208,7 +208,7 @@ public:
      * Select the given action in the toolbar group which contains it, if any.
      * This updates the displayed icon/tooltip and UI conditions for that group.
      */
-    void SelectToolbarAction( const TOOL_ACTION& aAction );
+    void SelectToolbarAction( const TOOL_ACTION& aAction ) override;
 
     void OnMaximize( wxMaximizeEvent& aEvent );
 
@@ -987,19 +987,6 @@ public:
         DockFixed( true );
         Movable( false );
         Resizable( true );      // expand to fit available space
-        return *this;
-    }
-
-    /**
-     * Turn *this into a infobar for KiCad.
-     */
-    EDA_PANE& InfoBar()
-    {
-        CaptionVisible( false );
-        Movable( false );
-        Resizable( true );
-        PaneBorder( false );
-        DockFixed( true );
         return *this;
     }
 };

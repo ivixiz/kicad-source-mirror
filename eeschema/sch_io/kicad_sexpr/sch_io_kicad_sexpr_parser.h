@@ -27,8 +27,10 @@
 #ifndef SCH_IO_KICAD_SEXPR_PARSER_H_
 #define SCH_IO_KICAD_SEXPR_PARSER_H_
 
+#include <eda_fill.h>
 #include <symbol_library_common.h>
 #include <lib_id.h>
+#include <line_ending.h>
 #include <progress_reporter.h>
 #include <schematic_lexer.h>
 #include <sch_file_versions.h>
@@ -80,7 +82,8 @@ class SCH_IO_KICAD_SEXPR_PARSER : public SCHEMATIC_LEXER
 public:
     SCH_IO_KICAD_SEXPR_PARSER( LINE_READER* aLineReader = nullptr,
                       PROGRESS_REPORTER* aProgressReporter = nullptr, unsigned aLineCount = 0,
-                      SCH_SHEET* aRootSheet = nullptr, bool aIsAppending = false );
+                      SCH_SHEET* aRootSheet = nullptr, bool aIsAppending = false,
+                      bool aIsSheetLoad = false );
 
     void ParseLib( LIB_SYMBOL_MAP& aSymbolLibMap );
 
@@ -162,6 +165,7 @@ private:
         LIB_ID            libId;
         std::vector<KIID> memberUuids;
         bool              locked = false;
+        std::map<wxString, wxString> customProperties;
     };
 
     void checkpoint();
@@ -209,6 +213,9 @@ private:
 
     bool parseBool();
 
+    void parseCustomProperty( EDA_ITEM* aItem );
+    void parseCustomProperty( std::map<wxString, wxString>& aProps );
+
     /**
      * Parses a boolean flag inside a list that existed before boolean normalization.
      *
@@ -229,6 +236,13 @@ private:
      * @param aStrokeDef A reference to the #STROKE_PARAMS structure to write to.
      */
     void parseStroke( STROKE_PARAMS& aStroke );
+
+    /**
+     * Parse a line ending definition from the token stream.
+     *
+     * @param aEnding A reference to the #LINE_ENDING structure to write to.
+     */
+    void parseLineEnding( LINE_ENDING& aEnding );
 
     void parseFill( FILL_PARAMS& aFill );
 
@@ -320,6 +334,7 @@ private:
     int      m_bodyStyle;         ///< The current body style being parsed.
     wxString m_symbolName;        ///< The current symbol name.
     bool     m_appending;         ///< Appending load status.
+    bool     m_sheetLoad;         ///< Loading a sheet into an already open schematic.
 
     std::set<KIID>     m_uuids;
 

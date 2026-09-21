@@ -78,8 +78,7 @@ BOOST_AUTO_TEST_CASE( StubLengthFiresOnIntermediateNetOnly )
     }
 
     PCB_IO_KICAD_SEXPR     plugin;
-    std::unique_ptr<BOARD> board = std::make_unique<BOARD>();
-    plugin.LoadBoard( KI_TEST::GetPcbnewTestDataDir() + BOARD_FILE, board.get() );
+    std::unique_ptr<BOARD> board = plugin.LoadBoard( KI_TEST::GetPcbnewTestDataDir() + BOARD_FILE );
     board->BuildConnectivity();
 
     NETINFO_ITEM* netA = board->FindNet( wxS( "/TRUNK_A" ) );
@@ -197,8 +196,7 @@ BOOST_AUTO_TEST_CASE( StubLengthQuietOnTwoNetChain )
     }
 
     PCB_IO_KICAD_SEXPR     plugin;
-    std::unique_ptr<BOARD> board = std::make_unique<BOARD>();
-    plugin.LoadBoard( KI_TEST::GetPcbnewTestDataDir() + TWO_NET_BOARD_FILE, board.get() );
+    std::unique_ptr<BOARD> board = plugin.LoadBoard( KI_TEST::GetPcbnewTestDataDir() + TWO_NET_BOARD_FILE );
     board->BuildConnectivity();
 
     NETINFO_ITEM* netA = board->FindNet( wxS( "/A" ) );
@@ -297,8 +295,7 @@ BOOST_AUTO_TEST_CASE( StubLengthIncludesPadToDie )
     }
 
     PCB_IO_KICAD_SEXPR     plugin;
-    std::unique_ptr<BOARD> board = std::make_unique<BOARD>();
-    plugin.LoadBoard( KI_TEST::GetPcbnewTestDataDir() + PAD_TO_DIE_BOARD_FILE, board.get() );
+    std::unique_ptr<BOARD> board = plugin.LoadBoard( KI_TEST::GetPcbnewTestDataDir() + PAD_TO_DIE_BOARD_FILE );
 
     NETINFO_ITEM* netA = board->FindNet( wxS( "/TRUNK_A" ) );
     NETINFO_ITEM* netB = board->FindNet( wxS( "/MID_B" ) );

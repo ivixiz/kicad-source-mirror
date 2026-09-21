@@ -157,10 +157,10 @@ public:
     /**
      * Epsilon for DRC tests.
      *
-     * @note Fo zone tests this is essentially additive with #m_ExtraClearance.  Units are mm.
+     * @note For zone tests this is essentially additive with #m_ExtraClearance.  Units are mm.
      *
      * Setting name: "DRCEpsilon"
-     * Valid values: 0 to 1
+     * Valid values: 1e-6 to 0.01
      * Default value: 0.0005
      */
     double m_DRCEpsilon;
@@ -182,7 +182,7 @@ public:
      * Units are mm.
      *
      * Setting name: "DRCSliverMinimumLength"
-     * Valid values: 1e-9 to 10
+     * Valid values: 1e-6 to 10
      * Default value: 0.0008
      */
     double m_SliverMinimumLength;
@@ -532,6 +532,17 @@ public:
     bool m_IncrementalConnectivity;
 
     /**
+     * Use the schematic connectivity engine instead of CONNECTION_GRAPH.
+     *
+     * See @ref schematic_connectivity.
+     *
+     * Setting name: "ConnectivityEngine"
+     * Valid values: 0 or 1
+     * Default value: 1
+     */
+    bool m_ConnectivityEngine;
+
+    /**
      * The number of milliseconds to wait in a click before showing a disambiguation menu.
      *
      * Setting name: "DisambiguationTime"
@@ -667,6 +678,16 @@ public:
      * Default value: 1
      */
     bool m_EnableCacheFriendlyFracture;
+
+    /**
+     * Index fracture edges by y stripe instead of rescanning every earlier edge for each hole.
+     * Disable to fall back on the linear scan when bisecting a suspected fracture fault.
+     *
+     * Setting name: "EnableFractureEdgeIndex"
+     * Valid values: 0 or 1
+     * Default value: 1
+     */
+    bool m_EnableFractureEdgeIndex;
 
     /**
      * Refine each triangulation toward the constrained Delaunay triangulation with a
@@ -1006,10 +1027,10 @@ public:
 
     /**
      * Router test case directory.
-     * 
+     *
      * Directory where the router stores the test cases (the '0' key dump)
      * Used to make creating test cases easier (a simple dialog instead of manually copying files)
-     * 
+     *
      * Setting name: "RouterTestCaseDirectory"
      * Valid values: directory name
      * Default value: ""

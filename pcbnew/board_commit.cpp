@@ -41,6 +41,8 @@
 #include <connectivity/connectivity_algo.h>
 #include <teardrop/teardrop.h>
 #include <pcb_board_outline.h>
+#include <pcb_drill_map.h>
+#include <pcb_base_frame.h>
 
 #include <functional>
 #include <unordered_set>
@@ -212,12 +214,31 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
     bool                     updateBoardBoundingBox = false;
     std::vector<BOARD_ITEM*> staleTeardropPadsAndVias;
     std::set<PCB_TRACK*>     staleTeardropTracks;
+    std::vector<BOARD_ITEM*> dirtyCopper;
+    std::set<BOARD_ITEM*>    dirtyCopperSeen;
     std::vector<ZONE*>       staleZonesStorage;
     std::vector<ZONE*>*      staleZones = nullptr;
     std::vector<BOX2I>       staleRuleAreas;
 
     if( Empty() )
         return;
+
+    bool containsDrillMap = false;
+    bool containsDrillChart = false;
+
+    for( const COMMIT_LINE& entry : m_entries )
+    {
+        if( !entry.m_item || !entry.m_item->IsBOARD_ITEM() )
+            continue;
+
+        BOARD_ITEM* item = static_cast<BOARD_ITEM*>( entry.m_item );
+
+        if( item->Type() == PCB_DRILL_CHART_T || item->Type() == PCB_DRILL_MAP_T )
+        {
+            containsDrillMap |= item->Type() == PCB_DRILL_MAP_T;
+            containsDrillChart |= item->Type() == PCB_DRILL_CHART_T;
+        }
+    }
 
     undoList.SetDescription( aMessage );
 
@@ -255,13 +276,53 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
                 solderMaskDirty = true;
             }
 
-            if( boardItem->GetLayer() == Edge_Cuts )
+            BOARD_ITEM* preEditItem = nullptr;
+
+            if( entry.m_copy && entry.m_copy->IsBOARD_ITEM() )
+                preEditItem = static_cast<BOARD_ITEM*>( entry.m_copy );
+
+            if( boardItem->IsOnLayer( Edge_Cuts ) || ( preEditItem && preEditItem->IsOnLayer( Edge_Cuts ) ) )
             {
                 updateBoardBoundingBox = true;
             }
 
             if( !( aCommitFlags & SKIP_TEARDROPS ) )
             {
+                // Teardrops are fitted to the copper around them, so any changed copper item
+                // can invalidate one, not only what a teardrop connects to.
+                auto collectCopper =
+                        [&]( BOARD_ITEM* aItem )
+                        {
+                            // Pours are the filler's business.  Containers have no copper of
+                            // their own and their boxes sweep far more than they occupy.
+                            if( aItem->Type() == PCB_ZONE_T || aItem->Type() == PCB_FOOTPRINT_T
+                                || aItem->Type() == PCB_GROUP_T
+                                || aItem->Type() == PCB_GENERATOR_T )
+                            {
+                                return;
+                            }
+
+                            // A group and its members can both be in the commit.
+                            if( ( aItem->GetLayerSet() & LSET::AllCuMask() ).any()
+                                && dirtyCopperSeen.insert( aItem ).second )
+                            {
+                                dirtyCopper.push_back( aItem );
+                            }
+                        };
+
+                collectCopper( boardItem );
+                boardItem->RunOnChildren( collectCopper, RECURSE_MODE::RECURSE );
+
+                // boardItem already carries the edit, so it cannot show where the item was.
+                // The pre-edit clone is still ours here and answers a bounding box.
+                if( entry.m_copy && entry.m_copy->IsBOARD_ITEM() )
+                {
+                    BOARD_ITEM* copy = static_cast<BOARD_ITEM*>( entry.m_copy );
+
+                    collectCopper( copy );
+                    copy->RunOnChildren( collectCopper, RECURSE_MODE::RECURSE );
+                }
+
                 if( boardItem->Type() == PCB_FOOTPRINT_T )
                 {
                     for( PAD* pad : static_cast<FOOTPRINT*>( boardItem )->Pads() )
@@ -296,8 +357,12 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
     }
 
     // Old teardrops must be removed before connectivity is rebuilt
-    if( !staleTeardropPadsAndVias.empty() || !staleTeardropTracks.empty() )
-        teardropMgr.RemoveTeardrops( *this, &staleTeardropPadsAndVias, &staleTeardropTracks );
+    if( !staleTeardropPadsAndVias.empty() || !staleTeardropTracks.empty()
+        || !dirtyCopper.empty() )
+    {
+        teardropMgr.RemoveTeardrops( *this, &staleTeardropPadsAndVias, &staleTeardropTracks,
+                                     &dirtyCopper );
+    }
 
     auto updateComponentClasses =
             [this]( BOARD_ITEM* boardItem )
@@ -405,6 +470,8 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
             case PCB_TEXTBOX_T:
             case PCB_BARCODE_T:
             case PCB_TABLE_T:
+            case PCB_DRILL_CHART_T:
+            case PCB_DRILL_MAP_T:
             case PCB_TRACE_T:
             case PCB_ARC_T:
             case PCB_VIA_T:
@@ -416,7 +483,7 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
             case PCB_TARGET_T:
             case PCB_POINT_T:
             case PCB_ZONE_T:
-            case PCB_GRIDITEM_T:
+            case PCB_GRID_ITEM_T:
             case PCB_FOOTPRINT_T:
             case PCB_GROUP_T:
                 if( view )
@@ -427,11 +494,15 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
                     if( m_isFootprintEditor && boardItem->Type() != PCB_MARKER_T )
                     {
                         if( FOOTPRINT* parentFP = board->GetFirstFootprint() )
+                        {
                             parentFP->Remove( boardItem );
+                            connectivity->Remove( boardItem );
+                        }
                     }
                     else if( FOOTPRINT* parentFP = boardItem->GetParentFootprint() )
                     {
                         parentFP->Remove( boardItem );
+                        connectivity->Remove( boardItem );
                     }
                     else
                     {
@@ -607,6 +678,8 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
                 else
                     view->Add( outline );
              }
+
+            RefreshDrillMapOutlines( *board, view );
         }
 
         if( PCBNEW_SETTINGS* cfg = GetAppSettings<PCBNEW_SETTINGS>( "pcbnew" ) )
@@ -668,6 +741,11 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
     if( bulkAddedItems.size() > 0 || bulkRemovedItems.size() > 0 || itemsChanged.size() > 0 )
         board->OnItemsCompositeUpdate( bulkAddedItems, bulkRemovedItems, itemsChanged );
 
+    // A shrinking table deletes the cells past its new end and the selection holds those
+    // cells directly, so it has to be resolved again from what is still on the board
+    if( containsDrillChart && selTool )
+        selTool->RebuildSelection();
+
     if( frame )
     {
         if( !( aCommitFlags & SKIP_UNDO ) )
@@ -694,7 +772,10 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
         m_toolMgr->PostAction( PCB_ACTIONS::zoneFillDirty );
     }
 
-    m_toolMgr->PostAction( PCB_ACTIONS::rehatchShapes );
+    // Rehatching only refreshes cached view geometry (consumers regenerate it lazily), and
+    // dispatching it headlessly makes the tool manager query the platform cursor position
+    if( view )
+        m_toolMgr->PostAction( PCB_ACTIONS::rehatchShapes );
 
     if( selectedModified )
         m_toolMgr->ProcessEvent( EVENTS::SelectedItemsModified );
@@ -716,6 +797,9 @@ void BOARD_COMMIT::Push( const wxString& aMessage, int aCommitFlags )
         }
     }
 
+    if( containsDrillMap && frame )
+        frame->RefreshDrillSymbols( KIGFX::LAYERS | KIGFX::GEOMETRY | KIGFX::REPAINT );
+
     clear();
 }
 
@@ -732,7 +816,7 @@ EDA_ITEM* BOARD_COMMIT::undoLevelItem( EDA_ITEM* aItem ) const
 
     EDA_ITEM* parent = aItem->GetParent();
 
-    if( parent && parent->Type() == PCB_TABLE_T )
+    if( parent && BaseType( parent->Type() ) == PCB_TABLE_T )
         return parent;
 
     return aItem;
@@ -777,6 +861,7 @@ void BOARD_COMMIT::Revert()
     std::vector<BOARD_ITEM*> bulkRemovedItems;
     std::vector<BOARD_ITEM*> itemsChanged;
     std::vector<BOARD_ITEM*> itemsToDelete;
+    bool                     containsDrillMap = false;
 
     for( COMMIT_LINE& entry : m_entries )
     {
@@ -786,6 +871,11 @@ void BOARD_COMMIT::Revert()
         BOARD_ITEM*  boardItem = static_cast<BOARD_ITEM*>( entry.m_item );
         int          changeType = entry.m_type & CHT_TYPE;
         int          changeFlags = entry.m_type & CHT_FLAGS;
+
+        if( boardItem->Type() == PCB_DRILL_CHART_T || boardItem->Type() == PCB_DRILL_MAP_T )
+        {
+            containsDrillMap |= boardItem->Type() == PCB_DRILL_MAP_T;
+        }
 
         switch( changeType )
         {
@@ -813,6 +903,9 @@ void BOARD_COMMIT::Revert()
                 }
             }
 
+            if( PCB_GROUP* group = dynamic_cast<PCB_GROUP*>( boardItem ) )
+                group->RemoveAll();
+
             // Defer deletion until after OnItemsCompositeUpdate so that
             // board listeners do not receive dangling pointers.
             itemsToDelete.push_back( boardItem );
@@ -830,11 +923,15 @@ void BOARD_COMMIT::Revert()
             if( m_isFootprintEditor )
             {
                 if( FOOTPRINT* parentFP = board->GetFirstFootprint() )
+                {
                     parentFP->Add( boardItem, ADD_MODE::INSERT );
+                    connectivity->Add( boardItem );
+                }
             }
             else if( FOOTPRINT* parentFP = boardItem->GetParentFootprint() )
             {
                 parentFP->Add( boardItem, ADD_MODE::INSERT );
+                connectivity->Add( boardItem );
             }
             else
             {
@@ -907,5 +1004,27 @@ void BOARD_COMMIT::Revert()
     // Property panel needs to know about the reselect
     m_toolMgr->PostEvent( EVENTS::SelectedItemsModified );
 
+    if( containsDrillMap )
+    {
+        if( PCB_BASE_FRAME* frame = dynamic_cast<PCB_BASE_FRAME*>( m_toolMgr->GetToolHolder() ) )
+        {
+            frame->RefreshDrillSymbols( KIGFX::LAYERS | KIGFX::GEOMETRY | KIGFX::REPAINT );
+        }
+    }
+
     clear();
+}
+
+EDA_ITEM* BOARD_COMMIT::ResolveItem( KIID& aID )
+{
+    if( aID == niluuid )
+        return nullptr;
+
+    for( COMMIT_LINE& entry : m_entries )
+    {
+        if( entry.m_item && entry.m_item->IsBOARD_ITEM() && entry.m_item->m_Uuid == aID )
+            return entry.m_item;
+    }
+
+    return nullptr;
 }

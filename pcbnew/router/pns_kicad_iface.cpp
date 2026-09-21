@@ -65,6 +65,7 @@
 #include <wx/log.h>
 
 #include <memory>
+#include <unordered_map>
 #include <unordered_set>
 
 #include <advanced_config.h>
@@ -82,6 +83,8 @@
 #include "pns_node.h"
 #include "pns_router.h"
 #include "pns_debug_decorator.h"
+#include "pns_diff_pair.h"
+#include "pns_topology.h"
 #include "router_preview_item.h"
 
 typedef VECTOR2I::extended_type ecoord;
@@ -796,21 +799,17 @@ void PNS_PCBNEW_RULE_RESOLVER::ClearCacheForItems( std::vector<const PNS::ITEM*>
 
     std::unordered_set<const PNS::ITEM*> dirtyItems( aItems.begin(), aItems.end() );
 
-    for( auto it = m_clearanceCache.begin(); it != m_clearanceCache.end(); )
-    {
-        if( dirtyItems.contains( it->first.A ) || dirtyItems.contains( it->first.B ) )
-            it = m_clearanceCache.erase( it );
-        else
-            ++it;
-    }
+    std::erase_if( m_clearanceCache,
+                   [&dirtyItems]( const auto& entry )
+                   {
+                       return dirtyItems.contains( entry.first.A ) || dirtyItems.contains( entry.first.B );
+                   } );
 
-    for( auto it = m_hullCache.begin(); it != m_hullCache.end(); )
-    {
-        if( dirtyItems.contains( it->first.item ) )
-            it = m_hullCache.erase( it );
-        else
-            ++it;
-    }
+    std::erase_if( m_hullCache,
+                   [&dirtyItems]( const auto& entry )
+                   {
+                       return dirtyItems.contains( entry.first.item );
+                   } );
 }
 
 
@@ -905,17 +904,17 @@ int PNS_PCBNEW_RULE_RESOLVER::Clearance( const PNS::ITEM* aA, const PNS::ITEM* a
 
     for( int layer = layers.Start(); layer <= layers.End(); ++layer )
     {
-        if( !sameNet && !freePad )
+        if( IsDrilledHole( aA ) && IsDrilledHole( aB ) )
         {
-            if( IsDrilledHole( aA ) && IsDrilledHole( aB ) )
+            if( QueryConstraint( PNS::CONSTRAINT_TYPE::CT_HOLE_TO_HOLE, aA, aB, layer, &constraint ) )
             {
-                if( QueryConstraint( PNS::CONSTRAINT_TYPE::CT_HOLE_TO_HOLE, aA, aB, layer, &constraint ) )
-                {
-                    if( constraint.m_Value.Min() > rv )
-                        rv = constraint.m_Value.Min();
-                }
+                if( constraint.m_Value.Min() > rv )
+                    rv = constraint.m_Value.Min();
             }
-            else if( isHole( aA ) || isHole( aB ) )
+        }
+        else if( isHole( aA ) || isHole( aB ) )
+        {
+            if( !sameNet )
             {
                 if( QueryConstraint( PNS::CONSTRAINT_TYPE::CT_HOLE_CLEARANCE, aA, aB, layer, &constraint ) )
                 {
@@ -923,9 +922,12 @@ int PNS_PCBNEW_RULE_RESOLVER::Clearance( const PNS::ITEM* aA, const PNS::ITEM* a
                         rv = constraint.m_Value.Min();
                 }
             }
+        }
 
-            // No 'else'; plated holes get both HOLE_CLEARANCE and CLEARANCE
-            if( isCopper( aA ) && ( !aB || isCopper( aB ) ) )
+        // No 'else'; plated holes get both HOLE_CLEARANCE and CLEARANCE
+        if( isCopper( aA ) && ( !aB || isCopper( aB ) ) && !sameNet && !freePad )
+        {
+            if( !sameNet && !freePad )
             {
                 if( QueryConstraint( PNS::CONSTRAINT_TYPE::CT_CLEARANCE, aA, aB, layer, &constraint ) )
                 {
@@ -933,14 +935,14 @@ int PNS_PCBNEW_RULE_RESOLVER::Clearance( const PNS::ITEM* aA, const PNS::ITEM* a
                         rv = constraint.m_Value.Min();
                 }
             }
+        }
 
-            if( isEdge( aA ) || isEdge( aB ) )
+        if( isEdge( aA ) || isEdge( aB ) )
+        {
+            if( QueryConstraint( PNS::CONSTRAINT_TYPE::CT_EDGE_CLEARANCE, aA, aB, layer, &constraint ) )
             {
-                if( QueryConstraint( PNS::CONSTRAINT_TYPE::CT_EDGE_CLEARANCE, aA, aB, layer, &constraint ) )
-                {
-                    if( constraint.m_Value.Min() > rv )
-                        rv = constraint.m_Value.Min();
-                }
+                if( constraint.m_Value.Min() > rv )
+                    rv = constraint.m_Value.Min();
             }
         }
 
@@ -980,12 +982,27 @@ int PNS_PCBNEW_RULE_RESOLVER::Clearance( const PNS::ITEM* aA, const PNS::ITEM* a
 }
 
 
-bool PNS_KICAD_IFACE_BASE::inheritTrackWidth( PNS::ITEM* aItem, int* aInheritedWidth,
-                                              const VECTOR2I& aStartPosition )
+bool PNS_KICAD_IFACE_BASE::inheritTrackWidthAndDpGap( PNS::ITEM* aItem, const VECTOR2I& aStartPosition, int* aInheritedWidth, int *aInheritedGap )
 {
     VECTOR2I p;
 
     assert( aItem->Owner() != nullptr );
+
+    PNS::NET_HANDLE coupledNet = GetRuleResolver()->DpCoupledNet( aItem->Net() );
+
+    if( coupledNet && aInheritedGap )
+    {
+        PNS::TOPOLOGY  topo( m_world );
+        PNS::DIFF_PAIR dp;
+        if( topo.AssembleDiffPair( static_cast<PNS::SEGMENT*>( aItem ), dp ) )
+        {
+            *aInheritedGap = dp.GuessMostLikelyGap();
+        }
+        else
+        {
+            return false;
+        }
+    }
 
     auto tryGetTrackWidth =
             []( PNS::ITEM* aPnsItem ) -> int
@@ -1146,7 +1163,7 @@ bool PNS_KICAD_IFACE_BASE::ImportSizes( PNS::SIZES_SETTINGS& aSizes, PNS::ITEM* 
 
     if( bds.m_UseConnectedTrackWidth && !bds.m_TempOverrideTrackWidth && aStartItem != nullptr )
     {
-        found = inheritTrackWidth( aStartItem, &trackWidth, startPosInt );
+        found = inheritTrackWidthAndDpGap( aStartItem, aStartPosition, &trackWidth, nullptr );
 
         if( found )
             aSizes.SetWidthSource( _( "existing track" ) );
@@ -1229,8 +1246,8 @@ bool PNS_KICAD_IFACE_BASE::ImportSizes( PNS::SIZES_SETTINGS& aSizes, PNS::ITEM* 
 
     // First try to pick up diff pair width from starting track, if enabled
     if( bds.m_UseConnectedTrackWidth && aStartItem )
-        found = inheritTrackWidth( aStartItem, &diffPairWidth, startPosInt );
-
+        found = inheritTrackWidthAndDpGap( aStartItem, aStartPosition, &diffPairWidth, &diffPairGap );
+ 
     // Next, pick up gap from netclass, and width also if we didn't get a starting width above
     if( bds.UseNetClassDiffPair() && aStartItem )
     {
@@ -1824,7 +1841,7 @@ std::unique_ptr<PNS::VIA> PNS_KICAD_IFACE_BASE::syncVia( PCB_VIA* aVia )
     switch( aVia->Padstack().Mode() )
     {
     case PADSTACK::MODE::NORMAL:
-        via->SetDiameter( 0, aVia->GetWidth( PADSTACK::ALL_LAYERS ) );
+        via->SetDiameter( 0, aVia->GetWidth( PADSTACK::TEMP_ALL_LAYERS ) );
         break;
 
     case PADSTACK::MODE::FRONT_INNER_BACK:
@@ -1890,15 +1907,23 @@ std::unique_ptr<PNS::VIA> PNS_KICAD_IFACE_BASE::syncVia( PCB_VIA* aVia )
 
 bool PNS_KICAD_IFACE_BASE::syncZone( PNS::NODE* aWorld, ZONE* aZone, SHAPE_POLY_SET* aBoardOutline )
 {
-    static wxString msg;
-    SHAPE_POLY_SET* poly;
+    // If this ever becomes multi-threaded, we'll need to lose the 'static's.  But for now they
+    // will help performance a tiny bit.
+    static wxString       msg;
+    static SHAPE_POLY_SET polyStorage;
+    SHAPE_POLY_SET*       poly = &polyStorage;
 
     if( !aZone->GetIsRuleArea() || !aZone->HasKeepoutParametersSet() )
         return false;
 
     LSET layers = aZone->GetLayerSet();
 
-    poly = aZone->Outline();
+    // GetBoardOutline() is expensive.  Only use it in the router where we have to.
+    if( aZone->GetParentFootprint() )
+        polyStorage = aZone->GetBoardOutline();
+    else
+        poly = aZone->Outline();
+
     poly->CacheTriangulation();
 
     if( !poly->IsTriangulationUpToDate() )
@@ -2047,7 +2072,7 @@ bool PNS_KICAD_IFACE_BASE::syncGraphicalItem( PNS::NODE* aWorld, PCB_SHAPE* aIte
             || aItem->GetLayer() == Margin
             || IsKicadCopperLayer( aItem->GetLayer() ) )
     {
-        std::vector<SHAPE*> shapes = aItem->MakeEffectiveShapes();
+        std::vector<SHAPE*> shapes = aItem->MakeEffectiveShapesWithLineEndings( aItem->GetEffectiveWidth() );
 
         for( SHAPE* shape : shapes )
         {
@@ -2312,6 +2337,7 @@ void PNS_KICAD_IFACE_BASE::SyncWorld( PNS::NODE *aWorld )
             break;
 
         case PCB_TABLE_T:
+        case PCB_DRILL_CHART_T:
             syncTextItem( aWorld, static_cast<PCB_TABLE*>( gitem ), gitem->GetLayer() );
             break;
 
@@ -2329,7 +2355,7 @@ void PNS_KICAD_IFACE_BASE::SyncWorld( PNS::NODE *aWorld )
 
         case PCB_REFERENCE_IMAGE_T:     // ignore
         case PCB_TARGET_T:
-        case PCB_GRIDITEM_T:
+        case PCB_GRID_ITEM_T:
             break;
 
         default:
@@ -2690,22 +2716,16 @@ void PNS_KICAD_IFACE::modifyBoardItem( PNS::ITEM* aItem )
         m_commit->Modify( via_board );
 
         via_board->SetPosition( VECTOR2I( via->Pos().x, via->Pos().y ) );
-        via_board->SetWidth( PADSTACK::ALL_LAYERS, via->Diameter( 0 ) );
+        via_board->SetWidth( PADSTACK::TEMP_ALL_LAYERS, via->Diameter( 0 ) );
         via_board->SetDrill( via->Drill() );
         via_board->SetNet( static_cast<NETINFO_ITEM*>( via->Net() ) );
         via_board->SetViaType( via->ViaType() ); // MUST be before SetLayerPair()
         via_board->Padstack().SetUnconnectedLayerMode( via->UnconnectedLayerMode() );
         via_board->SetIsFree( via->IsFree() );
+        // A via holds its copper span in the primary drill layers, so this call is the only
+        // writer of both; a write back from the PNS hole layers can only repeat or corrupt it
         via_board->SetLayerPair( GetBoardLayerFromPNSLayer( via->Layers().Start() ),
                                  GetBoardLayerFromPNSLayer( via->Layers().End() ) );
-
-        PNS_LAYER_RANGE holeLayers = via->HoleLayers();
-
-        if( holeLayers.Start() >= 0 && holeLayers.End() >= 0 )
-        {
-            via_board->SetPrimaryDrillStartLayer( GetBoardLayerFromPNSLayer( holeLayers.Start() ) );
-            via_board->SetPrimaryDrillEndLayer( GetBoardLayerFromPNSLayer( holeLayers.End() ) );
-        }
 
         via_board->SetFrontPostMachining( via->HolePostMachining() );
         via_board->SetSecondaryDrillSize( via->SecondaryDrill() );
@@ -2813,22 +2833,16 @@ BOARD_CONNECTED_ITEM* PNS_KICAD_IFACE::createBoardItem( PNS::ITEM* aItem )
         PCB_VIA*  via_board = new PCB_VIA( m_board );
         PNS::VIA* via = static_cast<PNS::VIA*>( aItem );
         via_board->SetPosition( VECTOR2I( via->Pos().x, via->Pos().y ) );
-        via_board->SetWidth( PADSTACK::ALL_LAYERS, via->Diameter( 0 ) );
+        via_board->SetWidth( PADSTACK::TEMP_ALL_LAYERS, via->Diameter( 0 ) );
         via_board->SetDrill( via->Drill() );
         via_board->SetNet( net );
         via_board->SetViaType( via->ViaType() ); // MUST be before SetLayerPair()
         via_board->Padstack().SetUnconnectedLayerMode( via->UnconnectedLayerMode() );
         via_board->SetIsFree( via->IsFree() );
+        // A via holds its copper span in the primary drill layers, so this call is the only
+        // writer of both; a write back from the PNS hole layers can only repeat or corrupt it
         via_board->SetLayerPair( GetBoardLayerFromPNSLayer( via->Layers().Start() ),
                                  GetBoardLayerFromPNSLayer( via->Layers().End() ) );
-
-        PNS_LAYER_RANGE holeLayers = via->HoleLayers();
-
-        if( holeLayers.Start() >= 0 && holeLayers.End() >= 0 )
-        {
-            via_board->SetPrimaryDrillStartLayer( GetBoardLayerFromPNSLayer( holeLayers.Start() ) );
-            via_board->SetPrimaryDrillEndLayer( GetBoardLayerFromPNSLayer( holeLayers.End() ) );
-        }
 
         via_board->SetFrontPostMachining( via->HolePostMachining() );
         via_board->SetSecondaryDrillSize( via->SecondaryDrill() );
@@ -2883,6 +2897,12 @@ BOARD_CONNECTED_ITEM* PNS_KICAD_IFACE::createBoardItem( PNS::ITEM* aItem )
 
         if( BOARD_ITEM* src = aItem->GetSourceItem() )
         {
+            if( !m_itemGroups.contains( src ) )
+            {
+                if( EDA_GROUP* group = src->GetParentGroup() )
+                    m_itemGroups[src] = group;
+            }
+
             if( m_itemGroups.contains( src ) )
                 m_replacementMap[src].push_back( newBoardItem );
         }

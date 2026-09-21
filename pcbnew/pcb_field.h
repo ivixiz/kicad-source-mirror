@@ -26,6 +26,11 @@
 
 class BOARD_DESIGN_SETTINGS;
 
+namespace kiapi::board::types
+{
+    class Field;
+}
+
 class PCB_FIELD : public PCB_TEXT
 {
 public:
@@ -37,6 +42,9 @@ public:
 
     void Serialize( google::protobuf::Any &aContainer ) const override;
     bool Deserialize( const google::protobuf::Any &aContainer ) override;
+
+    void Serialize( kiapi::board::types::Field& aOutput ) const;
+    bool Deserialize( const kiapi::board::types::Field& aInput );
 
     void CopyFrom( const BOARD_ITEM* aOther ) override;
 
@@ -102,12 +110,11 @@ public:
     wxString GetName( bool aUseDefaultName = true ) const;
 
     /**
-     * Get a non-language-specific name for a field which can be used for storage, variable
-     * look-up, etc.
+     * Get the untranslated field name for storage, variable look-up, etc.
      */
-    wxString GetCanonicalName() const;
+    wxString GetUntranslatedName() const;
 
-    wxString GetShownText( bool aAllowExtraText, int aDepth = 0 ) const override;
+    wxString GetShownText( RESOLUTION_CONTEXT aContext, int aDepth = 0 ) const override;
 
     void SetName( const wxString& aName ) { m_name = aName; }
 
@@ -117,9 +124,9 @@ public:
     {
         return IsMandatory() ? (int) m_id : m_ordinal;
     }
-    void SetOrdinal( int aOrdinal )
+    void SetOrdinal( int aOrdinal, FIELD_T aType )
     {
-        m_id = FIELD_T::USER;
+        m_id = aType;
         m_ordinal = aOrdinal;
     }
 

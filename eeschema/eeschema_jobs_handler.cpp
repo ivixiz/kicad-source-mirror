@@ -38,6 +38,7 @@
 #include <jobs/job_sym_export_svg.h>
 #include <jobs/job_sym_upgrade.h>
 #include <schematic.h>
+#include <import_net_map.h>
 #include <schematic_settings.h>
 #include <sch_screen.h>
 #include <sch_sheet.h>
@@ -197,12 +198,16 @@ EESCHEMA_JOBS_HANDLER::EESCHEMA_JOBS_HANDLER( KIWAY* aKiway ) :
 
 void EESCHEMA_JOBS_HANDLER::ClearCachedSchematic()
 {
+    if( m_cliSchematic )
+        m_cliSchematic->SetProject( nullptr );
+
     delete m_cliSchematic;
     m_cliSchematic = nullptr;
+    m_cliSchematicRootValidated = false;
 }
 
 
-SCHEMATIC* EESCHEMA_JOBS_HANDLER::getSchematic( const wxString& aPath )
+SCHEMATIC* EESCHEMA_JOBS_HANDLER::getSchematic( const wxString& aPath, bool aRequireRoot )
 {
     SCHEMATIC* sch = nullptr;
 
@@ -219,8 +224,15 @@ SCHEMATIC* EESCHEMA_JOBS_HANDLER::getSchematic( const wxString& aPath )
             schPath = path.GetFullPath();
         }
 
+        if( m_cliSchematic && aRequireRoot && !m_cliSchematicRootValidated )
+            ClearCachedSchematic();
+
         if( !m_cliSchematic )
-            m_cliSchematic = EESCHEMA_HELPERS::LoadSchematic( schPath, true, false, &project );
+        {
+            m_cliSchematic = EESCHEMA_HELPERS::LoadSchematic(
+                    schPath, true, false, &project, true, aRequireRoot ? m_reporter : nullptr );
+            m_cliSchematicRootValidated = aRequireRoot;
+        }
 
         sch = m_cliSchematic;
     }
@@ -233,7 +245,8 @@ SCHEMATIC* EESCHEMA_JOBS_HANDLER::getSchematic( const wxString& aPath )
     }
     else if( !aPath.IsEmpty() )
     {
-        sch = EESCHEMA_HELPERS::LoadSchematic( aPath, true, false );
+        sch = EESCHEMA_HELPERS::LoadSchematic(
+                aPath, true, false, nullptr, true, aRequireRoot ? m_reporter : nullptr );
     }
 
     if( !sch )
@@ -255,6 +268,7 @@ void EESCHEMA_JOBS_HANDLER::InitRenderSettings( SCH_RENDER_SETTINGS* aRenderSett
     aRenderSettings->m_LabelSizeRatio = aSch->Settings().m_LabelSizeRatio;
     aRenderSettings->m_TextOffsetRatio = aSch->Settings().m_TextOffsetRatio;
     aRenderSettings->m_PinSymbolSize = aSch->Settings().m_PinSymbolSize;
+    aRenderSettings->m_ShowDNPMarkers = aSch->Settings().m_ShowDNPMarkers;
 
     aRenderSettings->SetDashLengthRatio( aSch->Settings().m_DashedLineDashRatio );
     aRenderSettings->SetGapLengthRatio( aSch->Settings().m_DashedLineGapRatio );
@@ -264,14 +278,10 @@ void EESCHEMA_JOBS_HANDLER::InitRenderSettings( SCH_RENDER_SETTINGS* aRenderSett
 
     auto loadSheet = [&]( const wxString& path ) -> bool
     {
-        wxString          msg;
-        FILENAME_RESOLVER resolve;
-        resolve.SetProject( &aSch->Project() );
-        resolve.SetProgramBase( &Pgm() );
+        wxString msg;
 
-        wxString absolutePath = resolve.ResolvePath( path, wxGetCwd(), { aSch->GetEmbeddedFiles() } );
-
-        if( !DS_DATA_MODEL::GetTheInstance().LoadDrawingSheet( absolutePath, &msg ) )
+        if( !DS_DATA_MODEL::GetTheInstance().LoadFromName( path, wxGetCwd(), &aSch->Project(),
+                                                           { aSch->GetEmbeddedFiles() }, &msg ) )
         {
             m_reporter->Report( wxString::Format( _( "Error loading drawing sheet '%s'." ), path ) + wxS( "\n" ) + msg
                                         + wxS( "\n" ),
@@ -285,6 +295,12 @@ void EESCHEMA_JOBS_HANDLER::InitRenderSettings( SCH_RENDER_SETTINGS* aRenderSett
     // try to load the override first
     if( !aDrawingSheetOverride.IsEmpty() && loadSheet( aDrawingSheetOverride ) )
         return;
+
+    if( aSch->Settings().m_SchDrawingSheetFileName == wxS( "empty.kicad_wks" ) )
+    {
+        DS_DATA_MODEL::GetTheInstance().SetEmptyLayout();
+        return;
+    }
 
     // no override or failed override continues here
     loadSheet( aSch->Settings().m_SchDrawingSheetFileName );
@@ -413,6 +429,10 @@ int EESCHEMA_JOBS_HANDLER::JobExportPlot( JOB* aJob )
     plotOpts.m_plotAll = aPlotJob->m_plotAll;
     plotOpts.m_plotDrawingSheet = aPlotJob->m_plotDrawingSheet;
     plotOpts.m_plotPages = aPlotJob->m_plotPages;
+
+    if( !aPlotJob->m_sheetPath.IsEmpty() )
+        plotOpts.m_sheetPath = sch->Hierarchy().GetSheetPathByKIIDPath( KIID_PATH( aPlotJob->m_sheetPath ) );
+
     plotOpts.m_theme = aPlotJob->m_theme;
     plotOpts.m_useBackgroundColor = aPlotJob->m_useBackgroundColor;
     plotOpts.m_plotHopOver = aPlotJob->m_show_hop_over;
@@ -622,12 +642,13 @@ int EESCHEMA_JOBS_HANDLER::JobExportBom( JOB* aJob )
         m_reporter->Report( _( "Warning: duplicate sheet names.\n" ), RPT_SEVERITY_WARNING );
 
     // Build our data model
-    SYMBOL_FIELDS_EDITOR_GRID_DATA_MODEL dataModel( referenceList, nullptr );
+    SYMBOL_FIELDS_EDITOR_GRID_DATA_MODEL dataModel( referenceList );
     dataModel.SetCurrentVariant( currentVariant );
 
     // Mandatory fields first
     for( FIELD_T fieldId : MANDATORY_FIELDS )
-        dataModel.AddColumn( GetCanonicalFieldName( fieldId ), GetDefaultFieldName( fieldId, DO_TRANSLATE ), false );
+        dataModel.AddColumn( GetDefaultFieldName( fieldId, UNTRANSLATED ),
+                             GetDefaultFieldName( fieldId, TRANSLATED ), false );
 
     // Generated/virtual fields (e.g. ${QUANTITY}, ${ITEM_NUMBER}) present only in the fields table
     dataModel.AddColumn( SYMBOL_FIELDS_EDITOR_GRID_DATA_MODEL::QUANTITY_VARIABLE,
@@ -664,7 +685,8 @@ int EESCHEMA_JOBS_HANDLER::JobExportBom( JOB* aJob )
         dataModel.AddColumn( fieldName, GetGeneratedFieldDisplayName( fieldName ), true );
 
     // Add any templateFieldNames which aren't already present in the userFieldNames
-    for( const TEMPLATE_FIELDNAME& templateFieldname : sch->Settings().m_TemplateFieldNames.GetTemplateFieldNames() )
+    for( const TEMPLATE_FIELDNAME& templateFieldname :
+         sch->Project().GetProjectFile().m_TemplateFieldNames.GetResolvedTemplateFieldNames() )
     {
         if( userFieldNames.count( templateFieldname.m_Name ) == 0 )
         {
@@ -808,6 +830,7 @@ int EESCHEMA_JOBS_HANDLER::JobExportBom( JOB* aJob )
         preset.sortAsc = aBomJob->m_sortAsc;
         preset.sortField = normalizeFieldName( aBomJob->m_sortField );
         preset.filterString = aBomJob->m_filterString;
+        preset.filterScope = aBomJob->m_filterScope;
         preset.groupSymbols = aBomJob->m_groupSymbols;
         preset.excludeDNP = aBomJob->m_excludeDNP;
     }
@@ -1061,53 +1084,13 @@ int EESCHEMA_JOBS_HANDLER::doSymExportSvg( JOB_SYM_EXPORT_SVG* aSvgJob, SCH_REND
                                                   unit, fn.GetFullPath() ),
                                 RPT_SEVERITY_ACTION );
 
-            // Get the symbol bounding box to fit the plot page to it
-            BOX2I symbolBB = symbol->Flatten()->GetUnitBoundingBox( unit, bodyStyle, !aSvgJob->m_includeHiddenFields );
-            PAGE_INFO pageInfo( PAGE_SIZE_TYPE::User );
-            pageInfo.SetHeightMils( schIUScale.IUToMils( symbolBB.GetHeight() * 1.2 ) );
-            pageInfo.SetWidthMils( schIUScale.IUToMils( symbolBB.GetWidth() * 1.2 ) );
+            BOX2I symbolBB = GetSymbolPlotBBox( *symbol, unit, bodyStyle, aSvgJob->m_includeHiddenFields );
 
-            SVG_PLOTTER* plotter = new SVG_PLOTTER();
-            plotter->SetRenderSettings( aRenderSettings );
-            plotter->SetPageSettings( pageInfo );
-            plotter->SetColorMode( !aSvgJob->m_blackAndWhite );
-
-            VECTOR2I     plot_offset = symbolBB.GetCenter();
-            const double scale = 1.0;
-
-            // Currently, plot units are in decimal
-            plotter->SetViewport( plot_offset, schIUScale.IU_PER_MILS / 10, scale, false );
-
-            plotter->SetCreator( wxT( "Eeschema-SVG" ) );
-
-            if( !plotter->OpenFile( fn.GetFullPath() ) )
+            if( !PlotSymbolToSVG( *symbolToPlot, *symbol, unit, bodyStyle, symbolBB, *aRenderSettings,
+                                  aSvgJob->m_blackAndWhite, fn.GetFullPath(), m_reporter ) )
             {
-                m_reporter->Report(
-                        wxString::Format( _( "Unable to open destination '%s'" ) + wxS( "\n" ), fn.GetFullPath() ),
-                        RPT_SEVERITY_ERROR );
-
-                delete plotter;
                 return CLI::EXIT_CODES::ERR_INVALID_INPUT_FILE;
             }
-
-            LOCALE_IO     toggle;
-            SCH_PLOT_OPTS plotOpts;
-
-            plotter->StartPlot( wxT( "1" ) );
-
-            bool     background = true;
-            VECTOR2I offset( pageInfo.GetWidthIU( schIUScale.IU_PER_MILS ) / 2,
-                             pageInfo.GetHeightIU( schIUScale.IU_PER_MILS ) / 2 );
-
-            // note, we want the fields from the original symbol pointer (in case of non-alias)
-            symbolToPlot->Plot( plotter, background, plotOpts, unit, bodyStyle, offset, false );
-            symbol->PlotFields( plotter, background, plotOpts, unit, bodyStyle, offset, false );
-
-            symbolToPlot->Plot( plotter, !background, plotOpts, unit, bodyStyle, offset, false );
-            symbol->PlotFields( plotter, !background, plotOpts, unit, bodyStyle, offset, false );
-
-            plotter->EndPlot();
-            delete plotter;
         }
     }
 
@@ -1383,8 +1366,24 @@ int EESCHEMA_JOBS_HANDLER::JobSchErc( JOB* aJob )
     ERC_TESTER ercTester( sch );
 
     std::unique_ptr<DS_PROXY_VIEW_ITEM> drawingSheet( getDrawingSheetProxyView( sch ) );
-    ercTester.RunTests( drawingSheet.get(), nullptr, m_kiway->KiFACE( KIWAY::FACE_CVPCB ), &sch->Project(),
+    SCH_EDIT_FRAME* editFrame = nullptr;
+
+    if( Pgm().IsGUI() )
+    {
+        editFrame = static_cast<SCH_EDIT_FRAME*>( m_kiway->Player( FRAME_SCH, false ) );
+
+        if( editFrame && &editFrame->Schematic() != sch )
+            editFrame = nullptr;
+    }
+
+    if( editFrame )
+        editFrame->ClearErcMarkers();
+
+    ercTester.RunTests( drawingSheet.get(), editFrame, m_kiway->KiFACE( KIWAY::FACE_CVPCB ), &sch->Project(),
                         m_progressReporter );
+
+    if( editFrame )
+        editFrame->RefreshErcMarkers();
 
     markersProvider->SetSeverities( ercJob->m_severity );
 
@@ -1425,7 +1424,7 @@ int EESCHEMA_JOBS_HANDLER::JobUpgrade( JOB* aJob )
     if( aUpgradeJob == nullptr )
         return CLI::EXIT_CODES::ERR_UNKNOWN;
 
-    SCHEMATIC* sch = getSchematic( aUpgradeJob->m_filename );
+    SCHEMATIC* sch = getSchematic( aUpgradeJob->m_filename, false );
 
     if( !sch )
         return CLI::EXIT_CODES::ERR_INVALID_INPUT_FILE;
@@ -1472,6 +1471,8 @@ int EESCHEMA_JOBS_HANDLER::JobImport( JOB* aJob )
 
     if( !job )
         return CLI::EXIT_CODES::ERR_UNKNOWN;
+
+    job->m_netNameMap.clear();
 
     if( !wxFile::Exists( job->m_inputFile ) )
     {
@@ -1634,9 +1635,15 @@ int EESCHEMA_JOBS_HANDLER::JobImport( JOB* aJob )
         {
             SCH_COMMIT dummyCommit( toolManager.get() );
             schematic->RecalculateConnections( &dummyCommit, GLOBAL_CLEANUP, toolManager.get() );
+            dummyCommit.Push( _( "Schematic Cleanup" ), SKIP_UNDO | SKIP_CONNECTIVITY | DELETE_REMOVED_ITEMS );
         }
 
         schematic->SetSheetNumberAndCount();
+
+        // Imported schematics preserve their source page frame as schematic graphics.
+        // Match the editor import path and suppress KiCad's default frame/title block.
+        schematic->Settings().m_SchDrawingSheetFileName = wxS( "empty.kicad_wks" );
+        DS_DATA_MODEL::GetTheInstance().SetEmptyLayout();
 
         if( SCH_SHEET* topSheet = schematic->GetTopLevelSheet() )
             topSheet->SetFileName( outputFn.GetFullName() );
@@ -1695,6 +1702,10 @@ int EESCHEMA_JOBS_HANDLER::JobImport( JOB* aJob )
         return CLI::EXIT_CODES::ERR_UNKNOWN;
     }
 
+    // The board job renames its nets from this; nothing is written beside the schematic.
+    if( const IMPORT_NET_MAP* map = schematic->GetImportNetMap() )
+        job->m_netNameMap = GetBoardNetNameMap( *map, *m_reporter );
+
     m_reporter->Report( wxString::Format( _( "Successfully saved imported schematic to '%s'\n" ),
                                           outputFn.GetFullPath() ),
                         RPT_SEVERITY_INFO );
@@ -1712,6 +1723,41 @@ int EESCHEMA_JOBS_HANDLER::JobImport( JOB* aJob )
             if( sheet && !sheet->IsVirtualRootSheet() )
                 projectSheets.emplace_back( std::make_pair( sheet->m_Uuid, sheet->GetName() ) );
         }
+
+        // Reload uses the top-level sheet list, not the UUID-to-name map.
+        const std::vector<SCH_SHEET*>& topLevelSheets = schematic->GetTopLevelSheets();
+
+        if( !topLevelSheets.empty() )
+        {
+            std::vector<TOP_LEVEL_SHEET_INFO>& infos = project.GetProjectFile().GetTopLevelSheets();
+            infos.clear();
+
+            wxString projectPath = project.GetProjectPath();
+
+            for( SCH_SHEET* sheet : topLevelSheets )
+            {
+                if( !sheet || !sheet->GetScreen() )
+                    continue;
+
+                wxFileName sheetFn( sheet->GetScreen()->GetFileName() );
+
+                if( sheetFn.IsAbsolute() )
+                    sheetFn.MakeRelativeTo( projectPath );
+
+                infos.emplace_back( sheet->m_Uuid, sheet->GetName(), sheetFn.GetFullPath() );
+            }
+        }
+    }
+
+    // Extra top-level sheets need a project file to remain reachable.
+    if( createdTransientProject && schematic->GetTopLevelSheets().size() > 1 )
+    {
+        m_reporter->Report( wxString::Format( _( "%zu sheets were written, but only '%s' is "
+                                                 "reachable: top-level sheets are recorded in a "
+                                                 "project file. Use 'kicad-cli import' to create "
+                                                 "one.\n" ),
+                                              sheetCount, outputFn.GetFullName() ),
+                            RPT_SEVERITY_WARNING );
     }
 
     if( job->m_reportFormat != IMPORT_REPORT_FORMAT::NONE )
@@ -1725,6 +1771,8 @@ int EESCHEMA_JOBS_HANDLER::JobImport( JOB* aJob )
             { wxS( "symbols" ), symbolCount },
             { wxS( "sheets" ), sheetCount }
         };
+
+        reportData.m_statistics.emplace_back( wxS( "renamed_board_nets" ), job->m_netNameMap.size() );
 
         WriteImportReport( m_reporter, job->m_reportFormat, job->m_reportFile, reportData );
     }
@@ -2481,9 +2529,7 @@ int EESCHEMA_JOBS_HANDLER::runSymLibMerge( const wxString& aAncestor, const wxSt
     const bool hadSilentFallback = applier.GetReport().mergePropsFallback > 0;
 
     // Serialize via the sexpr lib cache: create at output path, add each
-    // merged symbol, save. The cache owns its symbols once added; clone
-    // before handing off so the applier's unique_ptrs stay intact for the
-    // post-save report.
+    // merged symbol, save. The cache owns its symbols once added.
     wxFileName outFn( aOutput );
     outFn.MakeAbsolute();
 
@@ -2491,13 +2537,12 @@ int EESCHEMA_JOBS_HANDLER::runSymLibMerge( const wxString& aAncestor, const wxSt
     {
         SCH_IO_KICAD_SEXPR_LIB_CACHE cache( outFn.GetFullPath() );
 
-        // SCH_IO_LIB_CACHE::AddSymbol takes ownership of the raw pointer; the
-        // cache destructor deletes from m_symbols. Release the unique_ptrs so
-        // we don't double-free.
+        // SCH_IO_LIB_CACHE::AddSymbol takes ownership; the cache destructor
+        // deletes the symbols it holds.
         for( auto& sym : merged )
         {
             if( sym )
-                cache.AddSymbol( sym.release() );
+                cache.AddSymbol( std::move( sym ) );
         }
 
         cache.SetModified( true );

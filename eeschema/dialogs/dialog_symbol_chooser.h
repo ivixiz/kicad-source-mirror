@@ -64,7 +64,7 @@ public:
      * @param aUnit if not NULL, the selected unit is filled in here.
      * @return the #LIB_ID of the symbol that has been selected.
      */
-    LIB_ID GetSelectedLibId( int* aUnit = nullptr ) const;
+    LIB_ID GetSelectedLibId( int* aUnit = nullptr, int* aBodyStyle = nullptr ) const;
 
     /**
      * Get a list of fields edited by the user.
@@ -77,6 +77,8 @@ public:
     bool GetPlaceAllUnits() { return m_useUnits->GetValue(); }
 
     PANEL_SYMBOL_CHOOSER* GetChooserPanel() const { return m_chooserPanel; }
+
+    bool TransferDataToWindow() override;
 
 public:
     static std::mutex         g_Mutex;

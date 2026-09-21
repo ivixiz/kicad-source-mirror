@@ -45,7 +45,10 @@
 
 #include <widgets/wx_infobar.h>
 
+#include <kiplatform/touchpad.h>
 #include <kiplatform/ui.h>
+
+#include <stdexcept>
 
 #include <core/profile.h>
 
@@ -70,8 +73,6 @@ EDA_DRAW_PANEL_GAL::EDA_DRAW_PANEL_GAL( wxWindow* aParentWindow, wxWindowID aWin
         m_MouseCapturedLost( false ),
         m_parent( aParentWindow ),
         m_edaFrame( nullptr ),
-        m_lastRepaintStart( 0 ),
-        m_lastRepaintEnd( 0 ),
         m_drawing( false ),
         m_drawingEnabled( false ),
         m_needIdleRefresh( false ),
@@ -84,6 +85,8 @@ EDA_DRAW_PANEL_GAL::EDA_DRAW_PANEL_GAL( wxWindow* aParentWindow, wxWindowID aWin
         m_eventDispatcher( nullptr ),
         m_lostFocus( false ),
         m_glRecoveryAttempted( false ),
+        m_contextBindFailures( 0 ),
+        m_pendingResize( false ),
         m_stealsFocus( true ),
         m_statusPopup( nullptr )
 {
@@ -167,6 +170,8 @@ EDA_DRAW_PANEL_GAL::EDA_DRAW_PANEL_GAL( wxWindow* aParentWindow, wxWindowID aWin
 
 EDA_DRAW_PANEL_GAL::~EDA_DRAW_PANEL_GAL()
 {
+    m_touchpadGestureHandler.reset();
+
     // Ensure EDA_DRAW_PANEL_GAL::onShowEvent is not fired during Dtor process
     Disconnect( wxEVT_SHOW, wxShowEventHandler( EDA_DRAW_PANEL_GAL::onShowEvent ) );
     StopDrawing();
@@ -245,6 +250,10 @@ bool EDA_DRAW_PANEL_GAL::recoverFromGalError( const std::exception& aError )
 }
 
 
+/// Frames to drop before giving up on the GL context and letting the backend recover
+static constexpr int MAX_CONTEXT_BIND_RETRIES = 2;
+
+
 bool EDA_DRAW_PANEL_GAL::DoRePaint( bool aAllowSkip )
 {
     if( !m_refreshMutex.try_lock() )
@@ -261,7 +270,11 @@ bool EDA_DRAW_PANEL_GAL::DoRePaint( bool aAllowSkip )
     if( m_drawing )
         return false;
 
-    m_lastRepaintStart = wxGetLocalTimeMillis();
+    // The context may have become current since the size change was deferred
+    if( m_pendingResize )
+        ResizeGal();
+
+    m_lastRepaintStart = std::chrono::steady_clock::now();
 
     // Repaint the canvas, and fix scrollbar cursors
     // Usually called by a OnPaint event, but because it does not use a wxPaintDC,
@@ -310,7 +323,7 @@ bool EDA_DRAW_PANEL_GAL::DoRePaint( bool aAllowSkip )
         // because the window content may have been invalidated by the OS.
         if( aAllowSkip && !viewDirty && !cursorMoved && !hasPendingItemUpdates )
         {
-            m_lastRepaintEnd = wxGetLocalTimeMillis();
+            m_lastRepaintEnd = std::chrono::steady_clock::now();
             return true;
         }
 
@@ -346,7 +359,7 @@ bool EDA_DRAW_PANEL_GAL::DoRePaint( bool aAllowSkip )
         // view targets nor the cursor position have changed.
         if( aAllowSkip && !viewDirty && !cursorMoved )
         {
-            m_lastRepaintEnd = wxGetLocalTimeMillis();
+            m_lastRepaintEnd = std::chrono::steady_clock::now();
             return true;
         }
 
@@ -358,6 +371,18 @@ bool EDA_DRAW_PANEL_GAL::DoRePaint( bool aAllowSkip )
             cntCtx.Start();
             KIGFX::GAL_DRAWING_CONTEXT ctx( m_gal );
             cntCtx.Stop();
+
+            if( !ctx.IsDrawing() )
+            {
+                // A canvas being torn down never reaches here; DoRePaint returns above once
+                // the window stops being visible.  So repeated failures mean a live canvas
+                // whose context is gone for good, and retrying forever would leave it blank
+                if( ++m_contextBindFailures > MAX_CONTEXT_BIND_RETRIES )
+                    throw std::runtime_error( "Could not make the OpenGL context current" );
+
+                RequestRefresh();
+                return false;
+            }
 
             if( m_view->IsTargetDirty( KIGFX::TARGET_OVERLAY )
                 && !m_gal->HasTarget( KIGFX::TARGET_OVERLAY ) )
@@ -417,6 +442,7 @@ bool EDA_DRAW_PANEL_GAL::DoRePaint( bool aAllowSkip )
 
         // OpenGL frame completed successfully, allow future recovery attempts
         m_glRecoveryAttempted = false;
+        m_contextBindFailures = 0;
     }
     catch( std::exception& err )
     {
@@ -446,7 +472,7 @@ bool EDA_DRAW_PANEL_GAL::DoRePaint( bool aAllowSkip )
 #endif
     }
 
-    m_lastRepaintEnd = wxGetLocalTimeMillis();
+    m_lastRepaintEnd = std::chrono::steady_clock::now();
 
 #ifdef KICAD_GAL_PROFILE
     wxLogTrace( traceGalProfile, "%s", latencyProbeZoomToRender.to_string() );
@@ -471,8 +497,20 @@ void EDA_DRAW_PANEL_GAL::ResizeGal( bool aForce )
         return;
 
     KIGFX::GAL_CONTEXT_LOCKER locker( m_gal );
-    wxSize                    clientSize = GetClientSize();
-    WX_INFOBAR* infobar = GetParentEDAFrame() ? GetParentEDAFrame()->GetInfoBar() : nullptr;
+
+    // Resizing reallocates the framebuffer, which only exists in this canvas' own context
+    if( !m_gal->IsContextValid() )
+    {
+        // wx reports a given size once, so dropping it here would leave the canvas stuck at
+        // whatever size the GAL was built with until something else resizes the window
+        m_pendingResize = true;
+        RequestRefresh();
+        return;
+    }
+
+    m_pendingResize = false;
+
+    wxSize clientSize = GetClientSize();
 
     if( !aForce && ToVECTOR2I( clientSize ) == m_gal->GetScreenPixelSize() )
         return;
@@ -481,24 +519,33 @@ void EDA_DRAW_PANEL_GAL::ResizeGal( bool aForce )
     clientSize.x = std::max( 10, clientSize.x + 1 );
     clientSize.y = std::max( 10, clientSize.y + 1 );
 
-    VECTOR2D bottom( 0, 0 );
-
-    if( m_view )
-        bottom = m_view->ToWorld( m_gal->GetScreenPixelSize(), true );
-
     m_gal->ResizeScreen( clientSize.GetX(), clientSize.GetY() );
 
     if( m_view )
     {
-        if( infobar && infobar->IsLocked() )
-        {
-            VECTOR2D halfScreen( std::ceil( 0.5 * clientSize.x ), std::ceil( 0.5 * clientSize.y ) );
-            m_view->SetCenter( bottom - m_view->ToWorld( halfScreen, false ) );
-        }
-
         // ResizeScreen reallocates every compositor buffer, so nothing survives the resize
         m_view->MarkDirty();
     }
+}
+
+
+void EDA_DRAW_PANEL_GAL::UpdateOverlayExclusions()
+{
+    KIGFX::CAIRO_GAL* cairoGal = dynamic_cast<KIGFX::CAIRO_GAL*>( m_gal );
+
+    // Only the Cairo backend presents frames outside the paint cycle
+    if( !cairoGal )
+        return;
+
+    std::vector<wxRect> rects;
+
+    for( wxWindow* child : GetChildren() )
+    {
+        if( dynamic_cast<WX_INFOBAR*>( child ) && child->IsShown() )
+            rects.push_back( child->GetRect() );
+    }
+
+    cairoGal->SetOverlayExclusions( rects );
 }
 
 
@@ -510,14 +557,9 @@ void EDA_DRAW_PANEL_GAL::RequestRefresh()
 
 void EDA_DRAW_PANEL_GAL::Refresh( bool aEraseBackground, const wxRect* aRect )
 {
-    wxLongLong now = wxGetLocalTimeMillis();
-    wxLongLong delta = now - m_lastRepaintEnd;
+    auto now = std::chrono::steady_clock::now();
+    auto delta = std::chrono::duration_cast<std::chrono::milliseconds>( now - m_lastRepaintStart ).count();
     bool galInitialized = m_gal && m_gal->IsInitialized();
-
-    // wxGetLocalTimeMillis is wall clock, so an NTP correction or manual
-    // clock change can make delta negative. Treat that as "long enough".
-    if( delta < 0 )
-        delta = 0;
 
     // When vsync is available the driver throttles SwapBuffers, so we only need
     // a small guard to avoid queueing work faster than the GPU can consume it.
@@ -536,6 +578,8 @@ void EDA_DRAW_PANEL_GAL::Refresh( bool aEraseBackground, const wxRect* aRect )
         if( reported >= 24 && reported <= 1000 )
             refreshHz = reported;
 
+        refreshHz += 5; // Repaint slightly faster to avoid adding latency
+
         minPeriodMs = 1000 / refreshHz;
     }
 
@@ -546,7 +590,7 @@ void EDA_DRAW_PANEL_GAL::Refresh( bool aEraseBackground, const wxRect* aRect )
     }
     else if( !m_refreshTimer.IsRunning() )
     {
-        m_refreshTimer.StartOnce( static_cast<int>( ( minPeriodMs - delta ).GetValue() ) );
+        m_refreshTimer.StartOnce( static_cast<int>( minPeriodMs - delta ) );
     }
 }
 
@@ -630,6 +674,17 @@ void EDA_DRAW_PANEL_GAL::SetTopLayer( int aLayer )
 }
 
 
+EDA_DRAW_PANEL_GAL::GAL_TYPE EDA_DRAW_PANEL_GAL::ResolveStoredCanvasType( int aStoredCanvasType )
+{
+    if( aStoredCanvasType == GAL_TYPE_CAIRO )
+        return GAL_TYPE_CAIRO;
+
+    // The retired wxDC canvas, and any value another KiCad version may have written, leave the
+    // user with the accelerated canvas rather than the do-nothing stub GAL
+    return GAL_TYPE_OPENGL;
+}
+
+
 bool EDA_DRAW_PANEL_GAL::SwitchBackend( GAL_TYPE aGalType )
 {
     // Do not do anything if the currently used GAL is correct
@@ -642,6 +697,9 @@ bool EDA_DRAW_PANEL_GAL::SwitchBackend( GAL_TYPE aGalType )
 
     // Prevent refreshing canvas during backend switch
     StopDrawing();
+
+    m_contextBindFailures = 0;
+    m_pendingResize = false;
 
     KIGFX::GAL* new_gal = nullptr;
 
@@ -670,6 +728,9 @@ bool EDA_DRAW_PANEL_GAL::SwitchBackend( GAL_TYPE aGalType )
                 {
                     // We're well and truly banjaxed if we get here without a fallback.
                     DisplayInfoMessage( m_parent, _( "Could not use OpenGL" ), errormsg );
+                    new_gal = new KIGFX::GAL( m_options );
+                    aGalType = GAL_TYPE_NONE;
+                    result = false;
                 }
             }
 
@@ -704,6 +765,9 @@ bool EDA_DRAW_PANEL_GAL::SwitchBackend( GAL_TYPE aGalType )
     // trigger update of the gal options in case they differ from the defaults
     m_options.NotifyChanged();
 
+    // The native touchpad hook is attached to the backend's child window.
+    m_touchpadGestureHandler.reset();
+
     delete m_gal;
     m_gal = new_gal;
 
@@ -732,7 +796,42 @@ bool EDA_DRAW_PANEL_GAL::SwitchBackend( GAL_TYPE aGalType )
 
     m_backend = aGalType;
 
+    // A shown backend window raises itself, which would bury an infobar overlaid on this canvas
+    for( wxWindow* child : GetChildren() )
+    {
+        if( dynamic_cast<WX_INFOBAR*>( child ) )
+            child->Raise();
+    }
+
+    UpdateOverlayExclusions();
+
+    UpdateTouchpadGestureHandler();
+
     return result;
+}
+
+
+void EDA_DRAW_PANEL_GAL::UpdateTouchpadGestureHandler()
+{
+    m_touchpadGestureHandler.reset();
+
+    if( Pgm().GetCommonSettings()->m_Input.touchpad_mode != TOUCHPAD_MODE::NATIVE_GESTURES )
+        return;
+
+    if( wxWindow* inputWindow = dynamic_cast<wxWindow*>( m_gal ) )
+    {
+        m_touchpadGestureHandler = KIPLATFORM::UI::CreateTouchpadGestureHandler(
+                inputWindow,
+                [this]( const KIPLATFORM::UI::TOUCHPAD_GESTURE& aGesture )
+                {
+                    if( !m_viewControls )
+                        return;
+
+                    m_viewControls->ApplyPanAndZoomGesture(
+                            VECTOR2D( aGesture.panX, aGesture.panY ), aGesture.zoomFactor,
+                            VECTOR2D( aGesture.zoomAnchor.x, aGesture.zoomAnchor.y ) );
+                } );
+    }
 }
 
 

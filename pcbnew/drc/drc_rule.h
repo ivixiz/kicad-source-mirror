@@ -86,7 +86,9 @@ enum DRC_CONSTRAINT_T
     TRACK_ANGLE_CONSTRAINT,
     VIA_DANGLING_CONSTRAINT,
     BRIDGED_MASK_CONSTRAINT,
-    SOLDER_MASK_SLIVER_CONSTRAINT
+    SOLDER_MASK_SLIVER_CONSTRAINT,
+    MICROVIA_STACK_DEPTH_CONSTRAINT,
+    MICROVIA_ASPECT_RATIO_CONSTRAINT
 };
 
 
@@ -192,6 +194,8 @@ public:
     {
         return m_Type == NULL_CONSTRAINT;
     }
+
+    bool IsUnary() const;
 
     const MINOPTMAX<int>& GetValue() const { return m_Value; }
     MINOPTMAX<int>& Value() { return m_Value; }

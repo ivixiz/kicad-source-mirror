@@ -38,12 +38,12 @@
 #include <footprint_import_reconciler.h>
 #include <footprint_library_adapter.h>
 #include <import_proj_properties.h>
+#include <import_net_names.h>
 #include <kiface_base.h>
 #include <macros.h>
 #include <trace_helpers.h>
 #include <length_delay_calculation/length_delay_calculation.h>
 #include <lockfile.h>
-#include <wx/snglinst.h>
 #include <netlist_reader/pcb_netlist.h>
 #include <pcbnew_id.h>
 #include <wildcards_and_files_ext.h>
@@ -495,16 +495,6 @@ bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
 
     std::unique_ptr<LOCKFILE> lock = std::make_unique<LOCKFILE>( fullFileName );
 
-    if( !lock->Valid() && lock->IsLockedByMe() )
-    {
-        // If we cannot acquire the lock but we appear to be the one who locked it, check to
-        // see if there is another KiCad instance running.  If not, then we can override the
-        // lock.  This could happen if KiCad crashed or was interrupted.
-
-        if( !Pgm().SingleInstance()->IsAnotherRunning() )
-            lock->OverrideLock();
-    }
-
     if( !lock->Valid() )
     {
         // If project-level lock override was already granted, silently override this file's lock
@@ -734,6 +724,20 @@ bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
 
             std::unique_ptr<BOARD> loaded =
                     BOARD_LOADER::Load( fullFileName, pluginType, &Prj(), loaderOptions );
+
+            if( loaded && props.count( IMPORT_PROJ_PROPS::NET_NAME_MAP ) )
+            {
+                std::optional<std::map<wxString, wxString>> netNames =
+                        IMPORT_PROJ_PROPS::SplitNetNameMap(
+                                props.at( IMPORT_PROJ_PROPS::NET_NAME_MAP ).wx_str() );
+
+                if( !netNames )
+                    THROW_IO_ERROR( _( "Invalid imported net-name map." ) );
+
+                if( !ApplyImportedNetNameMap( *loaded, *netNames, loadReporter ) )
+                    THROW_IO_ERROR( _( "Cannot apply imported net-name map to the board." ) );
+            }
+
             loadedBoard = loaded.release();
 
 #if USE_INSTRUMENTATION
@@ -749,14 +753,16 @@ bool PCB_EDIT_FRAME::OpenProjectFiles( const std::vector<wxString>& aFileSet, in
 
             failedLoad = true;
         }
+        catch( const IO_CANCELLED& )
+        {
+            // A user-cancelled load is not an error; abandon it without a dialog.
+            failedLoad = true;
+        }
         catch( const IO_ERROR& ioe )
         {
-            if( ioe.Problem() != wxT( "CANCEL" ) )
-            {
-                msg.Printf( _( "Error loading PCB '%s'." ), fullFileName );
-                progressReporter.Hide();
-                DisplayErrorMessage( this, msg, ioe.What() );
-            }
+            msg.Printf( _( "Error loading PCB '%s'." ), fullFileName );
+            progressReporter.Hide();
+            DisplayErrorMessage( this, msg, ioe.What() );
 
             failedLoad = true;
         }
@@ -1056,7 +1062,7 @@ bool PCB_EDIT_FRAME::SavePcbFile( const wxString& aFileName, bool addToHistory,
     {
         IO_RELEASER<PCB_IO> pi( PCB_IO_MGR::FindPlugin( PCB_IO_MGR::KICAD_SEXP ) );
 
-        pi->SaveBoard( pcbFileName.GetFullPath(), GetBoard(), nullptr );
+        pi->SaveBoard( pcbFileName.GetFullPath(), *GetBoard(), nullptr );
     }
     catch( const IO_ERROR& ioe )
     {
@@ -1143,6 +1149,7 @@ bool PCB_EDIT_FRAME::SavePcbCopy( const wxString& aFileName, bool aCreateProject
     SaveProjectLocalSettings();
 
     GetBoard()->SynchronizeNetsAndNetClasses( false );
+    GetBoard()->SynchronizeProperties();
 
     // On Windows, ensure the target file is writeable by clearing problematic attributes like
     // hidden or read-only. This can happen when files are synced via cloud services.
@@ -1155,7 +1162,7 @@ bool PCB_EDIT_FRAME::SavePcbCopy( const wxString& aFileName, bool aCreateProject
 
         wxASSERT( pcbFileName.IsAbsolute() );
 
-        pi->SaveBoard( pcbFileName.GetFullPath(), GetBoard(), nullptr );
+        pi->SaveBoard( pcbFileName.GetFullPath(), *GetBoard(), nullptr );
     }
     catch( const IO_ERROR& ioe )
     {

@@ -19,10 +19,11 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <sch_render_settings.h>
 #include <bitmaps.h>
 #include <sch_edit_frame.h>
 #include <sch_commit.h>
-#include <connection_graph.h>
+#include <connectivity/conn_navigation.h>
 #include <schematic.h>
 #include <gal/color4d.h>
 #include <layer_ids.h>
@@ -129,7 +130,7 @@ void HIERARCHY_PANE::buildHierarchyTree( SCH_SHEET_PATH* aList, const wxTreeItem
         SCH_SHEET* sheet = static_cast<SCH_SHEET*>( aItem );
         aList->push_back( sheet );
 
-        wxString     sheetNameBase = sheet->GetField( FIELD_T::SHEET_NAME )->GetShownText( false );
+        wxString sheetNameBase = sheet->GetField( FIELD_T::SHEET_NAME )->GetShownText( FOR_GUI );
 
         // If the sheet name is empty, use the filename (without extension) as fallback
         if( sheetNameBase.IsEmpty() )
@@ -311,7 +312,7 @@ void HIERARCHY_PANE::UpdateHierarchyTree( bool aClear )
             m_list.clear();
             m_list.push_back( sheet );
 
-            wxString sheetNameBase = sheet->GetShownName( false );
+            wxString sheetNameBase = sheet->GetShownName( FOR_GUI );
 
             // If the sheet name is empty, use the filename (without extension) as fallback
             if( sheetNameBase.IsEmpty() && sheet->GetScreen() )
@@ -411,9 +412,8 @@ void HIERARCHY_PANE::UpdateLabelsHierarchyTree()
                     return;
 
                 SCH_SHEET* sheet = itemData->m_SheetPath.Last();
-                wxString   sheetNameBase = sheet->GetField( FIELD_T::SHEET_NAME )->GetShownText( false );
-                wxString   sheetName = formatPageString( sheetNameBase,
-                                                         itemData->m_SheetPath.GetPageNumber() );
+                wxString   sheetNameBase = sheet->GetField( FIELD_T::SHEET_NAME )->GetShownText( FOR_GUI );
+                wxString   sheetName = formatPageString( sheetNameBase, itemData->m_SheetPath.GetPageNumber() );
 
                 if( m_tree->GetItemText( id ) != sheetName )
                     m_tree->SetItemText( id, sheetName );
@@ -499,6 +499,24 @@ void HIERARCHY_PANE::onContextMenu( wxContextMenuEvent& aEvent )
 }
 
 
+void HIERARCHY_PANE::resyncAfterTopLevelSheetChange( const SCH_SHEET_PATH& aPreviousSheet )
+{
+    // Adding or removing a top-level sheet drops the connection graph, and the emptied graph
+    // reads as minor, so no cleanup is needed to get a full rebuild out of this
+    SCH_COMMIT dummy( m_frame );
+
+    m_frame->RecalculateConnections( &dummy, NO_CLEANUP );
+    m_frame->UpdateHierarchyNavigator();
+
+    // Removing the displayed sheet moves the current sheet without telling the canvas, which
+    // otherwise keeps drawing the deleted screen and the surviving page looks empty
+    if( m_frame->GetCurrentSheet() != aPreviousSheet )
+        m_frame->DisplayCurrentSheet();
+
+    m_frame->OnModify();
+}
+
+
 void HIERARCHY_PANE::onRightClick( wxTreeItemId aItem )
 {
     wxMenu          ctxMenu;
@@ -558,7 +576,7 @@ void HIERARCHY_PANE::onRightClick( wxTreeItemId aItem )
 
             if( !newName.IsEmpty() )
             {
-                SCH_COMMIT commit( m_frame );
+                SCH_SHEET_PATH previousSheet = m_frame->GetCurrentSheet();
 
                 // Create new sheet and screen
                 SCH_SHEET* newSheet = new SCH_SHEET( &m_frame->Schematic() );
@@ -575,6 +593,7 @@ void HIERARCHY_PANE::onRightClick( wxTreeItemId aItem )
                 if( !filename.EndsWith( ".kicad_sch" ) )
                     filename += ".kicad_sch";
 
+                newSheet->SetFileName( filename );
                 newScreen->SetFileName( filename );
 
                 // Find the lowest unused page number
@@ -593,10 +612,7 @@ void HIERARCHY_PANE::onRightClick( wxTreeItemId aItem )
                 newSheetPath.push_back( newSheet );
                 newSheetPath.SetPageNumber( pageStr );
 
-                commit.Push( _( "Add new top-level sheet" ) );
-
-                // Refresh the hierarchy tree
-                UpdateHierarchyTree();
+                resyncAfterTopLevelSheetChange( previousSheet );
             }
         }
         break;
@@ -622,16 +638,11 @@ void HIERARCHY_PANE::onRightClick( wxTreeItemId aItem )
                     break;
                 }
 
-                SCH_COMMIT commit( m_frame );
+                SCH_SHEET_PATH previousSheet = m_frame->GetCurrentSheet();
 
                 // Remove from schematic
                 if( m_frame->Schematic().RemoveTopLevelSheet( sheet ) )
-                {
-                    commit.Push( _( "Delete top-level sheet" ) );
-
-                    // Refresh the hierarchy tree
-                    UpdateHierarchyTree();
-                }
+                    resyncAfterTopLevelSheetChange( previousSheet );
             }
         }
         break;
@@ -854,16 +865,8 @@ void HIERARCHY_PANE::UpdateNetHighlight( const wxString& aNetName )
 
     if( !aNetName.IsEmpty() && m_frame->Schematic().IsValid() )
     {
-        CONNECTION_GRAPH* graph = m_frame->Schematic().ConnectionGraph();
-
-        if( graph )
-        {
-            for( const CONNECTION_SUBGRAPH* sg : graph->GetAllSubgraphs( aNetName ) )
-            {
-                if( sg && sg->GetSheet().Last() )
-                    sheetsWithNet.insert( sg->GetSheet().PathAsString() );
-            }
-        }
+        for( const KIID_PATH& path : SCH_CONNECTIVITY::NAVIGATION_QUERY( m_frame->Schematic() ).NetSheets( aNetName ) )
+            sheetsWithNet.insert( path.AsString() );
     }
 
     std::function<void( const wxTreeItemId& )> recurse =
@@ -875,7 +878,7 @@ void HIERARCHY_PANE::UpdateNetHighlight( const wxString& aNetName )
 
                 if( data )
                 {
-                    bool mark = sheetsWithNet.count( data->m_SheetPath.PathAsString() ) > 0;
+                    bool mark = sheetsWithNet.count( data->m_SheetPath.Path().AsString() ) > 0;
                     m_tree->SetItemTextColour( id, mark ? markText : wxNullColour );
                 }
 

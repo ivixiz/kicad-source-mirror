@@ -18,6 +18,9 @@
  */
 
 #include <advanced_config.h>
+#include <api/api_enums.h>
+#include <api/api_utils.h>
+#include <api/board/board_types.pb.h>
 #include <common.h>
 #include <pcb_edit_frame.h>
 #include <font/font.h>
@@ -35,10 +38,11 @@ PCB_TABLECELL::PCB_TABLECELL( BOARD_ITEM* aParent ) :
         m_colSpan( 1 ),
         m_rowSpan( 1 )
 {
-    if( BOARD* board = GetBoard() )
-        SetMirrored( board->IsBackLayer( aParent->GetLayer() ) );
-    else
-        SetMirrored( IsBackLayer( aParent->GetLayer() ) );
+    if( FOOTPRINT* parentFP = dynamic_cast<FOOTPRINT*>( aParent ) )
+    {
+        if( parentFP->IsFlipped() )
+            SetMirrored( true );
+    }
 
     SetRectangleHeight( std::numeric_limits<int>::max() / 2 );
     SetRectangleWidth( std::numeric_limits<int>::max() / 2 );
@@ -50,6 +54,58 @@ void PCB_TABLECELL::swapData( BOARD_ITEM* aImage )
     wxASSERT( aImage->Type() == PCB_TABLECELL_T );
 
     std::swap( *( (PCB_TABLECELL*) this ), *( (PCB_TABLECELL*) aImage ) );
+}
+
+
+void PCB_TABLECELL::Serialize( kiapi::board::types::TableCell& cell ) const
+{
+    using namespace kiapi::board;
+
+    cell.set_column_span( m_colSpan );
+    cell.set_row_span( m_rowSpan );
+
+    PCB_TEXTBOX::Serialize( *cell.mutable_text_box() );
+
+    kiapi::common::PackCustomProperties( cell.mutable_custom_properties(), *this );
+}
+
+
+void PCB_TABLECELL::Serialize( google::protobuf::Any& aContainer ) const
+{
+    kiapi::board::types::TableCell cell;
+    Serialize( cell );
+    aContainer.PackFrom( cell );
+}
+
+
+bool PCB_TABLECELL::Deserialize( const kiapi::board::types::TableCell& cell )
+{
+    using namespace kiapi::board;
+
+
+    if( !cell.has_text_box() )
+        return false;
+
+    if( !PCB_TEXTBOX::Deserialize( cell.text_box() ) )
+        return false;
+
+    SetColSpan( cell.column_span() );
+    SetRowSpan( cell.row_span() );
+
+    kiapi::common::UnpackCustomProperties( cell.custom_properties(), *this );
+
+    return true;
+}
+
+
+bool PCB_TABLECELL::Deserialize( const google::protobuf::Any& aContainer )
+{
+    kiapi::board::types::TableCell cell;
+
+    if( !aContainer.UnpackTo( &cell ) )
+        return false;
+
+    return Deserialize( cell );
 }
 
 
@@ -99,47 +155,51 @@ wxString PCB_TABLECELL::GetAddr() const
 }
 
 
-wxString PCB_TABLECELL::GetShownText( bool aAllowExtraText, int aDepth ) const
+wxString PCB_TABLECELL::GetShownText( RESOLUTION_CONTEXT aContext, int aDepth ) const
 {
     const FOOTPRINT* parentFootprint = GetParentFootprint();
     const BOARD*     board = GetBoard();
 
-    std::function<bool( wxString* )> tableCellResolver = [&]( wxString* token ) -> bool
+    std::function<bool( wxString* )> tableCellResolver =
+            [&]( wxString* token ) -> bool
+            {
+                if( token->IsSameAs( wxT( "ROW" ) ) )
+                {
+                    *token = wxString::Format( wxT( "%d" ), GetRow() + 1 ); // 1-based
+                    return true;
+                }
+                else if( token->IsSameAs( wxT( "COL" ) ) )
+                {
+                    *token = wxString::Format( wxT( "%d" ), GetColumn() + 1 ); // 1-based
+                    return true;
+                }
+                else if( token->IsSameAs( wxT( "ADDR" ) ) )
+                {
+                    *token = GetAddr();
+                    return true;
+                }
+                else if( token->IsSameAs( wxT( "LAYER" ) ) )
+                {
+                    *token = GetLayerName();
+                    return true;
+                }
+
+                if( parentFootprint && parentFootprint->ResolveTextVar( token, aDepth + 1 ) )
+                    return true;
+
+                if( board->ResolveTextVar( token, aDepth + 1 ) )
+                    return true;
+
+                return false;
+            };
+
+    wxString text = EDA_TEXT::GetShownText( aContext, aDepth );
+
+    if( HasTextVars() && aContext != RAW_VALUE )
     {
-        if( token->IsSameAs( wxT( "ROW" ) ) )
-        {
-            *token = wxString::Format( wxT( "%d" ), GetRow() + 1 ); // 1-based
-            return true;
-        }
-        else if( token->IsSameAs( wxT( "COL" ) ) )
-        {
-            *token = wxString::Format( wxT( "%d" ), GetColumn() + 1 ); // 1-based
-            return true;
-        }
-        else if( token->IsSameAs( wxT( "ADDR" ) ) )
-        {
-            *token = GetAddr();
-            return true;
-        }
-        else if( token->IsSameAs( wxT( "LAYER" ) ) )
-        {
-            *token = GetLayerName();
-            return true;
-        }
-
-        if( parentFootprint && parentFootprint->ResolveTextVar( token, aDepth + 1 ) )
-            return true;
-
-        if( board->ResolveTextVar( token, aDepth + 1 ) )
-            return true;
-
-        return false;
-    };
-
-    wxString text = EDA_TEXT::GetShownText( aAllowExtraText, aDepth );
-
-    if( HasTextVars() )
         text = ResolveTextVars( text, &tableCellResolver, aDepth );
+        FinalizeTextVarExpansion( text, aContext );
+    }
 
     KIFONT::FONT*         font = GetDrawFont( nullptr );
     EDA_ANGLE             drawAngle = GetDrawRotation();
@@ -152,10 +212,6 @@ wxString PCB_TABLECELL::GetShownText( bool aAllowExtraText, int aDepth ) const
         colWidth -= ( GetMarginTop() + GetMarginBottom() );
 
     font->LinebreakText( text, colWidth, GetTextSize(), GetEffectiveTextPenWidth(), IsBold(), IsItalic() );
-
-    // Convert escape markers back to literal ${} and @{} for final display
-    text.Replace( wxT( "<<<ESC_DOLLAR:" ), wxT( "${" ) );
-    text.Replace( wxT( "<<<ESC_AT:" ), wxT( "@{" ) );
 
     return text;
 }
@@ -303,16 +359,24 @@ static struct PCB_TABLECELL_DESC
         propMgr.Mask( TYPE_HASH( PCB_TABLECELL ), TYPE_HASH( EDA_TEXT ), _HKI( "Hyperlink" ) );
         propMgr.Mask( TYPE_HASH( PCB_TABLECELL ), TYPE_HASH( EDA_TEXT ), _HKI( "Color" ) );
 
+        // A chart reports the board, so cell contents are not the user's to edit but their
+        // formatting is. Scoped here, not on EDA_TEXT's descriptor, which eeschema shares
+        propMgr.OverrideWriteability( TYPE_HASH( PCB_TABLECELL ), TYPE_HASH( EDA_TEXT ), _HKI( "Text" ),
+                []( INSPECTABLE* aItem ) -> bool
+                {
+                    PCB_TABLECELL* cell = dynamic_cast<PCB_TABLECELL*>( aItem );
+
+                    return !cell || !cell->GetParent() || cell->GetParent()->Type() != PCB_DRILL_CHART_T;
+                } );
+
         const wxString tableProps = _( "Table" );
 
-        propMgr.AddProperty( new PROPERTY<PCB_TABLECELL, int>( _HKI( "Column Width" ), &PCB_TABLECELL::SetColumnWidth,
-                                                               &PCB_TABLECELL::GetColumnWidth,
-                                                               PROPERTY_DISPLAY::PT_SIZE ),
-                             tableProps );
+        propMgr.AddProperty( new PROPERTY<PCB_TABLECELL, int>( _HKI( "Column Width" ),
+                    &PCB_TABLECELL::SetColumnWidth, &PCB_TABLECELL::GetColumnWidth, PROPERTY_DISPLAY::PT_SIZE ),
+                    tableProps );
 
-        propMgr.AddProperty( new PROPERTY<PCB_TABLECELL, int>( _HKI( "Row Height" ), &PCB_TABLECELL::SetRowHeight,
-                                                               &PCB_TABLECELL::GetRowHeight,
-                                                               PROPERTY_DISPLAY::PT_SIZE ),
-                             tableProps );
+        propMgr.AddProperty( new PROPERTY<PCB_TABLECELL, int>( _HKI( "Row Height" ),
+                    &PCB_TABLECELL::SetRowHeight, &PCB_TABLECELL::GetRowHeight, PROPERTY_DISPLAY::PT_SIZE ),
+                    tableProps );
     }
 } _PCB_TABLECELL_DESC;

@@ -28,6 +28,7 @@
 
 #include <eda_units.h>
 #include <core/wx_stl_compat.h>
+#include <line_ending.h>
 #include <hashtables.h>
 #include <lib_id.h>
 #include <layer_ids.h>     // PCB_LAYER_ID
@@ -37,12 +38,16 @@
 #include <math/box2.h>
 #include <optional>
 #include <constraints/pcb_constraint.h>
+#include <drill/drill_span.h>
 #include <string_any_map.h>
 #include <padstack.h>
 #include <pcb_io/common/plugin_common_layer_mapping.h>
 
 #include <chrono>
+#include <memory>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 
 class PCB_ARC;
@@ -61,12 +66,15 @@ class PCB_TEXT;
 class PCB_TEXTBOX;
 class PCB_TRACK;
 class PCB_TABLE;
+class PCB_DRILL_CHART;
+class PCB_DRILL_MAP;
+class PCB_DRILL_CHART;
 class PCB_TABLECELL;
 class FOOTPRINT;
 class PCB_GROUP;
 class PCB_POINT;
 class PCB_TARGET;
-class PCB_GRIDITEM;
+class PCB_GRID_ITEM;
 class PCB_VIA;
 class ZONE;
 struct ZONE_LAYER_PROPERTIES;
@@ -90,13 +98,13 @@ public:
     typedef std::unordered_map< std::string, LSET >         LSET_MAP;
     typedef std::unordered_map< wxString, KIID >            KIID_MAP;
 
-    PCB_IO_KICAD_SEXPR_PARSER( LINE_READER* aReader, BOARD* aAppendToMe,
+    PCB_IO_KICAD_SEXPR_PARSER( LINE_READER* aReader, BOARD* aBoard,
                                std::function<bool( wxString, int, wxString, wxString )> aQueryUserCallback,
                                PROGRESS_REPORTER* aProgressReporter = nullptr, unsigned aLineCount = 0,
-                               bool aPreserveDestinationStackup = false ) :
+                               bool aPreserveDestinationStackup = false, bool aAppendToExisting = false ) :
             PCB_LEXER( aReader ),
-            m_board( aAppendToMe ),
-            m_appendToExisting( aAppendToMe != nullptr ),
+            m_board( aBoard ),
+            m_appendToExisting( aAppendToExisting ),
             m_preserveDestinationStackup( aPreserveDestinationStackup ),
             m_progressReporter( aProgressReporter ),
             m_lastProgressTime( std::chrono::steady_clock::now() ),
@@ -163,13 +171,30 @@ private:
         KIID              uuid;
         LIB_ID            libId;
         std::vector<KIID> memberUuids;
+        std::map<wxString, wxString> customProperties;
     };
 
     struct GENERATOR_INFO : GROUP_INFO
     {
-        PCB_LAYER_ID   layer;
-        wxString       genType;
-        STRING_ANY_MAP properties;
+        PCB_LAYER_ID                            layer;
+        wxString                                genType;
+        STRING_ANY_MAP                          properties;
+
+        /// Named template items parsed from the generator's (templates …) section.
+        /// Each entry is a fully-parsed BOARD_ITEM that's NOT on the board — it's a
+        /// settings carrier owned by the generator (e.g. via-stitch's via template).
+        /// Handed over to the generator via PCB_GENERATOR::SetTemplateItem() after
+        /// SetProperties() during the group-resolution pass.
+        std::vector<std::pair<wxString, std::unique_ptr<BOARD_ITEM>>> templates;
+
+        // The unique_ptr in `templates` makes this struct move-only.  std::vector resize
+        // requires a noexcept move-ctor to move (rather than copy, which is deleted), so
+        // declare the move/copy operations explicitly.
+        GENERATOR_INFO()                                       = default;
+        GENERATOR_INFO( GENERATOR_INFO&& ) noexcept            = default;
+        GENERATOR_INFO& operator=( GENERATOR_INFO&& ) noexcept = default;
+        GENERATOR_INFO( const GENERATOR_INFO& )                = delete;
+        GENERATOR_INFO& operator=( const GENERATOR_INFO& )     = delete;
     };
 
     /// Deferred constraint, resolved against the parsed items once the whole file is read,
@@ -182,6 +207,7 @@ private:
         std::vector<CONSTRAINT_MEMBER> members;
         std::optional<double>          value;
         bool                           driving = true;
+        std::map<wxString, wxString>   customProperties;
     };
 
     ///< Convert net code using the mapping table if available,
@@ -244,6 +270,8 @@ private:
     void parseBoardStackup();
 
     void parseSetup();
+
+    void parseDrillSymbolProfile();
     void parseDefaults( BOARD_DESIGN_SETTINGS& aSettings );
     void parseDefaultTextDims( BOARD_DESIGN_SETTINGS& aSettings, int aLayer );
     void parseNETINFO_ITEM();
@@ -256,6 +284,13 @@ private:
 
     void bakeTextBoxLib( PCB_TEXTBOX* aTextBox );
 
+    /**
+     * Parse a line ending definition from the token stream.
+     *
+     * @param aEnding A reference to the #LINE_ENDING structure to write to.
+     */
+    void parseLineEnding( LINE_ENDING& aEnding );
+
     PCB_SHAPE*           parsePCB_SHAPE( BOARD_ITEM* aParent );
     PCB_TEXT*            parsePCB_TEXT( BOARD_ITEM* aParent, PCB_TEXT* aBaseText = nullptr );
     void                 parsePCB_TEXT_effects( PCB_TEXT* aText, PCB_TEXT* aBaseText = nullptr );
@@ -264,6 +299,18 @@ private:
     PCB_BARCODE*         parsePCB_BARCODE( BOARD_ITEM* aParent );
     PCB_TABLECELL*       parsePCB_TABLECELL( BOARD_ITEM* aParent );
     PCB_TABLE*           parsePCB_TABLE( BOARD_ITEM* aParent );
+    /**
+     * aAllowIdentity is false inside a drill chart's table_data, where the enclosing
+     * form owns uuid, layer and lock state. A nested copy would silently win.
+     * One token of a table's geometry and cells. False when the token is none of them, so a
+     * drill chart can offer its own tokens first and share everything a table already reads.
+     */
+    bool                 parseTableBodyToken( PCB_TABLE* aTable, PCB_KEYS_T::T aToken,
+                                              bool aAllowIdentity );
+    void                 parseTableBody( PCB_TABLE* aTable, bool aAllowIdentity );
+    PCB_DRILL_CHART*     parsePCB_DRILL_CHART( BOARD_ITEM* aParent );
+    DRILL_SPAN           parseDrillSpanBody();
+    PCB_DRILL_MAP*       parsePCB_DRILL_MAP( BOARD_ITEM* aParent );
     PCB_DIMENSION_BASE*  parseDIMENSION( BOARD_ITEM* aParent );
 
     // Parse a footprint, but do not replace PARSE_ERROR with FUTURE_FORMAT_ERROR automatically.
@@ -271,26 +318,25 @@ private:
     void        parseFootprintStackup( FOOTPRINT& aFootprint );
 
     PAD*        parsePAD( FOOTPRINT* aParent = nullptr );
-
-    // Parse only the (option ...) inside a pad description
-    bool        parsePAD_option( PAD* aPad );
+    void        parsePAD_primitives( PAD* aPad, PCB_LAYER_ID aLayer );
+    void        parsePAD_option( PAD* aPad, PCB_LAYER_ID aLayer );
     void        parsePostMachining( PADSTACK::POST_MACHINING_PROPS& aProps );
-
     void        parsePadstack( PAD* aPad );
 
-    PCB_ARC*      parseARC();
-    PCB_TRACK*    parsePCB_TRACK();
-    PCB_VIA*      parsePCB_VIA();
-    void          parseViastack( PCB_VIA* aVia );
-    ZONE*         parseZONE( BOARD_ITEM_CONTAINER* aParent );
-    PCB_TARGET*   parsePCB_TARGET();
-    PCB_POINT*    parsePCB_POINT();
-    PCB_GRIDITEM* parsePCB_GRIDITEM();
-    BOARD*        parseBOARD();
-    void          parseGROUP_members( GROUP_INFO& aGroupInfo );
-    void          parseGROUP( BOARD_ITEM* aParent );
-    void          parseCONSTRAINT( BOARD_ITEM* aParent );
-    void          parseGENERATOR( BOARD_ITEM* aParent );
+    PCB_ARC*       parseARC();
+    PCB_TRACK*     parsePCB_TRACK();
+    PCB_VIA*       parsePCB_VIA();
+    void           parseViastack( PCB_VIA* aVia );
+    ZONE*          parseZONE( BOARD_ITEM_CONTAINER* aParent );
+    PCB_TARGET*    parsePCB_TARGET();
+    PCB_POINT*     parsePCB_POINT();
+    PCB_GRID_ITEM* parsePCB_GRID_ITEM();
+    BOARD*         parseBOARD();
+    void           parseGROUP_members( GROUP_INFO& aGroupInfo );
+    void           parseGROUP( BOARD_ITEM* aParent );
+    void           parseCONSTRAINT( BOARD_ITEM* aParent );
+    void           parseGENERATOR( BOARD_ITEM* aParent );
+    void           parseGENERATOR_templates( GENERATOR_INFO& aGenInfo );
 
     // Parse a board, but do not replace PARSE_ERROR with FUTURE_FORMAT_ERROR automatically.
     BOARD*      parseBOARD_unchecked();
@@ -355,6 +401,9 @@ private:
     void parseZoneLayerProperty( std::map<PCB_LAYER_ID, ZONE_LAYER_PROPERTIES>& aProperties );
 
     std::pair<wxString, wxString> parseBoardProperty();
+
+    void parseCustomProperty( EDA_ITEM* aItem );
+    void parseCustomProperty( std::map<wxString, wxString>& aProps );
 
     void parseVariants();
     void parseFootprintVariant( FOOTPRINT* aFootprint );

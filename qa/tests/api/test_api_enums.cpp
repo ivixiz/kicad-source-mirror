@@ -26,12 +26,16 @@
 // Common
 #include <api/api_enums.h>
 #include <api/board/board.pb.h>
+#include <api/board/board_rules.pb.h>
 #include <api/common/types/enums.pb.h>
+#include <api/common/types/library_types.pb.h>
 #include <eda_shape.h>
 #include <core/mirror.h>
 #include <core/typeinfo.h>
 #include <font/text_attributes.h>
 #include <layer_ids.h>
+#include <libraries/library_manager.h>
+#include <libraries/library_table.h>
 #include <pin_type.h>
 #include <stroke_params.h>
 #include <widgets/report_severity.h>
@@ -41,6 +45,8 @@
 #include <api/board/board_commands.pb.h>
 #include <api/board/board_jobs.pb.h>
 #include <api/schematic/schematic_jobs.pb.h>
+#include <api/common/types/embedded_files.pb.h>
+#include <embedded_files.h>
 #include <board_stackup_manager/board_stackup.h>
 #include <constraints/pcb_constraint.h>
 #include <jobs/job_export_sch_netlist.h>
@@ -125,6 +131,11 @@ BOOST_AUTO_TEST_CASE( PadStackType )
     testEnums<PADSTACK::MODE, kiapi::board::types::PadStackType>();
 }
 
+BOOST_AUTO_TEST_CASE( PadFabricationProperty )
+{
+    testEnums<PAD_PROP, kiapi::board::types::PadFabricationProperty>();
+}
+
 BOOST_AUTO_TEST_CASE( DrillShape )
 {
     testEnums<PAD_DRILL_SHAPE, kiapi::board::types::DrillShape>();
@@ -161,9 +172,9 @@ BOOST_AUTO_TEST_CASE( PlacementRuleSourceType )
     testEnums<PLACEMENT_SOURCE_T, kiapi::board::types::PlacementRuleSourceType>();
 }
 
-BOOST_AUTO_TEST_CASE( TeardropType )
+BOOST_AUTO_TEST_CASE( ZoneTeardropType )
 {
-    testEnums<TEARDROP_TYPE, kiapi::board::types::TeardropType>();
+    testEnums<TEARDROP_TYPE, kiapi::board::types::ZoneTeardropType>();
 }
 
 BOOST_AUTO_TEST_CASE( TeardropTarget )
@@ -236,6 +247,11 @@ BOOST_AUTO_TEST_CASE( BoardEdgeConnectorType )
     testEnums<BS_EDGE_CONNECTOR_CONSTRAINTS, kiapi::board::BoardEdgeConnectorType>();
 }
 
+BOOST_AUTO_TEST_CASE( EmbeddedFileType )
+{
+    testEnums<EMBEDDED_FILES::EMBEDDED_FILE::FILE_TYPE, kiapi::common::types::EmbeddedFileType>();
+}
+
 BOOST_AUTO_TEST_CASE( DrcSeverity )
 {
     testEnums<SEVERITY, kiapi::board::commands::DrcSeverity>();
@@ -286,6 +302,11 @@ BOOST_AUTO_TEST_CASE( DesignRuleType )
                                 DRCE_PADSTACK,
                                 DRCE_PADSTACK_INVALID,
                                 DRCE_MICROVIA_DRILL_OUT_OF_RANGE,
+                                DRCE_MALFORMED_MICROVIA_STACK_SPAN,
+                                DRCE_MICROVIA_STACK_NOT_FILLED,
+                                DRCE_MICROVIA_STACK_DEPTH,
+                                DRCE_MICROVIA_ASPECT_RATIO,
+                                DRCE_MICROVIA_CROSSES_CORE,
                                 DRCE_OVERLAPPING_FOOTPRINTS,
                                 DRCE_MISSING_COURTYARD,
                                 DRCE_MALFORMED_COURTYARD,
@@ -560,6 +581,21 @@ BOOST_AUTO_TEST_CASE( SchematicJobPageSize )
 BOOST_AUTO_TEST_CASE( SchematicNetlistFormat )
 {
     testEnums<JOB_EXPORT_SCH_NETLIST::FORMAT, kiapi::schematic::jobs::SchematicNetlistFormat>();
+}
+
+BOOST_AUTO_TEST_CASE( LibraryType )
+{
+    testEnums<LIBRARY_TABLE_TYPE, types::LibraryType>( false, LIBRARY_TABLE_TYPE::UNINITIALIZED );
+}
+
+BOOST_AUTO_TEST_CASE( LibraryTableScope )
+{
+    testEnums<LIBRARY_TABLE_SCOPE, types::LibraryTableScope>( false, LIBRARY_TABLE_SCOPE::UNINITIALIZED );
+}
+
+BOOST_AUTO_TEST_CASE( LibraryLoadStatus )
+{
+    testEnums<LOAD_STATUS, types::LibraryLoadStatus>();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -113,15 +113,21 @@ public:
 
     /**
      * Append a file to the collection.  Ownership of @p aFile is transferred to the collection.
+     *
+     * @return as for the shared_ptr overload; note that @p aFile itself is destroyed when a
+     *         file of that name is already embedded.
      */
-    void AddFile( EMBEDDED_FILE* aFile );
+    EMBEDDED_FILE* AddFile( EMBEDDED_FILE* aFile );
 
     /**
      * Append a file (already managed by a shared_ptr) to the collection.  Allows multiple
      * collections to share ownership of the same underlying file payload, avoiding deep copies
      * of large embedded blobs such as 3D models when footprints are cloned for undo snapshots.
+     *
+     * @return the file held by the collection, which is the pre-existing entry when a file of
+     *         that name is already embedded.
      */
-    void AddFile( std::shared_ptr<EMBEDDED_FILE> aFile );
+    EMBEDDED_FILE* AddFile( std::shared_ptr<EMBEDDED_FILE> aFile );
 
     /**
      * Remove a file from the collection and frees the memory.
@@ -216,8 +222,10 @@ public:
      *
      * The data is then decompressed using ZSTD and stored in the #decompressedData buffer.
      * This call is used when loading the embedded files using the parsers.
+     *
+     * @param aAllowEmptyHash will let this succeed if aFile.data_hash is empty
      */
-    static RETURN_CODE  DecompressAndDecode( EMBEDDED_FILE& aFile );
+    static RETURN_CODE  DecompressAndDecode( EMBEDDED_FILE& aFile, bool aAllowEmptyHash = false );
 
     /**
      * Compute the hash of a file on disk without fully embedding it.

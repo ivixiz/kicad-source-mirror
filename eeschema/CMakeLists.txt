@@ -99,6 +99,12 @@ set( EESCHEMA_SCH_IO
     sch_io/pads/pads_sch_parser.cpp
     sch_io/pads/pads_sch_symbol_builder.cpp
     sch_io/pads/pads_sch_schematic_builder.cpp
+    sch_io/pads/pads_sch_binary_reader.cpp
+    sch_io/pads/pads_sch_binary_builder.cpp
+    sch_io/pads/pads_sch_binary_parser.cpp
+    sch_io/pads/pads_sch_sdb.cpp
+    sch_io/ole_emf.cpp
+    sch_io/ole_image.cpp
 
     # DipTrace IO plugin
     sch_io/diptrace/sch_io_diptrace.cpp
@@ -110,10 +116,10 @@ set( EESCHEMA_SCH_IO
 
     # OrCAD IO plugin
     sch_io/orcad/orcad_cache.cpp
+    sch_io/orcad/orcad_cis.cpp
     sch_io/orcad/orcad_converter_sheet.cpp
     sch_io/orcad/orcad_converter_symbols.cpp
     sch_io/orcad/orcad_library.cpp
-    sch_io/orcad/orcad_ole.cpp
     sch_io/orcad/orcad_page.cpp
     sch_io/orcad/orcad_stream.cpp
     sch_io/orcad/orcad_structures.cpp
@@ -153,7 +159,6 @@ set( EESCHEMA_DLGS
     dialogs/dialog_label_properties_base.cpp
     dialogs/dialog_lib_edit_pin_table.cpp
     dialogs/dialog_lib_edit_pin_table_base.cpp
-    dialogs/dialog_lib_fields_table_base.cpp
     dialogs/dialog_lib_fields_table.cpp
     dialogs/dialog_lib_new_symbol.cpp
     dialogs/dialog_lib_new_symbol_base.cpp
@@ -385,6 +390,7 @@ set( SYNC_SHEET_PIN_SRCS
 
 set( EESCHEMA_ERC_SRCS
     erc/erc.cpp
+    erc/erc_exclusion.cpp
     erc/erc_item.cpp
     erc/erc_report.cpp
     erc/erc_sch_pin_context.cpp
@@ -417,6 +423,33 @@ set( EESCHEMA_SRCS
     bus-wire-junction.cpp
     commands/schematic_commands.cpp
     connection_graph.cpp
+    connectivity/conn_bus.cpp
+    connectivity/conn_bindings.cpp
+    connectivity/conn_facade.cpp
+    connectivity/conn_netchain_manager.cpp
+    connectivity/conn_engine.cpp
+    connectivity/conn_engine_erc.cpp
+    connectivity/conn_preview.cpp
+    connectivity/conn_signals.cpp
+    connectivity/conn_publish.cpp
+    connectivity/conn_rows.cpp
+    connectivity/conn_indexes.cpp
+    connectivity/conn_auxiliary.cpp
+    connectivity/conn_text.cpp
+    connectivity/conn_keys.cpp
+    connectivity/conn_claims.cpp
+    connectivity/conn_records.cpp
+    connectivity/conn_partition.cpp
+    connectivity/conn_components.cpp
+    connectivity/conn_summary.cpp
+    connectivity/conn_navigation.cpp
+    connectivity/conn_presentation.cpp
+    connectivity/conn_pin_name.cpp
+    connectivity/conn_dump.cpp
+    connectivity/conn_facts.cpp
+    connectivity/conn_frame.cpp
+    connectivity/conn_inputs.cpp
+    connectivity/conn_islands.cpp
     cross-probing.cpp
     sch_design_block_utils.cpp
     eeschema_config.cpp
@@ -428,6 +461,7 @@ set( EESCHEMA_SRCS
     files-io.cpp
     generate_alias_info.cpp
     gfx_import_utils.cpp
+    import_net_map.cpp
     junction_helpers.cpp
     lib_fields_data_model.cpp
     lib_symbol.cpp
@@ -500,11 +534,13 @@ set( EESCHEMA_SRCS
 
     api/api_sch_enums.cpp
     api/api_sch_utils.cpp
+    api/api_handler_sch_libraries.cpp
     api/api_handler_sch.cpp
     api/headless_sch_context.cpp
     api/sch_api_save.cpp
     api/sch_context.cpp
 
+    libraries/legacy_cache_reconcile.cpp
     libraries/legacy_symbol_library.cpp
     libraries/symbol_library_adapter.cpp
 
@@ -542,6 +578,7 @@ set( EESCHEMA_SRCS
     tools/sch_point_editor.cpp
     tools/sch_selection.cpp
     tools/sch_selection_tool.cpp
+    tools/sch_tool_base.cpp
     tools/sch_tool_utils.cpp
     tools/symbol_editor_control.cpp
     tools/symbol_editor_drawing_tools.cpp
@@ -674,6 +711,7 @@ target_link_libraries( eeschema_kiface_objects
     PUBLIC
         common
         libwmf_orcad
+        emf2svg
         pads_common
         pcm )
 
@@ -777,11 +815,17 @@ if( APPLE )
     get_filename_component( ABS_LIBNGSPICE ${NGSPICE_LIBRARY} ABSOLUTE )
     get_filename_component( LIBNGSPICE_PATH ${ABS_LIBNGSPICE} DIRECTORY )
 
-    install( DIRECTORY "${LIBNGSPICE_PATH}/"
-            DESTINATION "${OSX_BUNDLE_INSTALL_PLUGIN_DIR}/sim"
-            FILES_MATCHING PATTERN "*.dylib")
-    install( DIRECTORY "${LIBNGSPICE_PATH}/ngspice"
+    file( REAL_PATH "${LIBNGSPICE_PATH}/ngspice" REAL_NGSPICE_CODEMODELS )
+    install( DIRECTORY "${REAL_NGSPICE_CODEMODELS}"
              DESTINATION "${OSX_BUNDLE_INSTALL_PLUGIN_DIR}/sim" )
+
+    install( CODE "
+        include( \"${KICAD_CMAKE_MODULE_PATH}/InstallSteps/InstallMacOS.cmake\" )
+        install_runtime_file( \"${ABS_LIBNGSPICE}\"
+            \"${OSX_BUNDLE_INSTALL_LIB_DIR}\" )
+        install_runtime_deps( \"\" \"${ABS_LIBNGSPICE}\"
+            \"${OSX_BUNDLE_INSTALL_LIB_DIR}\" )
+    " )
 
     install( CODE [[
         include( ${KICAD_CMAKE_MODULE_PATH}/InstallSteps/InstallMacOS.cmake )

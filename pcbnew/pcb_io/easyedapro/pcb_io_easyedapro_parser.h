@@ -69,8 +69,8 @@ public:
 
     static double Convert( wxString aValue );
 
-    FOOTPRINT* ParseFootprint( const nlohmann::json& aProject, const wxString& aFpUuid,
-                               const std::vector<nlohmann::json>& aLines );
+    std::unique_ptr<FOOTPRINT> ParseFootprint( const nlohmann::json& aProject, const wxString& aFpUuid,
+                                               const std::vector<nlohmann::json>& aLines );
 
     void ParseBoard( BOARD* aBoard, const nlohmann::json& aProject,
                      std::map<wxString, std::unique_ptr<FOOTPRINT>>&    aFootprintMap,

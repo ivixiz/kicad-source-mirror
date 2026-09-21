@@ -145,6 +145,22 @@ DRC_ITEM DRC_ITEM::microviaDrillTooSmall( DRCE_MICROVIA_DRILL_OUT_OF_RANGE,
         _HKI( "Micro via hole size out of range" ),
         wxT( "microvia_drill_out_of_range" ) );
 
+DRC_ITEM DRC_ITEM::malformedMicroviaStackSpan( DRCE_MALFORMED_MICROVIA_STACK_SPAN,
+                                               _HKI( "Microvia stack has malformed span" ),
+                                               wxT( "malformed_microvia_stack_span" ) );
+
+DRC_ITEM DRC_ITEM::microviaStackNotFilled( DRCE_MICROVIA_STACK_NOT_FILLED, _HKI( "Microvia under microvia not filled" ),
+                                           wxT( "microvia_stack_not_filled" ) );
+
+DRC_ITEM DRC_ITEM::microviaStackDepth( DRCE_MICROVIA_STACK_DEPTH, _HKI( "Microvia stack too deep" ),
+                                       wxT( "microvia_stack_depth" ) );
+
+DRC_ITEM DRC_ITEM::microviaAspectRatio( DRCE_MICROVIA_ASPECT_RATIO, _HKI( "Microvia too deep for its diameter" ),
+                                        wxT( "microvia_aspect_ratio" ) );
+
+DRC_ITEM DRC_ITEM::microviaCrossesCore( DRCE_MICROVIA_CROSSES_CORE, _HKI( "Microvia crosses core material" ),
+                                        wxT( "microvia_crosses_core" ) );
+
 DRC_ITEM DRC_ITEM::courtyardsOverlap( DRCE_OVERLAPPING_FOOTPRINTS,
         _HKI( "Courtyards overlap" ),
         wxT( "courtyards_overlap" ) );
@@ -200,6 +216,10 @@ DRC_ITEM DRC_ITEM::footprintFilters( DRCE_FOOTPRINT_FILTERS,
 DRC_ITEM DRC_ITEM::schematicFieldsParity( DRCE_SCHEMATIC_FIELDS_PARITY,
         _HKI( "Footprint field does not match symbol field" ),
         wxT( "footprint_symbol_field_mismatch" ) );
+
+DRC_ITEM DRC_ITEM::viaStitchOverlap( DRCE_VIA_STITCH_OVERLAP,
+        _HKI( "Via-stitching zones overlap for same net" ),
+        wxT( "via_stitch_overlap" ) );
 
 DRC_ITEM DRC_ITEM::libFootprintIssues( DRCE_LIB_FOOTPRINT_ISSUES,
         _HKI( "Footprint not found in libraries" ),
@@ -347,6 +367,11 @@ std::vector<std::reference_wrapper<RC_ITEM>> DRC_ITEM::allItemTypes( {
         DRC_ITEM::annularWidth,
         DRC_ITEM::drillTooSmall,
         DRC_ITEM::microviaDrillTooSmall,
+        DRC_ITEM::malformedMicroviaStackSpan,
+        DRC_ITEM::microviaStackNotFilled,
+        DRC_ITEM::microviaStackDepth,
+        DRC_ITEM::microviaAspectRatio,
+        DRC_ITEM::microviaCrossesCore,
         DRC_ITEM::viaDiameter,
         DRC_ITEM::courtyardsOverlap,
         DRC_ITEM::missingCourtyard,
@@ -357,6 +382,7 @@ std::vector<std::reference_wrapper<RC_ITEM>> DRC_ITEM::allItemTypes( {
         DRC_ITEM::connectionWidth,
         DRC_ITEM::trackOnPostMachinedLayer,
         DRC_ITEM::trackNotCenteredOnVia,
+        DRC_ITEM::viaStitchOverlap,
         DRC_ITEM::tuningProfileImplicitRules,
 
         DRC_ITEM::heading_schematic_parity,
@@ -444,6 +470,11 @@ std::shared_ptr<DRC_ITEM> DRC_ITEM::Create( int aErrorCode )
     case DRCE_PADSTACK:                      return std::make_shared<DRC_ITEM>( padstack );
     case DRCE_PADSTACK_INVALID:              return std::make_shared<DRC_ITEM>( padstackInvalid );
     case DRCE_MICROVIA_DRILL_OUT_OF_RANGE:   return std::make_shared<DRC_ITEM>( microviaDrillTooSmall );
+    case DRCE_MALFORMED_MICROVIA_STACK_SPAN: return std::make_shared<DRC_ITEM>( malformedMicroviaStackSpan );
+    case DRCE_MICROVIA_STACK_NOT_FILLED:     return std::make_shared<DRC_ITEM>( microviaStackNotFilled );
+    case DRCE_MICROVIA_STACK_DEPTH:          return std::make_shared<DRC_ITEM>( microviaStackDepth );
+    case DRCE_MICROVIA_ASPECT_RATIO:         return std::make_shared<DRC_ITEM>( microviaAspectRatio );
+    case DRCE_MICROVIA_CROSSES_CORE: return std::make_shared<DRC_ITEM>( microviaCrossesCore );
     case DRCE_OVERLAPPING_FOOTPRINTS:        return std::make_shared<DRC_ITEM>( courtyardsOverlap );
     case DRCE_MISSING_COURTYARD:             return std::make_shared<DRC_ITEM>( missingCourtyard );
     case DRCE_MALFORMED_COURTYARD:           return std::make_shared<DRC_ITEM>( malformedCourtyard );
@@ -488,6 +519,7 @@ std::shared_ptr<DRC_ITEM> DRC_ITEM::Create( int aErrorCode )
     case DRCE_MISSING_TUNING_PROFILE:        return std::make_shared<DRC_ITEM>( missingTuningProfile );
     case DRCE_TRACK_ON_POST_MACHINED_LAYER:  return std::make_shared<DRC_ITEM>( trackOnPostMachinedLayer );
     case DRCE_TRACK_NOT_CENTERED_ON_VIA:     return std::make_shared<DRC_ITEM>( trackNotCenteredOnVia );
+    case DRCE_VIA_STITCH_OVERLAP:            return std::make_shared<DRC_ITEM>( viaStitchOverlap );
 
     default:
         return nullptr;
@@ -661,18 +693,12 @@ int DRC_ITEMS_PROVIDER::GetCount( int aSeverity ) const
     if( aSeverity < 0 )
         return (int) m_filteredMarkers.size();
 
-    int count = 0;
-
-    for( PCB_MARKER* marker : m_board->Markers() )
-    {
-        if( alg::contains( m_markerTypes, marker->GetMarkerType() )
-                && ( marker->GetSeverity() & aSeverity ) > 0 )
-        {
-            count++;
-        }
-    }
-
-    return count;
+    return static_cast<int>( std::ranges::count_if( m_board->Markers(),
+            [&]( const PCB_MARKER* marker )
+            {
+                return alg::contains( m_markerTypes, marker->GetMarkerType() )
+                       && ( marker->GetSeverity() & aSeverity ) > 0;
+            } ) );
 }
 
 

@@ -34,7 +34,10 @@
 #include <vector>
 
 #include <wx/gdicmn.h>
+#include <wx/log.h>
 #include <wx/string.h>
+
+#include <wx_log_utils.h>
 
 
 template<class T>
@@ -131,6 +134,22 @@ std::ostream& boost_test_print_type( std::ostream& os, std::pair<K, V> const& aP
     return os;
 }
 
+/**
+ * Boost print helper for generic sets
+ */
+template <typename T>
+std::ostream& boost_test_print_type( std::ostream& os, std::set<T> const& aSet )
+{
+    os << "set size " << aSet.size() << " [";
+    for( const auto& i : aSet )
+    {
+        os << "\n    " << i;
+    }
+
+    os << "]";
+    return os;
+}
+
 } // namespace std
 
 
@@ -164,6 +183,19 @@ std::ostream& boost_test_print_type( std::ostream& os, const wchar_t ( &ws )[N] 
 #endif
     return os;
 }
+
+
+namespace boost { namespace unit_test
+{
+/**
+ * wxString looks like a container to Boost.Test because it has begin()/end().
+ *
+ * But we actually want to treat it NOT like a container so that it prints the
+ * value in constructions like BOOST_TEST( strA == strB )
+ */
+template<> struct is_forward_iterable<wxString> : public mpl::false_ {};
+
+}} // namespace boost::unit_test
 
 
 namespace boost { namespace test_tools { namespace tt_detail {
@@ -338,6 +370,75 @@ struct NAMED_CASE
 #define CHECK_WX_ASSERT( STATEMENT )
 #endif
 
+
+/**
+ * Counts error-level records so a failed save can be checked for reports beyond the one it
+ * throws. Warnings are ignored; only errors reach the user as a dialog.
+ */
+class COUNTING_WXLOG : public wxLog
+{
+public:
+    COUNTING_WXLOG( wxLogLevelValues aMaxLevel ) :
+            m_maxLevel( aMaxLevel )
+    {
+    }
+
+    unsigned GetCount() const { return m_count; }
+
+protected:
+    void DoLogRecord( wxLogLevel aLevel, const wxString&, const wxLogRecordInfo& ) override
+    {
+        if( aLevel <= m_maxLevel )
+            m_count++;
+    }
+
+private:
+    wxLogLevelValues m_maxLevel;
+    unsigned         m_count = 0;
+};
+
+
+/**
+ * A scoped application of a wxLog target that counts error-level messages.
+ *
+ * On destruction, the number of error-level messages logged is written to
+ * the given reference.
+ */
+class SCOPED_COUNTING_WXLOG : public SCOPED_WXLOG_TARGET
+{
+public:
+    /**
+     * @param aLogCount pointer to the counter. Will be written-back at destruction.
+     *                  If null, the count is not written back. This is useful if you
+     *                  have a tightly-defined scope and want to check the count after
+     *                  the scope ends.
+     * @param aMaxLevel the maximum log level to count (default: wxLOG_Error)
+     */
+    SCOPED_COUNTING_WXLOG( unsigned* aLogCount, wxLogLevelValues aMaxLevel = wxLOG_Error ) :
+            SCOPED_WXLOG_TARGET( &m_logger ),
+            m_logger( aMaxLevel ),
+            m_logCountRef( aLogCount )
+    {
+    }
+
+    ~SCOPED_COUNTING_WXLOG()
+    {
+        // Update the caller's log count reference with the number of logs recorded
+        if( m_logCountRef )
+            *m_logCountRef = m_logger.GetCount();
+    }
+
+    /*
+     * Gets the current count of matching log messages.
+     */
+    unsigned GetCount() const { return m_logger.GetCount(); }
+
+private:
+    COUNTING_WXLOG m_logger;
+    unsigned*      m_logCountRef;
+};
+
+
 /**
  * Get the configured location of Eeschema test data.
  *
@@ -360,7 +461,32 @@ std::string GetTestDataRootDir();
  */
 std::vector<uint8_t> LoadBinaryData( const std::string& aFilePath, std::optional<size_t> aLoadBytes = std::nullopt );
 
+/**
+ * Load the contents of a file into a string.
+ *
+ * The file is read in binary mode, so the string is byte-exact.
+ * This is a thin wrapper around #KI_TEST::LoadBinaryData(),
+ * so it fails in the same way.
+ *
+ * No assumptions are made about the encoding of the file: it is up
+ * to the caller to interpret the string as appropriate.
+ *
+ * @param aPath the path to the file to load
+ * @return the file's contents
+ */
+std::string LoadStringData( const wxString& aPath );
+
 void SetMockConfigDir();
+
+
+/**
+ * Some tests on some platforms require a display connection to run.
+ * This function checks if a display is available on those platforms
+ * (GTK).
+ *
+ * On platforms where this doesn't matter, this always returns true.
+ */
+bool CanDoDisplayTests();
 
 } // namespace KI_TEST
 

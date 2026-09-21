@@ -342,7 +342,7 @@ void DRC_ENGINE::loadImplicitRules()
                     netclassRule->AddConstraint( constraint );
 
                     // A narrower diffpair gap overrides the netclass min clearance
-                    if( nc->GetDiffPairGap() < nc->GetClearance() )
+                    if( nc->HasClearance() && nc->GetDiffPairGap() < nc->GetClearance() )
                     {
                         netclassRule = std::make_shared<DRC_RULE>();
                         netclassRule->m_Name = wxString::Format( _( "netclass '%s' diff pair" ),
@@ -527,7 +527,7 @@ void DRC_ENGINE::loadImplicitRules()
                 addRule( tuningRule2 );
 
                 // A narrower diffpair gap overrides the netclass min clearance
-                if( aLayerEntry.GetDiffPairGap() < aNetclass->GetClearance() )
+                if( aNetclass->HasClearance() && aLayerEntry.GetDiffPairGap() < aNetclass->GetClearance() )
                 {
                     std::shared_ptr<DRC_RULE> diffPairClearanceRule = std::make_shared<DRC_RULE>();
                     diffPairClearanceRule->m_Severity = bds.m_DRCSeverities[DRCE_TUNING_PROFILE_IMPLICIT_RULES];
@@ -619,7 +619,7 @@ void DRC_ENGINE::loadImplicitRules()
                 rule->m_ImplicitItemId = zone->m_Uuid;
                 rule->m_ImplicitItem = zone;
 
-                rule->m_Condition = new DRC_RULE_CONDITION( wxString::Format( wxT( "A.intersectsArea('%s')" ),
+                rule->m_Condition = new DRC_RULE_CONDITION( wxString::Format( wxT( "A.intersectsKeepout('%s')" ),
                                                                               zone->m_Uuid.AsString() ) );
 
                 rule->m_LayerCondition = zone->GetLayerSet();
@@ -687,7 +687,7 @@ void DRC_ENGINE::loadRules( const wxFileName& aPath )
             {
                 wxString str( line );
                 str = m_board->ConvertCrossReferencesToKIIDs( str );
-                str = ExpandTextVars( str, &resolver );
+                str = ExpandTextVars( str, &resolver, INTERNAL );
 
                 rulesText << str << '\n';
             }
@@ -798,11 +798,8 @@ void DRC_ENGINE::InitEngine( const std::shared_ptr<DRC_RULE>& rule )
     {
         for( PCB_MARKER* marker : m_board->Markers() )
         {
-            if( auto rcItem = marker->GetRCItem() )
-            {
-                DRC_ITEM* drcItem = static_cast<DRC_ITEM*>( rcItem.get() );
+            if( DRC_ITEM* drcItem = static_cast<DRC_ITEM*>( marker->GetRCItem().get() ) )
                 drcItem->SetViolatingRule( nullptr );
-            }
         }
     }
 
@@ -858,11 +855,8 @@ void DRC_ENGINE::InitEngine( const wxFileName& aRulePath )
     {
         for( PCB_MARKER* marker : m_board->Markers() )
         {
-            if( auto rcItem = marker->GetRCItem() )
-            {
-                DRC_ITEM* drcItem = static_cast<DRC_ITEM*>( rcItem.get() );
+            if( DRC_ITEM* drcItem = static_cast<DRC_ITEM*>( marker->GetRCItem().get() ) )
                 drcItem->SetViolatingRule( nullptr );
-            }
         }
     }
 
@@ -1462,6 +1456,18 @@ DRC_CONSTRAINT DRC_ENGINE::EvalRules( DRC_CONSTRAINT_T aConstraintType, const BO
                                               MessageTextFromUnscaledValue( c->constraint.m_Value.Min() ) ) )
                     break;
 
+                case MICROVIA_STACK_DEPTH_CONSTRAINT:
+                    REPORT( wxString::Format( _( "Checking %s max microvia stack depth: %s." ),
+                                              EscapeHTML( c->constraint.GetName() ),
+                                              MessageTextFromUnscaledValue( c->constraint.m_Value.Max() ) ) )
+                    break;
+
+                case MICROVIA_ASPECT_RATIO_CONSTRAINT:
+                    REPORT( wxString::Format( _( "Checking %s max microvia aspect ratio: %.3f." ),
+                                              EscapeHTML( c->constraint.GetName() ),
+                                              c->constraint.m_Value.Max() / 1000.0 ) )
+                    break;
+
                 case ZONE_CONNECTION_CONSTRAINT:
                     REPORT( wxString::Format( _( "Checking %s zone connection: %s." ),
                                               EscapeHTML( c->constraint.GetName() ),
@@ -1704,7 +1710,8 @@ DRC_CONSTRAINT DRC_ENGINE::EvalRules( DRC_CONSTRAINT_T aConstraintType, const BO
                         case PCB_FIELD_T:     mask = DRC_DISALLOW_TEXTS;      break;
                         case PCB_TEXT_T:      mask = DRC_DISALLOW_TEXTS;      break;
                         case PCB_TEXTBOX_T:   mask = DRC_DISALLOW_TEXTS;      break;
-                        case PCB_TABLE_T:     mask = DRC_DISALLOW_TEXTS;      break;
+                        case PCB_TABLE_T:
+                        case PCB_DRILL_CHART_T: mask = DRC_DISALLOW_TEXTS;    break;
 
                         case PCB_ZONE_T:
                             // Treat teardrop areas as tracks for DRC purposes
@@ -1941,8 +1948,8 @@ DRC_CONSTRAINT DRC_ENGINE::EvalRules( DRC_CONSTRAINT_T aConstraintType, const BO
                 processConstraint( rule );
         }
 
-        // DIFF_PAIR_GAP_CONSTRAINT must also respect CLEARANCE_CONSTRAINTs.
-        if( aConstraintType == DIFF_PAIR_GAP_CONSTRAINT )
+        // DIFF_PAIR_GAP_CONSTRAINT must also respect CLEARANCE_CONSTRAINTs when called with two items
+        if( aConstraintType == DIFF_PAIR_GAP_CONSTRAINT && b != nullptr )
         {
             DRC_CONSTRAINT clearanceConstraint = EvalRules( CLEARANCE_CONSTRAINT, a, b, aLayer, nullptr );
 
@@ -2743,7 +2750,9 @@ SHOWMATCH_DOMAIN_SPEC getShowMatchDomainSpec( DRC_CONSTRAINT_T aConstraint )
     case SKEW_CONSTRAINT: return { SHOWMATCH_DOMAIN::ROUTING_ITEMS };
 
     case VIA_DIAMETER_CONSTRAINT:
-    case VIA_COUNT_CONSTRAINT: return { SHOWMATCH_DOMAIN::VIAS };
+    case VIA_COUNT_CONSTRAINT:
+    case MICROVIA_STACK_DEPTH_CONSTRAINT:
+    case MICROVIA_ASPECT_RATIO_CONSTRAINT: return { SHOWMATCH_DOMAIN::VIAS };
 
     case HOLE_SIZE_CONSTRAINT: return { SHOWMATCH_DOMAIN::HOLE_ITEMS };
 
@@ -3171,15 +3180,7 @@ void DRC_ENGINE::InvalidateClearanceCache( const KIID& aUuid )
     }
     else
     {
-        auto it = m_ownClearanceCache.begin();
-
-        while( it != m_ownClearanceCache.end() )
-        {
-            if( it->first.m_uuid == aUuid )
-                it = m_ownClearanceCache.erase( it );
-            else
-                ++it;
-        }
+        std::erase_if( m_ownClearanceCache, [&aUuid]( const auto& entry ) { return entry.first.m_uuid == aUuid; } );
     }
 }
 

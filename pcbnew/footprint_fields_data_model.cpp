@@ -1,7 +1,6 @@
 /*
  * This program source code file is part of KiCad, a free EDA CAD application.
  *
- * Copyright (C) 2023 <author>
  * Copyright The KiCad Developers, see AUTHORS.txt for contributors.
  *
  * This program is free software: you can redistribute it and/or modify it
@@ -40,69 +39,10 @@
 #include <footprint_fields_data_model.h>
 
 
-/**
- * Cell renderer that shows the expanded result of text variables (e.g. "${VALUE}" is
- * displayed as "10K").  The actual cell still stores the raw variable so it can be
- * edited directly.
- */
-class GRID_CELL_RESOLVED_TEXT_RENDERER : public wxGridCellStringRenderer
-{
-public:
-    GRID_CELL_RESOLVED_TEXT_RENDERER() :
-            wxGridCellStringRenderer()
-    {
-    }
-
-    void Draw( wxGrid& aGrid, wxGridCellAttr& aAttr, wxDC& aDC, const wxRect& aRect, int aRow, int aCol,
-               bool isSelected ) override
-    {
-        wxString value = aGrid.GetCellValue( aRow, aCol );
-
-        if( auto* model = dynamic_cast<FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL*>( aGrid.GetTable() ) )
-            value = model->GetResolvedValue( aRow, aCol );
-
-        wxRect rect = aRect;
-        rect.Inflate( -1 );
-
-        wxGridCellRenderer::Draw( aGrid, aAttr, aDC, aRect, aRow, aCol, isSelected );
-        SetTextColoursAndFont( aGrid, aAttr, aDC, isSelected );
-        aGrid.DrawTextRectangle( aDC, value, rect, wxALIGN_LEFT, wxALIGN_CENTRE );
-    }
-
-    wxSize GetBestSize( wxGrid& aGrid, wxGridCellAttr& aAttr, wxDC& aDC, int aRow, int aCol ) override
-    {
-        wxString value = aGrid.GetCellValue( aRow, aCol );
-
-        if( auto* model = dynamic_cast<FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL*>( aGrid.GetTable() ) )
-            value = model->GetResolvedValue( aRow, aCol );
-
-        return wxGridCellStringRenderer::DoGetBestSize( aAttr, aDC, value );
-    }
-
-    wxGridCellRenderer* Clone() const override { return new GRID_CELL_RESOLVED_TEXT_RENDERER(); }
-};
-
-
-void FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::AddColumn( const wxString& aFieldName, const wxString& aLabel,
-                                                         bool aAddedByUser )
-{
-    // Don't add a field twice
-    if( GetFieldNameCol( aFieldName ) != -1 )
-        return;
-
-    m_cols.push_back( { aFieldName, aLabel, aAddedByUser, false, false } );
-
-    for( unsigned i = 0; i < m_footprintsList.size(); ++i )
-        updateDataStoreFootprintField( m_footprintsList[i], aFieldName );
-}
-
-
-void FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::updateDataStoreFootprintField( const FOOTPRINT_REF& aFootprintRef,
-                                                                             const wxString&      aFieldName )
-{
-    KIID_PATH key = getDataStoreKey( aFootprintRef );
-    m_dataStore[key][aFieldName] = getFieldValueForVariant( aFootprintRef, aFieldName, m_currentVariant );
-}
+const wxString LIB_FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::FOOTPRINT_NAME = wxS( "${FOOTPRINT_NAME}" );
+const wxString LIB_FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::FOOTPRINT_KEYWORDS = wxS( "${FOOTPRINT_KEYWORDS}" );
+const wxString LIB_FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::FOOTPRINT_LIBRARY_DESCRIPTION =
+        wxS( "${FOOTPRINT_LIBRARY_DESCRIPTION}" );
 
 
 /**
@@ -116,7 +56,7 @@ KIID_PATH FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::getDataStoreKey( const FOOTPR
 }
 
 
-wxString FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::getItemReference( const FOOTPRINT_REF& aItem ) const
+wxString FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::getItemIdentifier( const FOOTPRINT_REF& aItem ) const
 {
     return aItem.GetFootprint().GetReferenceAsString();
 }
@@ -125,28 +65,11 @@ wxString FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::getItemReference( const FOOTPR
 wxGridCellAttr* FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::GetAttr( int aRow, int aCol, wxGridCellAttr::wxAttrKind aKind )
 {
     wxGridCellAttr* attr = nullptr;
-    wxString        rawValue = GetGroupedValue( m_rows[aRow], aCol );
-    bool            needsReadOnly = isCellReadOnly( aRow, aCol );
-    bool            needsUrlEditor = false;
+    bool            needsReadOnly = IsCellReadOnly( aRow, aCol );
+    bool            needsUrlEditor = cellUsesUrlEditor( aRow, aCol );
     bool            needsVariantHighlight = false;
-    bool            needsTextVarRenderer = false;
+    bool            needsResolvedTextRenderer = cellUsesResolvedTextRenderer( aRow, aCol );
     wxColour        highlightColor;
-
-    // Check if we need URL editor
-    if( GetColFieldName( aCol ) == GetCanonicalFieldName( FIELD_T::DATASHEET )
-        || IsURL( rawValue ) )
-    {
-        if( m_urlEditor )
-            needsUrlEditor = true;
-    }
-
-    // Check if the raw value contains a text variable that should be resolved for display
-    if( aRow >= 0 && aRow < (int) m_rows.size() && aCol >= 0 && aCol < (int) m_cols.size() && !ColIsReference( aCol )
-        && !ColIsQuantity( aCol ) && !ColIsItemNumber( aCol ) )
-    {
-        if( rawValue.Contains( wxT( "${" ) ) )
-            needsTextVarRenderer = true;
-    }
 
     // Check if we need variant highlighting
     if( !m_currentVariant.IsEmpty() && aRow >= 0 && aRow < (int) m_rows.size() && aCol >= 0
@@ -167,10 +90,7 @@ wxGridCellAttr* FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::GetAttr( int aRow, int 
                 // Get the current value from the data store
                 wxString currentValue;
 
-                KIID_PATH key = getDataStoreKey( ref );
-
-                if( m_dataStore.contains( key ) && m_dataStore[key].contains( fieldName ) )
-                    currentValue = m_dataStore[key][fieldName];
+                getStoredFieldValue( ref, fieldName, currentValue );
 
                 if( currentValue != defaultValue )
                 {
@@ -179,8 +99,8 @@ wxGridCellAttr* FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::GetAttr( int aRow, int 
                     wxColour bg = wxSystemSettings::GetColour( wxSYS_COLOUR_WINDOW );
                     bool     isDark = ( bg.Red() + bg.Green() + bg.Blue() ) < 384;
 
-                    highlightColor = isDark ? wxColour( 80, 80, 40 )
-                                            : wxColour( 255, 255, 200 );
+                    highlightColor = isDark ? FIELDS_TABLE_COLOR::VARIANT_FIELD_OVERRIDE_DARK_YELLOW
+                                            : FIELDS_TABLE_COLOR::VARIANT_FIELD_OVERRIDE_LIGHT_YELLOW;
 
                     break;
                 }
@@ -189,35 +109,15 @@ wxGridCellAttr* FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::GetAttr( int aRow, int 
     }
 
     // If we don't need any custom attributes, use the base class behavior
-    if( !needsReadOnly && !needsUrlEditor && !needsVariantHighlight && !needsTextVarRenderer )
-        return WX_GRID_TABLE_BASE::GetAttr( aRow, aCol, aKind );
+    if( !needsReadOnly && !needsUrlEditor && !needsVariantHighlight && !needsResolvedTextRenderer )
+        return applyCellDecorations( WX_GRID_TABLE_BASE::GetAttr( aRow, aCol, aKind ), aRow, aCol );
 
-    // URL cells: use m_urlEditor as base, potentially with read-only or variant overlays
+    // URL cells use the Datasheet column's editor.  Other cells use their own column attributes.
     if( needsUrlEditor )
     {
-        if( needsReadOnly || needsVariantHighlight )
-        {
-            attr = m_urlEditor->Clone();
-
-            if( needsReadOnly )
-                attr->SetReadOnly();
-
-            if( needsVariantHighlight )
-                attr->SetBackgroundColour( highlightColor );
-        }
-        else
-        {
-            // Just use the URL editor attribute directly
-            m_urlEditor->IncRef();
-            attr = m_urlEditor;
-        }
-
-        return enhanceAttr( attr, aRow, aCol, aKind );
+        attr = cloneUrlEditorAttr();
     }
-
-    // Non-URL cells: start with column attributes if they exist.
-    // This preserves checkbox renderers and other column-specific settings.
-    if( m_colAttrs.find( aCol ) != m_colAttrs.end() && m_colAttrs[aCol] )
+    else if( m_colAttrs.find( aCol ) != m_colAttrs.end() && m_colAttrs[aCol] )
     {
         attr = m_colAttrs[aCol]->Clone();
     }
@@ -232,26 +132,10 @@ wxGridCellAttr* FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::GetAttr( int aRow, int 
     if( needsVariantHighlight )
         attr->SetBackgroundColour( highlightColor );
 
-    if( needsTextVarRenderer )
-    {
-        if( !m_textVarRenderer )
-            m_textVarRenderer = new GRID_CELL_RESOLVED_TEXT_RENDERER();
+    if( needsResolvedTextRenderer )
+        applyResolvedTextRenderer( attr, !needsVariantHighlight );
 
-        m_textVarRenderer->IncRef();
-        attr->SetRenderer( m_textVarRenderer );
-
-        // Tint text-var cells if not already highlighted by variant
-        if( !needsVariantHighlight )
-        {
-            wxColour bg = wxSystemSettings::GetColour( wxSYS_COLOUR_WINDOW );
-            bool     isDark = ( bg.Red() + bg.Green() + bg.Blue() ) < 384;
-
-            attr->SetBackgroundColour( isDark ? wxColour( 80, 70, 30 )       // Dark amber
-                                              : wxColour( 255, 252, 200 ) ); // Light yellow
-        }
-    }
-
-    return enhanceAttr( attr, aRow, aCol, aKind );
+    return applyCellDecorations( enhanceAttr( attr, aRow, aCol, aKind ), aRow, aCol );
 }
 
 
@@ -259,15 +143,8 @@ void FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::SetValue( int aRow, int aCol, cons
 {
     wxCHECK_RET( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), wxS( "Invalid column number" ) );
 
-    if( isCellReadOnly( aRow, aCol ) )
+    if( IsCellReadOnly( aRow, aCol ) )
         return;
-
-    // Can't modify references or generated fields (e.g. ${QUANTITY})
-    if( ColIsReference( aCol )
-        || ( IsGeneratedField( m_cols[aCol].m_fieldName ) && !ColIsAttribute( aCol ) ) )
-    {
-        return;
-    }
 
     if( aValue == INDETERMINATE_STATE )
         return;
@@ -276,18 +153,25 @@ void FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::SetValue( int aRow, int aCol, cons
     const wxString&                              fieldName = m_cols[aCol].m_fieldName;
 
     for( const FOOTPRINT_REF& ref : row.m_items )
-        m_dataStore[getDataStoreKey( ref )][fieldName] = aValue;
+        setStoredFieldValue( ref, fieldName, aValue );
 
     m_edited = true;
 }
 
 
-bool FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::isCellReadOnly( int aRow, int aCol )
+bool FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::ColIsReadOnly( int aCol ) const
 {
-    return FIELDS_TABLE_DATA_MODEL<FOOTPRINT_REF>::isCellReadOnly( aRow, aCol )
+    return FIELDS_TABLE_DATA_MODEL<FOOTPRINT_REF>::ColIsReadOnly( aCol )
            || ColIsFootprint( aCol )
-           || GetColFieldName( aCol ) == wxS( "${EXCLUDE_FROM_BOARD}" )
-           || GetColFieldName( aCol ) == wxS( "${EXCLUDE_FROM_SIM}" );
+           || m_cols[aCol].m_fieldName == wxS( "${EXCLUDE_FROM_BOARD}" );
+}
+
+
+bool FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::fieldSupportsVariants( const wxString& aFieldName ) const
+{
+    return aFieldName != GetDefaultFieldName( FIELD_T::REFERENCE, UNTRANSLATED )
+           && aFieldName != GetDefaultFieldName( FIELD_T::FOOTPRINT, UNTRANSLATED )
+           && aFieldName != wxS( "${EXCLUDE_FROM_BOARD}" );
 }
 
 
@@ -296,6 +180,21 @@ bool FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::unitMatch( const FOOTPRINT_REF& lh
     // Footprints are just pointers and never have multiple units unlike symbols
     // so just compare
     return lhItem == rhItem;
+}
+
+
+bool FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::getLiveFieldValue( const FOOTPRINT_REF& aRef,
+                                                                 const wxString& aFieldName,
+                                                                 wxString& aValue )
+{
+    return FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::getLiveFieldValueForVariant( aRef, aFieldName, m_currentVariant,
+                                                                                 aValue );
+}
+
+
+std::vector<FOOTPRINT_REF> FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::getAllItems() const
+{
+    return m_footprintsList;
 }
 
 
@@ -310,7 +209,7 @@ wxString FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::getFieldResolvedLiveValue( con
         if( field->IsPrivate() )
             return wxEmptyString;
         else
-            return field->GetShownText( false, 0 );
+            return field->GetShownText( INTERNAL, 0 );
     }
 
     // Handle generated fields with variables as names (e.g. ${QUANTITY}) that are not present in
@@ -319,12 +218,13 @@ wxString FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::getFieldResolvedLiveValue( con
     {
         int depth = 0;
 
-        std::function<bool( wxString* )> footprintResolver = [&]( wxString* token ) -> bool
-        {
-            return footprint.ResolveTextVar( token, depth + 1 );
-        };
+        std::function<bool( wxString* )> footprintResolver =
+                [&]( wxString* token ) -> bool
+                {
+                    return footprint.ResolveTextVar( token, m_currentVariant, depth + 1 );
+                };
 
-        return ExpandTextVars( aFieldName, &footprintResolver );
+        return ResolveTextVars( aFieldName, &footprintResolver, depth );
     }
 
     return wxEmptyString;
@@ -333,18 +233,25 @@ wxString FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::getFieldResolvedLiveValue( con
 
 wxString FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::resolveTextVars( const FOOTPRINT_REF& aRef, const wxString& aText )
 {
-    // TODO: this isn't technically correct, this should resolve against the
-    // data store's copy of variables whenever whenever possible,
-    // but currently it is resolving against the footprint's current values.
-    // For instance, if you have "My value is ${VALUE}" in the description field,
-    // ${VALUE} will be resolved against the footprint's live value, not the Value field
-    // stored in the data store.
-    std::function<bool( wxString* )> footprintResolver = [&]( wxString* token ) -> bool
-    {
-        return aRef.GetFootprint().ResolveTextVar( token );
-    };
+    int depth = 0;
 
-    return ExpandTextVars( aText, &footprintResolver );
+    std::function<bool( wxString* )> footprintResolver =
+            [&]( wxString* token ) -> bool
+            {
+                // Footprint user field names are case-sensitive; VALUE is a built-in alias.
+                wxString fieldToken = *token == wxS( "VALUE" )
+                                              ? GetDefaultFieldName( FIELD_T::VALUE, UNTRANSLATED ) : *token;
+
+                if( resolveStoredTextVar( aRef, &fieldToken, true ) )
+                {
+                    *token = fieldToken;
+                    return true;
+                }
+
+                return aRef.GetFootprint().ResolveTextVar( token, m_currentVariant, depth );
+            };
+
+    return ResolveTextVars( aText, &footprintResolver, depth );
 }
 
 
@@ -362,7 +269,7 @@ wxString FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::getAttributeValue( const FOOTP
         return aRef.GetFootprint().GetExcludedFromBOMForVariant( aVariantName ) ? wxS( "1" ) : wxS( "0" );
 
     if( aAttributeName == wxS( "${EXCLUDE_FROM_SIM}" ) )
-        return wxS( "0" );
+        return aRef.GetFootprint().GetExcludedFromSimForVariant( aVariantName ) ? wxS( "1" ) : wxS( "0" );
 
     if( aAttributeName == wxS( "${EXCLUDE_FROM_POS_FILES}" ) )
         return aRef.GetFootprint().GetExcludedFromPosFilesForVariant( aVariantName ) ? wxS( "1" ) : wxS( "0" );
@@ -371,8 +278,7 @@ wxString FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::getAttributeValue( const FOOTP
 }
 
 
-bool FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::attributeInheritedFromSheet( const FOOTPRINT_REF&,
-                                                                           const wxString& ) const
+bool FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::attributeForcedOnBySheet( const FOOTPRINT_REF&, const wxString& ) const
 {
     // TODO: So if a symbol has DNP set to false, and the sheet is in has DNP set to true,
     // the symbol will be effectively DNP true. This will propogate to the footprint correctly.
@@ -389,46 +295,60 @@ bool FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::attributeInheritedFromSheet( const
 }
 
 
-wxString FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::getFieldValueForVariant( const FOOTPRINT_REF& aRef,
+bool FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::getLiveFieldValueForVariant( const FOOTPRINT_REF& aRef,
                                                                            const wxString&      aFieldName,
-                                                                           const wxString&      aVariantName )
+                                                                           const wxString&      aVariantName,
+                                                                           wxString&            aValue )
 {
+    aValue.clear();
+
     const FOOTPRINT& footprint = aRef.GetFootprint();
 
-    if( isAttribute( aFieldName ) )
-        return getAttributeValue( aRef, aFieldName, aVariantName );
+    if( fieldIsAttribute( aFieldName ) )
+    {
+        aValue = getAttributeValue( aRef, aFieldName, aVariantName );
+        return true;
+    }
 
-    if( aFieldName == GetCanonicalFieldName( FIELD_T::FOOTPRINT ) )
-        return footprint.GetFPIDAsString();
+    if( aFieldName == GetDefaultFieldName( FIELD_T::FOOTPRINT, UNTRANSLATED ) )
+    {
+        aValue = footprint.GetFPIDAsString();
+        return true;
+    }
 
     if( const PCB_FIELD* field = footprint.GetField( aFieldName ) )
     {
         if( field->IsPrivate() )
-            return wxEmptyString;
+            return false;
 
-        wxString value = footprint.GetFieldValueForVariant( aVariantName, aFieldName );
+        aValue = footprint.GetFieldValueForVariant( aVariantName, aFieldName );
 
         if( footprint.GetBoard() )
             // Cross part references e.g. ${U2:MyField} stored in U1 are converted
             // to KIIDs transparently e.g. ${KIID:MyField} so reannotating U2->U3 doesn't
             // break the the variable resolution
-            value = footprint.GetBoard()->ConvertKIIDsToCrossReferences( value );
+            aValue = footprint.GetBoard()->ConvertKIIDsToCrossReferences( aValue );
 
-        return value;
+        return true;
     }
 
     // For generated fields, return the field name itself
     if( IsGeneratedField( aFieldName ) )
-        return aFieldName;
+    {
+        aValue = aFieldName;
+        return true;
+    }
 
-    return wxEmptyString;
+    return false;
 }
 
 
 wxString FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::getDefaultFieldValue( const FOOTPRINT_REF& aRef,
                                                                         const wxString& aFieldName )
 {
-    return getFieldValueForVariant( aRef, aFieldName, wxEmptyString );
+    wxString value;
+    getLiveFieldValueForVariant( aRef, aFieldName, wxEmptyString, value );
+    return value;
 }
 
 
@@ -474,7 +394,16 @@ bool FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::setAttributeValue( const FOOTPRINT
     }
     else if( aAttributeName == wxS( "${EXCLUDE_FROM_SIM}" ) )
     {
-        attrChanged = false;
+        attrChanged = aRef.GetFootprint().GetExcludedFromSimForVariant( aVariantName ) != newValue;
+
+        if( attrChanged )
+        {
+            // TODO: fix footprint API to match symbol
+            if( defaultVariant )
+                aRef.GetFootprint().SetExcludedFromSim( newValue );
+            else if( FOOTPRINT_VARIANT* variant = aRef.GetFootprint().AddVariant( aVariantName ) )
+                variant->SetExcludedFromSim( newValue );
+        }
     }
     else if( aAttributeName == wxS( "${EXCLUDE_FROM_POS_FILES}" ) )
     {
@@ -517,7 +446,13 @@ void FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::RebuildRows()
     {
         const FOOTPRINT& footprint = ref.GetFootprint();
 
-        if( !m_filter.IsEmpty() && !matcher.Find( footprint.GetReferenceAsString().Lower() ) )
+        if( m_scope == SCOPE::SCOPE_SELECTION
+            && !m_selectionItems.contains( getDataStoreKey( ref ) ) )
+        {
+            continue;
+        }
+
+        if( !MatchesFilter( ref, getItemIdentifier( ref ), matcher ) )
             continue;
 
         if( m_excludeDNP )
@@ -605,7 +540,7 @@ void FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::RebuildRows()
             {
                 matchFound = true;
                 row.m_items.push_back( ref );
-                row.m_state = ROW_STATE::COLLAPSED;
+                row.m_state = ROW_STATE::GROUP_COLLAPSED;
                 break;
             }
         }
@@ -624,127 +559,164 @@ void FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::RebuildRows()
 }
 
 
-void FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::ApplyData( BOARD_COMMIT& aCommit, TEMPLATES& aTemplateFieldnames,
-                                                         const wxString& aVariantName )
+bool FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::applyDataToFootprint( const FOOTPRINT_REF& aSourceRef,
+                                                                    FOOTPRINT&           aDestFootprint,
+                                                                    TEMPLATES*           aTemplateFieldnames,
+                                                                    const wxString&      aVariantName )
 {
     bool defaultVariant = aVariantName.IsEmpty()
                           || aVariantName.CmpNoCase( GetDefaultVariantName() ) == 0;
+    bool footprintModified = false;
+
+    FOOTPRINT_REF destRef( aDestFootprint );
+
+    const std::map<wxString, wxString> fieldStore = getStoredFields( aSourceRef, aVariantName );
+
+    for( const auto& [srcName, srcValue] : fieldStore )
+    {
+        // Attributes bypass the field logic, so handle them first
+        if( fieldIsAttribute( srcName ) )
+        {
+            footprintModified |= setAttributeValue( destRef, srcName, srcValue, aVariantName );
+            continue;
+        }
+
+        // Lib footprint fields models exposes extra footprint properties like lib description
+        // that aren't fields
+        if( fieldIsItemProperty( srcName ) )
+            continue;
+
+        // Skip generated fields with variables as names (e.g. ${QUANTITY});
+        // they can't be edited
+        if( IsGeneratedField( srcName ) )
+            continue;
+
+        // Don't apply footprint fields to footprints
+        if( srcName == GetDefaultFieldName( FIELD_T::FOOTPRINT, UNTRANSLATED ) )
+            continue;
+
+        int col = GetFieldNameCol( srcName );
+
+        // Footprint names are not editable (from the fields table dialogs)
+        if( col != -1 && ColIsItemIdentifier( col ) )
+            continue;
+
+        PCB_FIELD* destField = aDestFootprint.GetField( srcName );
+
+        if( destField && destField->IsPrivate() )
+        {
+            if( srcValue.IsEmpty() )
+                continue;
+            else
+            {
+                destField->SetPrivate( false );
+                footprintModified = true;
+            }
+        }
+
+        // Reaching this point means the data store field is at least marked present,
+        // so add the field to the footprint even when its stored value is empty.
+        bool createField = !destField;
+
+        if( createField )
+        {
+            destField = new PCB_FIELD( &aDestFootprint, FIELD_T::USER, srcName );
+            destField->SetLayer( aDestFootprint.GetLayer() == F_Cu ? F_Fab : B_Fab );
+            destField->SetFPRelativePosition( { 0, 0 } );
+
+            if( BOARD* board = aDestFootprint.GetBoard() )
+                destField->StyleFromSettings( board->GetDesignSettings(), true );
+
+            if( aTemplateFieldnames )
+            {
+                if( const TEMPLATE_FIELDNAME* srcTemplate = aTemplateFieldnames->GetFieldName( srcName ) )
+                    destField->SetVisible( srcTemplate->m_Visible );
+                else
+                    destField->SetVisible( false );
+            }
+            else
+                destField->SetVisible( false );
+
+            aDestFootprint.Add( destField );
+            footprintModified = true;
+        }
+
+        if( !destField )
+            continue;
+
+        wxString previousValue = aDestFootprint.GetFieldValueForVariant( aVariantName, srcName );
+        wxString newValue = srcValue;
+
+        // Board work is optional, not preset for lib fp fields table
+        if( BOARD* board = aDestFootprint.GetBoard() )
+            newValue = board->ConvertCrossReferencesToKIIDs( srcValue );
+
+        if( previousValue != newValue )
+        {
+            // Lib footprints pass a wxEmptyString variant and always apply straight to the field
+            if( defaultVariant )
+            {
+                destField->SetText( newValue );
+                footprintModified = true;
+            }
+            else if( FOOTPRINT_VARIANT* variant = aDestFootprint.AddVariant( aVariantName ) )
+            {
+                variant->SetFieldValue( srcName, newValue );
+                footprintModified = true;
+            }
+        }
+    }
+
+    for( int ii = static_cast<int>( aDestFootprint.GetFields().size() ) - 1; ii >= 0; ii-- )
+    {
+        PCB_FIELD* field = aDestFootprint.GetFields()[ii];
+
+        if( field->IsMandatory() || field->IsPrivate() )
+            continue;
+
+        if( storedFieldIsRemoved( aSourceRef, field->GetUntranslatedName() ) )
+        {
+            // TODO: unlike symbols/SCH_FIELD, footprint PCB_FIELD
+            // can be grouped so we need to remove it from the group before deleting it
+            // In general, I'm not sure letting PCB_FIELDs associated with a footprint
+            // be grouped separately from the footprint is a good idea.
+            if( EDA_GROUP* parentGroup = field->GetParentGroup() )
+                parentGroup->RemoveItem( field );
+
+            aDestFootprint.Remove( field );
+            delete field;
+            footprintModified = true;
+        }
+    }
+
+    return footprintModified;
+}
+
+
+void FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::ApplyData( BOARD_COMMIT& aCommit, TEMPLATES& aTemplateFieldnames )
+{
+    for( const FOOTPRINT_REF& ref : m_footprintsList )
+        refreshDataStoreItem( ref );
 
     for( const FOOTPRINT_REF& ref : m_footprintsList )
     {
         FOOTPRINT& footprint = ref.GetFootprint();
-        bool       footprintModified = false;
 
+        // commit will delete the copy properly as needed, and we will delete it when
+        // we go out of scope if we fail to apply the data
         std::unique_ptr<FOOTPRINT> footprintCopy = std::make_unique<FOOTPRINT>( footprint );
         footprintCopy->SetParentGroup( nullptr );
 
-        KIID_PATH                           key = getDataStoreKey( ref );
-        const std::map<wxString, wxString>& fieldStore = m_dataStore[key];
+        // Only commit if the footprint was actually modified
+        bool modified = false;
 
-        for( const auto& [srcName, srcValue] : fieldStore )
-        {
-            // Attributes bypass the field logic, so handle them first
-            if( isAttribute( srcName ) )
-            {
-                footprintModified |= setAttributeValue( ref, srcName, srcValue, aVariantName );
-                continue;
-            }
+        for( const wxString& variant : storedVariants( ref ) )
+            modified |= applyDataToFootprint( ref, footprint, &aTemplateFieldnames, variant );
 
-            // Skip generated fields with variables as names (e.g. ${QUANTITY});
-            // they can't be edited
-            if( IsGeneratedField( srcName ) )
-                continue;
-
-            // Don't apply footprint fields to footprints
-            if( srcName == GetCanonicalFieldName( FIELD_T::FOOTPRINT ) )
-                continue;
-
-            PCB_FIELD* destField = footprint.GetField( srcName );
-
-            if( destField && destField->IsPrivate() )
-            {
-                if( srcValue.IsEmpty() )
-                    continue;
-                else
-                {
-                    destField->SetPrivate( false );
-                    footprintModified = true;
-                }
-            }
-
-            int  col = GetFieldNameCol( srcName );
-            bool userAdded = ( col != -1 && m_cols[col].m_userAdded );
-
-            // Add a not existing field if it has a value for this footprint
-            bool createField = !destField && ( !srcValue.IsEmpty() || userAdded );
-
-            if( createField )
-            {
-                destField = new PCB_FIELD( &footprint, FIELD_T::USER, srcName );
-                destField->SetLayer( footprint.GetLayer() == F_Cu ? F_Fab : B_Fab );
-                destField->SetFPRelativePosition( { 0, 0 } );
-
-                if( BOARD* board = footprint.GetBoard() )
-                    destField->StyleFromSettings( board->GetDesignSettings(), true );
-
-                if( const TEMPLATE_FIELDNAME* srcTemplate = aTemplateFieldnames.GetFieldName( srcName ) )
-                    destField->SetVisible( srcTemplate->m_Visible );
-                else
-                    destField->SetVisible( false );
-
-                footprint.Add( destField );
-                footprintModified = true;
-            }
-
-            if( !destField )
-                continue;
-
-            // Reference is not editable from this dialog
-            if( destField->GetId() == FIELD_T::REFERENCE )
-                continue;
-
-            wxString previousValue = footprint.GetFieldValueForVariant( aVariantName, srcName );
-            wxString newValue = aCommit.GetBoard()->ConvertCrossReferencesToKIIDs( srcValue );
-
-            if( previousValue != newValue )
-            {
-                if( defaultVariant )
-                {
-                    destField->SetText( newValue );
-                    footprintModified = true;
-                }
-                else if( FOOTPRINT_VARIANT* variant = footprint.AddVariant( aVariantName ) )
-                {
-                    variant->SetFieldValue( srcName, newValue );
-                    footprintModified = true;
-                }
-            }
-        }
-
-        for( int ii = static_cast<int>( footprint.GetFields().size() ) - 1; ii >= 0; ii-- )
-        {
-            PCB_FIELD* field = footprint.GetFields()[ii];
-
-            if( field->IsMandatory() || field->IsPrivate() )
-                continue;
-
-            if( !fieldStore.contains( field->GetCanonicalName() ) )
-            {
-                // TODO: unlike symbols/SCH_FIELD, footprint PCB_FIELD
-                // can be grouped so we need to remove it from the group before deleting it
-                // In general, I'm not sure letting PCB_FIELDs associated with a footprint
-                // be grouped separately from the footprint is a good idea.
-                if( EDA_GROUP* parentGroup = field->GetParentGroup() )
-                    parentGroup->RemoveItem( field );
-
-                footprint.Remove( field );
-                delete field;
-                footprintModified = true;
-            }
-        }
-
-        if( footprintModified )
+        if( modified )
             aCommit.Modified( &footprint, footprintCopy.release() );
+
+        acceptDataStoreItem( ref );
     }
 
     m_edited = false;
@@ -757,24 +729,9 @@ void FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::AddReferences( const FOOTPRINT_REF
     {
         if( !alg::contains( m_footprintsList, ref ) )
         {
-            FOOTPRINT& footprint = ref.GetFootprint();
             m_footprintsList.push_back( ref );
 
-            KIID_PATH key = getDataStoreKey( ref );
-
-            // Update the fields of every reference
-            for( const PCB_FIELD* field : footprint.GetFields() )
-            {
-                if( !field->IsPrivate() )
-                {
-                    wxString name = field->GetCanonicalName();
-                    wxString value = getFieldValueForVariant( ref, name, m_currentVariant );
-                    m_dataStore[key][name] = value;
-                }
-            }
-
-            for( const DATA_MODEL_COL& col : m_cols )
-                m_dataStore[key].try_emplace( col.m_fieldName, wxEmptyString );
+            initializeDataStoreItem( ref );
         }
     }
 }
@@ -807,12 +764,13 @@ void FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::UpdateReferences( const FOOTPRINT_
         // Update the fields of every reference. Do this by iterating through the data model
         // columns; we must have all fields in the footprint added to the data model at this point,
         // and some of the data model columns may be variables that are not present in the footprint
-        for( const DATA_MODEL_COL& col : m_cols )
-            updateDataStoreFootprintField( ref, col.m_fieldName );
+        refreshDataStoreItem( ref );
 
         if( !alg::contains( m_footprintsList, ref ) )
             m_footprintsList.push_back( ref );
     }
+
+    updateEditedState();
 }
 
 
@@ -867,4 +825,127 @@ bool FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::DeleteRows( size_t aPosition, size
     }
 
     return true;
+}
+
+
+LIB_FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::LIB_FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL(
+        const FOOTPRINT_REFERENCE_LIST& aFootprints ) :
+        FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL( aFootprints )
+{
+    m_includeExcluded = true;
+}
+
+
+bool LIB_FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::ColIsItemIdentifier( int aCol ) const
+{
+    wxCHECK( aCol >= 0 && aCol < static_cast<int>( m_cols.size() ), false );
+    return m_cols[aCol].m_fieldName == FOOTPRINT_NAME;
+}
+
+
+bool LIB_FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::fieldIsItemProperty( const wxString& aFieldName ) const
+{
+    return aFieldName == FOOTPRINT_NAME || aFieldName == FOOTPRINT_KEYWORDS
+           || aFieldName == FOOTPRINT_LIBRARY_DESCRIPTION
+           || FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::fieldIsItemProperty( aFieldName );
+}
+
+
+bool LIB_FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::getLiveFieldValue( const FOOTPRINT_REF& aRef,
+                                                                     const wxString& aFieldName, wxString& aValue )
+{
+    const FOOTPRINT& footprint = aRef.GetFootprint();
+
+    if( aFieldName == FOOTPRINT_NAME )
+    {
+        aValue = footprint.GetName();
+        return true;
+    }
+    else if( aFieldName == FOOTPRINT_KEYWORDS )
+    {
+        aValue = footprint.GetKeywords();
+        return true;
+    }
+    else if( aFieldName == FOOTPRINT_LIBRARY_DESCRIPTION )
+    {
+        aValue = footprint.GetLibDescription();
+        return true;
+    }
+
+    return FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::getLiveFieldValue( aRef, aFieldName, aValue );
+}
+
+
+wxString LIB_FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::getItemIdentifier( const FOOTPRINT_REF& aRef ) const
+{
+    return aRef.GetFootprint().GetName();
+}
+
+
+bool LIB_FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::applyDataToFootprint( const FOOTPRINT_REF& aRef,
+                                                                        FOOTPRINT&           aFootprint )
+{
+    bool     footprintModified = false;
+    wxString value;
+
+    if( getStoredFieldValue( aRef, FOOTPRINT_KEYWORDS, value )
+        && aFootprint.GetKeywords() != value )
+    {
+        aFootprint.SetKeywords( value );
+        footprintModified = true;
+    }
+
+    if( getStoredFieldValue( aRef, FOOTPRINT_LIBRARY_DESCRIPTION, value )
+        && aFootprint.GetLibDescription() != value )
+    {
+        aFootprint.SetLibDescription( value );
+        footprintModified = true;
+    }
+
+    footprintModified |= FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::applyDataToFootprint(
+            aRef, aFootprint, nullptr, wxEmptyString );
+
+    return footprintModified;
+}
+
+
+bool LIB_FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL::ApplyData( std::function<bool( FOOTPRINT& )> aChangeHandler )
+{
+    bool allChangesApplied = true;
+
+    for( const FOOTPRINT_REF& ref : m_footprintsList )
+    {
+        // This works the opposite of the non-lib footprint fields table,
+        // here we just make a copy on the stack and let it pop off regardless of what
+        // happens; the actual footprint in source ref gets overwritten when we've
+        // determined that the change were applied
+        FOOTPRINT changedFootprint( ref.GetFootprint() );
+
+        if( !applyDataToFootprint( ref, changedFootprint ) )
+        {
+            // An empty staged public field may collide with an existing private field and
+            // be ignored. Re-sync from live so the no-op does not leave the model edited.
+            // A non-empty public field that collides with a private field is taken to be
+            // an explicit request to make it non-private, so that case isn't what we're
+            // checking for here, only the empty public/existing private mismatch.
+            acceptDataStoreItem( ref );
+
+            continue;
+        }
+
+        if( !aChangeHandler( changedFootprint ) )
+        {
+            allChangesApplied = false;
+            break;
+        }
+
+        ref.GetFootprint() = changedFootprint;
+
+        // Update the data store with the new live values after applying changes
+        acceptDataStoreItem( ref );
+    }
+
+    updateEditedState();
+
+    return allChangesApplied;
 }

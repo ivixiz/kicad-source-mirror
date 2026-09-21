@@ -296,6 +296,7 @@ void DIALOG_DRC_RULE_EDITOR::LoadExistingRules()
             ruleData->SetParentId( parentId );
             ruleData->SetOriginalRuleText( entry.originalRuleText );
             ruleData->SetWasEdited( entry.wasEdited );
+            ruleData->SetOriginalEntryCount( entry.originalEntryCount );
             ruleData->SetLayerSource( entry.layerSource );
 
             if( !entry.layerSource.IsEmpty() )
@@ -656,6 +657,13 @@ std::vector<RULE_TREE_NODE> DIALOG_DRC_RULE_EDITOR::buildManufacturabilityRuleTr
                                              lastParentId, HOLE_TO_HOLE_DISTANCE ) );
     result.push_back(
             buildRuleTreeNodeData( "Via style", DRC_RULE_EDITOR_ITEM_TYPE::CONSTRAINT, lastParentId, VIA_STYLE ) );
+
+    result.push_back( buildRuleTreeNodeData( "Microvia", DRC_RULE_EDITOR_ITEM_TYPE::CATEGORY, aParentId ) );
+    lastParentId = m_nodeId;
+    result.push_back( buildRuleTreeNodeData( "Maximum stack depth", DRC_RULE_EDITOR_ITEM_TYPE::CONSTRAINT, lastParentId,
+                                             MICROVIA_STACK_DEPTH ) );
+    result.push_back( buildRuleTreeNodeData( "Maximum aspect ratio", DRC_RULE_EDITOR_ITEM_TYPE::CONSTRAINT,
+                                             lastParentId, MICROVIA_ASPECT_RATIO ) );
 
     result.push_back( buildRuleTreeNodeData( "Minimum text height and thickness", DRC_RULE_EDITOR_ITEM_TYPE::CONSTRAINT,
                                              aParentId, MINIMUM_TEXT_HEIGHT_AND_THICKNESS ) );
@@ -1213,28 +1221,29 @@ void DIALOG_DRC_RULE_EDITOR::selectRuleNode( int aNodeId )
     wxTreeItemIdValue cookie;
     wxTreeItemId root = m_ruleTreeCtrl->GetRootItem();
 
-    std::function<wxTreeItemId( wxTreeItemId )> findItem = [&]( wxTreeItemId parent ) -> wxTreeItemId
-    {
-        wxTreeItemId item = m_ruleTreeCtrl->GetFirstChild( parent, cookie );
+    std::function<wxTreeItemId( wxTreeItemId )> findItem =
+            [&]( wxTreeItemId parent ) -> wxTreeItemId
+            {
+                wxTreeItemId item = m_ruleTreeCtrl->GetFirstChild( parent, cookie );
 
-        while( item.IsOk() )
-        {
-            RULE_TREE_ITEM_DATA* data =
-                    dynamic_cast<RULE_TREE_ITEM_DATA*>( m_ruleTreeCtrl->GetItemData( item ) );
+                while( item.IsOk() )
+                {
+                    RULE_TREE_ITEM_DATA* data =
+                            dynamic_cast<RULE_TREE_ITEM_DATA*>( m_ruleTreeCtrl->GetItemData( item ) );
 
-            if( data && data->GetNodeId() == aNodeId )
-                return item;
+                    if( data && data->GetNodeId() == aNodeId )
+                        return item;
 
-            wxTreeItemId found = findItem( item );
+                    wxTreeItemId found = findItem( item );
 
-            if( found.IsOk() )
-                return found;
+                    if( found.IsOk() )
+                        return found;
 
-            item = m_ruleTreeCtrl->GetNextSibling( item );
-        }
+                    item = m_ruleTreeCtrl->GetNextSibling( item );
+                }
 
-        return wxTreeItemId();
-    };
+                return wxTreeItemId();
+            };
 
     wxTreeItemId itemId = findItem( root );
 
@@ -1343,6 +1352,7 @@ void DIALOG_DRC_RULE_EDITOR::SaveRulesToFile()
         entry.condition = data->GetRuleCondition();
         entry.originalRuleText = data->GetOriginalRuleText();
         entry.wasEdited = data->WasEdited();
+        entry.originalEntryCount = data->GetOriginalEntryCount();
         entry.severity = data->GetSeverity();
         entry.layerCondition = LSET( data->GetLayers() );
         entry.layerSource = data->GetLayerSource();

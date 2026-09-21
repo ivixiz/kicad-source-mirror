@@ -36,7 +36,7 @@
 #include <pcb_generator.h>
 #include <pcb_marker.h>
 #include <pcb_point.h>
-#include <pcb_griditem.h>
+#include <pcb_grid_item.h>
 #include <pcb_base_frame.h>
 #include <pcbnew_settings.h>
 #include <ratsnest/ratsnest_data.h>
@@ -67,7 +67,10 @@ const int GAL_LAYER_ORDER[] = {
     LAYER_GP_OVERLAY, LAYER_SELECT_OVERLAY, LAYER_CONFLICTS_SHADOW,
 
     LAYER_DRC_HIGHLIGHTED, LAYER_DRC_ERROR, LAYER_DRC_WARNING, LAYER_DRC_EXCLUSION, LAYER_MARKER_SHADOWS,
-    LAYER_DRC_SHAPES, LAYER_PAD_NETNAMES, LAYER_VIA_NETNAMES, Dwgs_User, ZONE_LAYER_FOR( Dwgs_User ),
+
+    LAYER_PAD_NETNAMES, LAYER_VIA_NETNAMES,
+
+    Dwgs_User, ZONE_LAYER_FOR( Dwgs_User ),
     POINT_LAYER_FOR( Dwgs_User ), Cmts_User, ZONE_LAYER_FOR( Cmts_User ), POINT_LAYER_FOR( Cmts_User ), Eco1_User,
     ZONE_LAYER_FOR( Eco1_User ), POINT_LAYER_FOR( Eco1_User ), Eco2_User, ZONE_LAYER_FOR( Eco2_User ),
     POINT_LAYER_FOR( Eco2_User ), Edge_Cuts, ZONE_LAYER_FOR( Edge_Cuts ), POINT_LAYER_FOR( Edge_Cuts ), Margin,
@@ -108,9 +111,9 @@ const int GAL_LAYER_ORDER[] = {
 
     LAYER_FP_TEXT, LAYER_FP_REFERENCES, LAYER_FP_VALUES,
 
-    LAYER_GRIDITEMS,
+    LAYER_SUBGRIDS,
 
-    LAYER_RATSNEST, LAYER_ANCHOR, LAYER_POINTS, LAYER_LOCKED_ITEM_SHADOW, LAYER_CONSTRAINT_SHADOW,
+    LAYER_RATSNEST, LAYER_ANCHOR, LAYER_POINTS, LAYER_VIA_STITCHING, LAYER_LOCKED_ITEM_SHADOW, LAYER_CONSTRAINT_SHADOW,
     LAYER_VIA_HOLES, LAYER_VIA_HOLEWALLS,
     LAYER_PAD_PLATEDHOLES, LAYER_PAD_HOLEWALLS, LAYER_NON_PLATEDHOLES, LAYER_VIA_THROUGH, LAYER_VIA_BLIND,
     LAYER_VIA_BURIED, LAYER_VIA_MICROVIA,
@@ -359,7 +362,7 @@ void PCB_DRAW_PANEL_GAL::prepareGridSources()
     // The "Grid Items" object visibility toggle hides the rendered grid
     // content; the items themselves (selection decorations, snap) follow
     // the same flag at their own sites.
-    if( !board || !board->IsElementVisible( LAYER_GRIDITEMS ) )
+    if( !board || !board->IsElementVisible( LAYER_SUBGRIDS ) )
     {
         m_gal->SetGridSources( std::move( sources ) );
         return;
@@ -372,15 +375,15 @@ void PCB_DRAW_PANEL_GAL::prepareGridSources()
     if( PCB_BASE_FRAME* frame = dynamic_cast<PCB_BASE_FRAME*>( GetParentEDAFrame() ) )
     {
         if( COLOR_SETTINGS* cs = frame->GetColorSettings() )
-            gridItemColor = cs->GetColor( LAYER_GRIDITEMS );
+            gridItemColor = cs->GetColor( LAYER_SUBGRIDS );
     }
 
     for( BOARD_ITEM* item : board->Drawings() )
     {
-        if( item->Type() != PCB_GRIDITEM_T )
+        if( item->Type() != PCB_GRID_ITEM_T )
             continue;
 
-        PCB_GRIDITEM* grid = static_cast<PCB_GRIDITEM*>( item );
+        PCB_GRID_ITEM* grid = static_cast<PCB_GRID_ITEM*>( item );
 
         // Priority 0 is the background grid's; a grid item must never sink behind it.
         wxASSERT( grid->GetAssignedPriority() > 0 );
@@ -434,7 +437,6 @@ void PCB_DRAW_PANEL_GAL::SetHighContrastLayer( PCB_LAYER_ID aLayer )
                 LAYER_VIA_THROUGH, LAYER_VIA_BLIND, LAYER_VIA_BURIED, LAYER_VIA_MICROVIA, LAYER_VIA_HOLES,
                 LAYER_VIA_HOLEWALLS,
                 LAYER_DRC_ERROR, LAYER_DRC_WARNING, LAYER_DRC_EXCLUSION, LAYER_MARKER_SHADOWS,
-                LAYER_DRC_SHAPES,
                 LAYER_SELECT_OVERLAY, LAYER_GP_OVERLAY,
                 LAYER_RATSNEST, LAYER_CURSOR,
                 LAYER_ANCHOR,
@@ -471,11 +473,11 @@ void PCB_DRAW_PANEL_GAL::SetTopLayer( PCB_LAYER_ID aLayer )
 
     // Layers that should always have on-top attribute enabled
     const std::vector<int> layers = {
-        LAYER_VIA_THROUGH,     LAYER_VIA_BLIND,       LAYER_VIA_BURIED,    LAYER_VIA_MICROVIA,    LAYER_VIA_HOLES,
-        LAYER_VIA_HOLEWALLS,   LAYER_PAD_PLATEDHOLES, LAYER_PAD_HOLEWALLS, LAYER_NON_PLATEDHOLES, LAYER_PAD_NETNAMES,
-        LAYER_VIA_NETNAMES,    LAYER_SELECT_OVERLAY,  LAYER_GP_OVERLAY,    LAYER_RATSNEST,        LAYER_ANCHOR,
-        LAYER_DRC_HIGHLIGHTED, LAYER_DRC_ERROR,       LAYER_DRC_WARNING,   LAYER_DRC_EXCLUSION,   LAYER_MARKER_SHADOWS,
-        LAYER_DRC_SHAPES,      LAYER_CONFLICTS_SHADOW, LAYER_CONSTRAINT_SHADOW
+        LAYER_VIA_THROUGH,     LAYER_VIA_BLIND,        LAYER_VIA_BURIED,    LAYER_VIA_MICROVIA,    LAYER_VIA_HOLES,
+        LAYER_VIA_HOLEWALLS,   LAYER_PAD_PLATEDHOLES,  LAYER_PAD_HOLEWALLS, LAYER_NON_PLATEDHOLES, LAYER_PAD_NETNAMES,
+        LAYER_VIA_NETNAMES,    LAYER_SELECT_OVERLAY,   LAYER_GP_OVERLAY,    LAYER_RATSNEST,        LAYER_ANCHOR,
+        LAYER_DRC_HIGHLIGHTED, LAYER_DRC_ERROR,        LAYER_DRC_WARNING,   LAYER_DRC_EXCLUSION,   LAYER_MARKER_SHADOWS,
+        LAYER_CONFLICTS_SHADOW, LAYER_CONSTRAINT_SHADOW
     };
 
     for( auto layer : layers )
@@ -583,6 +585,11 @@ void PCB_DRAW_PANEL_GAL::SyncLayersVisibility( const BOARD* aBoard )
     for( int i = LAYER_VIA_COPPER_START; i < LAYER_VIA_COPPER_END; i++ )
         m_view->SetLayerVisible( i, true );
 
+    // Holes draw their drill map symbols here. Whether anything appears is governed by the
+    // documentation layer these depend on, not by this flag
+    for( int i = LAYER_DRILL_SYMBOL_START; i < LAYER_DRILL_SYMBOL_END; i++ )
+        m_view->SetLayerVisible( i, true );
+
     for( int i = LAYER_CLEARANCE_START; i < LAYER_CLEARANCE_END; i++ )
         m_view->SetLayerVisible( i, false );
 
@@ -605,7 +612,6 @@ void PCB_DRAW_PANEL_GAL::SyncLayersVisibility( const BOARD* aBoard )
     m_view->SetLayerVisible( LAYER_SELECT_OVERLAY, true );
     m_view->SetLayerVisible( LAYER_RATSNEST, true );
     m_view->SetLayerVisible( LAYER_MARKER_SHADOWS, true );
-    m_view->SetLayerVisible( LAYER_DRC_SHAPES, true );
     m_view->SetLayerVisible( LAYER_DRC_HIGHLIGHTED, true );
 }
 
@@ -704,6 +710,16 @@ void ApplyPcbGalLayerOrder( KIGFX::VIEW* aView )
             aView->SetLayerOrder( layer, i, false );
     }
 
+    // Drill symbol layers are not listed in the table above. Each one draws with the
+    // documentation layer whose map owns it
+    for( int i = 0; i < PCB_LAYER_ID_COUNT; ++i )
+    {
+        const PCB_LAYER_ID boardLayer = static_cast<PCB_LAYER_ID>( i );
+
+        aView->SetLayerOrder( DRILL_SYMBOL_LAYER_FOR( boardLayer ),
+                              aView->GetLayerOrder( boardLayer ), false );
+    }
+
     aView->SortOrderedLayers();
 }
 
@@ -747,6 +763,11 @@ void PCB_DRAW_PANEL_GAL::setDefaultLayerDeps()
     for( int i = 0; i < KIGFX::VIEW::VIEW_MAX_LAYERS; i++ )
         m_view->SetLayerTarget( i, target );
 
+    // A map's offset changes while its hole owners do not. Rebuilding every drilled pad and
+    // via on each mouse event makes dragging scale with the board's hole count.
+    for( int i = LAYER_DRILL_SYMBOL_START; i < LAYER_DRILL_SYMBOL_END; ++i )
+        m_view->SetLayerTarget( i, KIGFX::TARGET_NONCACHED );
+
     for( int i = 0; (unsigned) i < sizeof( GAL_LAYER_ORDER ) / sizeof( int ); ++i )
     {
         int layer = GAL_LAYER_ORDER[i];
@@ -764,6 +785,7 @@ void PCB_DRAW_PANEL_GAL::setDefaultLayerDeps()
             m_view->SetRequired( BITMAP_LAYER_FOR( layer ), layer );
             m_view->SetLayerTarget( BITMAP_LAYER_FOR( layer ), KIGFX::TARGET_NONCACHED );
             m_view->SetRequired( GetNetnameLayer( layer ), layer );
+            m_view->SetRequired( DRILL_SYMBOL_LAYER_FOR( layer ), layer );
         }
         else if( IsNonCopperLayer( layer ) )
         {
@@ -771,6 +793,7 @@ void PCB_DRAW_PANEL_GAL::setDefaultLayerDeps()
             m_view->SetRequired( ZONE_LAYER_FOR( layer ), layer );
             m_view->SetLayerTarget( BITMAP_LAYER_FOR( layer ), KIGFX::TARGET_NONCACHED );
             m_view->SetRequired( BITMAP_LAYER_FOR( layer ), layer );
+            m_view->SetRequired( DRILL_SYMBOL_LAYER_FOR( layer ), layer );
         }
         else if( IsNetnameLayer( layer ) )
         {
@@ -821,8 +844,6 @@ void PCB_DRAW_PANEL_GAL::setDefaultLayerDeps()
     m_view->SetLayerTarget( LAYER_DRC_EXCLUSION, KIGFX::TARGET_OVERLAY );
     m_view->SetLayerTarget( LAYER_MARKER_SHADOWS, KIGFX::TARGET_OVERLAY );
     m_view->SetLayerDisplayOnly( LAYER_MARKER_SHADOWS );
-    m_view->SetLayerTarget( LAYER_DRC_SHAPES, KIGFX::TARGET_OVERLAY );
-    m_view->SetLayerDisplayOnly( LAYER_DRC_SHAPES );    // markers can't be selected through shapes
 
     m_view->SetLayerTarget( LAYER_DRAWINGSHEET, KIGFX::TARGET_NONCACHED );
     m_view->SetLayerDisplayOnly( LAYER_DRAWINGSHEET ) ; // drawing sheet can't be selected

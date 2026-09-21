@@ -42,7 +42,8 @@ static wxString hexOf( const uint8_t* aBytes, size_t aCount )
 ORCAD_STREAM::ORCAD_STREAM( const void* aData, size_t aLength ) :
         m_data( static_cast<const uint8_t*>( aData ) ),
         m_size( aLength ),
-        m_offset( 0 )
+        m_offset( 0 ),
+        m_nesting( 0 )
 {
 }
 
@@ -50,6 +51,42 @@ ORCAD_STREAM::ORCAD_STREAM( const void* aData, size_t aLength ) :
 ORCAD_STREAM::ORCAD_STREAM( const std::vector<char>& aData ) :
         ORCAD_STREAM( aData.data(), aData.size() )
 {
+}
+
+
+ORCAD_STREAM::NEST_GUARD::NEST_GUARD( ORCAD_STREAM& aStream, const wxString& aWhat ) :
+        m_stream( aStream )
+{
+    // Throw before the count goes up; a failed constructor gets no destructor
+    if( m_stream.m_nesting >= MAX_NESTING )
+    {
+        THROW_IO_ERRORF( wxS( "OrCAD %s: nested deeper than %d levels" ), aWhat, MAX_NESTING );
+    }
+
+    m_stream.m_nesting++;
+}
+
+
+ORCAD_STREAM::NEST_GUARD::~NEST_GUARD()
+{
+    m_stream.m_nesting--;
+}
+
+
+ORCAD_STREAM::LIMIT_GUARD::LIMIT_GUARD( ORCAD_STREAM& aStream, size_t aEnd ) :
+        m_stream( aStream ),
+        m_savedSize( aStream.m_size )
+{
+    if( aEnd > m_savedSize || aEnd < aStream.m_offset )
+        THROW_IO_ERRORF( wxS( "OrCAD stream: invalid record bound 0x%zx at 0x%zx" ), aEnd, aStream.m_offset );
+
+    aStream.m_size = aEnd;
+}
+
+
+ORCAD_STREAM::LIMIT_GUARD::~LIMIT_GUARD()
+{
+    m_stream.m_size = m_savedSize;
 }
 
 
@@ -171,6 +208,15 @@ void ORCAD_STREAM::Skip( size_t aCount )
 }
 
 
+void ORCAD_STREAM::Seek( size_t aOffset )
+{
+    if( aOffset > m_size )
+        THROW_IO_ERRORF( wxS( "OrCAD stream: seek past end to 0x%zx (stream size 0x%zx)" ), aOffset, m_size );
+
+    m_offset = aOffset;
+}
+
+
 int ORCAD_STREAM::PeekU8( size_t aAhead ) const
 {
     size_t pos = m_offset + aAhead;
@@ -196,30 +242,6 @@ bool ORCAD_STREAM::PeekMatches( const uint8_t* aBytes, size_t aCount, size_t aAh
 bool ORCAD_STREAM::AtPreamble( size_t aAhead ) const
 {
     return PeekMatches( PREAMBLE, 4, aAhead );
-}
-
-
-bool ORCAD_STREAM::HasPreambleAt( size_t aAbsoluteOffset ) const
-{
-    if( aAbsoluteOffset > m_size || 4 > m_size - aAbsoluteOffset )
-        return false;
-
-    return memcmp( m_data + aAbsoluteOffset, PREAMBLE, 4 ) == 0;
-}
-
-
-size_t ORCAD_STREAM::FindPreamble( size_t aFrom ) const
-{
-    if( m_size < 4 )
-        return npos;
-
-    for( size_t pos = aFrom; pos + 4 <= m_size; pos++ )
-    {
-        if( m_data[pos] == PREAMBLE[0] && memcmp( m_data + pos, PREAMBLE, 4 ) == 0 )
-            return pos;
-    }
-
-    return npos;
 }
 
 

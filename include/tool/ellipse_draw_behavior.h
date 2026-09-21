@@ -22,11 +22,11 @@
 #include <geometry/eda_angle.h>
 #include <math/vector2d.h>
 #include <eda_units.h>
+#include <eda_shape.h>
 #include <preview_items/ellipse_assistant.h>
 #include <tool/managed_draw_behavior.h>
 
 struct EDA_IU_SCALE;
-class EDA_SHAPE;
 
 
 /**
@@ -41,6 +41,11 @@ public:
 
     ELLIPSE_ARC_DRAW_BEHAVIOR( const ELLIPSE_ARC_DRAW_BEHAVIOR& ) = delete;
     ELLIPSE_ARC_DRAW_BEHAVIOR& operator=( const ELLIPSE_ARC_DRAW_BEHAVIOR& ) = delete;
+
+    bool OnProperties( EDA_SHAPE& aShape ) override
+    {
+        return m_manager.GetStep() > KIGFX::PREVIEW::ELLIPSE_GEOM_MANAGER::SET_BBOX_C1;
+    }
 
     void ApplyToShape( EDA_SHAPE& aShape ) const override
     {

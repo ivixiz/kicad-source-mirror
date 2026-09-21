@@ -101,6 +101,7 @@
 #include <frame_type.h>
 #include <mail_type.h>
 #include <ki_exception.h>
+#include <lib_id.h>
 
 class KICAD_API_SERVER;
 
@@ -150,6 +151,20 @@ class LOCAL_HISTORY;
  */
 struct KIFACE
 {
+    struct DOCUMENT_SPEC
+    {
+        enum class KIND
+        {
+            FILE_KIND,   ///< Open the file at #path.
+            FPID_KIND,   ///< Open the library element named by #libId
+            CREATE_KIND, ///< Create a new document at #path and open it (in memory, not persisted)
+        };
+
+        KIND     kind = KIND::FILE_KIND;
+        wxString path;               ///< File path (KIND::FILE_KIND) or project path (KIND::FPID_KIND).
+        LIB_ID   libId;              ///< Library identifier; valid when kind == KIND::FPID_KIND.
+    };
+
     // The order of functions establishes the vtable sequence, do not change the
     // order of functions in this listing unless you recompile all clients of
     // this interface.
@@ -252,7 +267,7 @@ struct KIFACE
         return 0;
     }
 
-    virtual bool HandleApiOpenDocument( const wxString& aPath,
+    virtual bool HandleApiOpenDocument( const DOCUMENT_SPEC& aSpec,
                                         KICAD_API_SERVER* aServer,
                                         wxString* aError )
     {
@@ -277,6 +292,20 @@ struct KIFACE
     virtual void CancelPreload( bool aBlock = true ) {}
 
     virtual void ProjectChanged() {}
+
+    /**
+     * Register this face's library API handlers on the given server.  Called by the API
+     * server's library command handler after loading the kiface, so that library commands
+     * are available before any document is opened.  The kiface retains ownership.
+     */
+    virtual void RegisterLibraryHandlers( KICAD_API_SERVER* aServer ) {}
+
+    /**
+     * Starts a background load of all libraries of the type owned by this face.  Called by
+     * the API server's LoadAllLibraries handler after ensuring this kiface is loaded.
+     * Returns true if a load was started.
+     */
+    virtual bool LoadAllLibraries() { return false; }
 };
 
 
@@ -474,7 +503,7 @@ public:
                      PROGRESS_REPORTER* aProgressReporter = nullptr );
     bool ProcessJobConfigDialog( KIWAY::FACE_T aFace, JOB* aJob, wxWindow* aWindow );
 
-    bool ProcessApiOpenDocument( KIWAY::FACE_T aFace, const wxString& aPath,
+    bool ProcessApiOpenDocument( KIWAY::FACE_T aFace, const KIFACE::DOCUMENT_SPEC& aSpec,
                                  KICAD_API_SERVER* aServer,
                                  wxString* aError = nullptr );
 

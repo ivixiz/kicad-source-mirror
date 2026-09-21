@@ -21,6 +21,7 @@
 #include <set>
 #include <vector>
 
+#include <qa_utils/file_utils.h>
 #include <qa_utils/wx_utils/unit_test_utils.h>
 #include <pcbnew_utils/board_test_utils.h>
 
@@ -77,10 +78,10 @@ wxString stageProject( const wxString& aStem )
 /// The EasyEDA Pro v3 sample board, loaded from a private copy of the archive.
 struct IMPORTED_BOARD
 {
-    std::unique_ptr<PCB_IO_EASYEDAPRO_V3>   m_plugin;
-    std::unique_ptr<BOARD>                  m_board;
-    std::vector<std::unique_ptr<FOOTPRINT>> m_definitions;
-    std::unique_ptr<KI_TEST::TEMPORARY_DIRECTORY> m_sourceDir;
+    std::unique_ptr<PCB_IO_EASYEDAPRO_V3>         m_plugin;
+    std::unique_ptr<BOARD>                        m_board;
+    std::vector<std::unique_ptr<FOOTPRINT>>       m_definitions;
+    std::unique_ptr<KI_TEST::SCOPED_TEMP_DIR>     m_sourceDir;
 };
 
 
@@ -96,10 +97,9 @@ IMPORTED_BOARD importSampleBoard( PROJECT& aProject, const std::string& aTag )
     srcFn.SetFullName( archiveName );
     BOOST_REQUIRE_MESSAGE( srcFn.FileExists(), "Missing EasyEDA Pro v3 board fixture" );
 
-    sample.m_sourceDir = std::make_unique<KI_TEST::TEMPORARY_DIRECTORY>( aTag, "" );
+    sample.m_sourceDir = std::make_unique<KI_TEST::SCOPED_TEMP_DIR>( wxString::FromUTF8( aTag ) );
 
-    wxFileName importFn( wxString::FromUTF8( sample.m_sourceDir->GetPath().string() ),
-                         archiveName );
+    wxFileName importFn( sample.m_sourceDir->PathStr(), archiveName );
     BOOST_REQUIRE( wxCopyFile( srcFn.GetFullPath(), importFn.GetFullPath() ) );
 
     std::map<std::string, UTF8> properties;
@@ -108,8 +108,7 @@ IMPORTED_BOARD importSampleBoard( PROJECT& aProject, const std::string& aTag )
     sample.m_plugin = std::make_unique<PCB_IO_EASYEDAPRO_V3>();
     sample.m_board = std::make_unique<BOARD>();
     sample.m_board->SetProject( &aProject );
-    sample.m_plugin->LoadBoard( importFn.GetFullPath(), sample.m_board.get(), &properties,
-                                &aProject );
+    sample.m_plugin->LoadAndAppendBoard( importFn.GetFullPath(), *sample.m_board, &properties, &aProject );
 
     BOOST_REQUIRE_GT( sample.m_board->Footprints().size(), 0 );
 
@@ -213,7 +212,7 @@ BOOST_AUTO_TEST_CASE( EagleBoardResolvesToGeneratedCache )
     PCB_IO_EAGLE           plugin;
     std::unique_ptr<BOARD> board = std::make_unique<BOARD>();
     board->SetProject( &project );
-    plugin.LoadBoard( brdFn.GetFullPath(), board.get(), nullptr, &project );
+    plugin.LoadAndAppendBoard( brdFn.GetFullPath(), *board, nullptr, &project );
 
     BOOST_REQUIRE_GT( board->Footprints().size(), 0 );
 
@@ -285,7 +284,7 @@ BOOST_AUTO_TEST_CASE( AltiumBoardResolvesToGeneratedCache )
     PCB_IO_ALTIUM_DESIGNER plugin;
     std::unique_ptr<BOARD> board = std::make_unique<BOARD>();
     board->SetProject( &project );
-    plugin.LoadBoard( dataPath, board.get(), nullptr, &project );
+    plugin.LoadAndAppendBoard( dataPath, *board, nullptr, &project );
 
     BOOST_REQUIRE_GT( board->Footprints().size(), 0 );
 
@@ -339,8 +338,7 @@ BOOST_AUTO_TEST_CASE( EasyEdaProV3BoardResolvesToGeneratedCache )
     BOARD*         board = sample.m_board.get();
 
     // the importer must not have published anything of its own beside the archive
-    wxFileName srcDir( wxString::FromUTF8( sample.m_sourceDir->GetPath().string() ),
-                       wxEmptyString );
+    wxFileName srcDir( sample.m_sourceDir->PathStr(), wxEmptyString );
     wxFileName strayLib( srcDir.GetPath(),
                          EASYEDAPRO::ShortenLibName( wxS( "ProProject_LS2K0300Core_2025-11-14" ) ),
                          wxString( FILEEXT::KiCadFootprintLibPathExtension ) );
@@ -429,6 +427,111 @@ BOOST_AUTO_TEST_CASE( CollidingNicknameDoesNotStealTheLink )
 }
 
 
+// Two source libraries supplying different footprints under one bare name must both survive the
+// cache; keying the cache by the bare name alone dropped the second and relinked its instance
+BOOST_AUTO_TEST_CASE( SameNameFromDifferentLibrariesKeepsBothDefinitions )
+{
+    stageProject( wxS( "fpreconcile_namecollide" ) );
+    PROJECT& project = Pgm().GetSettingsManager().Prj();
+
+    std::string dataPath =
+            KI_TEST::GetPcbnewTestDataDir() + "plugins/altium/HiFive/HiFive1.B01.PcbDoc";
+
+    PCB_IO_ALTIUM_DESIGNER plugin;
+    std::unique_ptr<BOARD> source = std::make_unique<BOARD>();
+    source->SetProject( &project );
+    plugin.LoadAndAppendBoard( dataPath, *source, nullptr, &project );
+
+    // two real imported footprints that a pad count tells apart
+    FOOTPRINT* firstSource = nullptr;
+    FOOTPRINT* secondSource = nullptr;
+
+    for( FOOTPRINT* fp : source->Footprints() )
+    {
+        if( fp->Pads().empty() )
+            continue;
+
+        if( !firstSource )
+            firstSource = fp;
+        else if( fp->Pads().size() != firstSource->Pads().size() )
+            secondSource = fp;
+
+        if( secondSource )
+            break;
+    }
+
+    BOOST_REQUIRE( firstSource );
+    BOOST_REQUIRE( secondSource );
+
+    const wxString sharedName = wxS( "SHARED_FP" );
+    const size_t   firstPads = firstSource->Pads().size();
+    const size_t   secondPads = secondSource->Pads().size();
+
+    std::unique_ptr<BOARD> board = std::make_unique<BOARD>();
+    board->SetProject( &project );
+
+    std::vector<std::unique_ptr<FOOTPRINT>> defs;
+
+    // the same bare name under two source libraries, both placed and defined
+    auto place = [&]( const FOOTPRINT* aSource, const wxString& aNickname )
+    {
+        FOOTPRINT* placed = static_cast<FOOTPRINT*>( aSource->Clone() );
+        placed->SetFPID( LIB_ID( aNickname, sharedName ) );
+        board->Add( placed, ADD_MODE::APPEND );
+
+        std::unique_ptr<FOOTPRINT> def( static_cast<FOOTPRINT*>( aSource->Clone() ) );
+        def->SetFPID( LIB_ID( aNickname, sharedName ) );
+        defs.push_back( std::move( def ) );
+
+        return placed;
+    };
+
+    FOOTPRINT* firstPlaced = place( firstSource, wxS( "libAlpha" ) );
+    FOOTPRINT* secondPlaced = place( secondSource, wxS( "libBeta" ) );
+
+    FOOTPRINT_LIBRARY_ADAPTER* adapter = PROJECT_PCB::FootprintLibAdapter( &project );
+    BOOST_REQUIRE( adapter );
+
+    const wxString              cacheNick = wxS( "namecollide-import-fps" );
+    WX_STRING_REPORTER          reporter;
+    FOOTPRINT_IMPORT_RECONCILER reconciler( *adapter, project.GetProjectPath(), reporter );
+
+    FOOTPRINT_IMPORT_RECONCILE_RESULT result =
+            reconciler.Reconcile( board.get(), std::move( defs ), cacheNick, {} );
+
+    BOOST_CHECK_EQUAL( result.m_cacheNickname, cacheNick );
+    BOOST_CHECK_EQUAL( result.m_savedToCache, 2 );
+
+    LIB_ID firstId = firstPlaced->GetFPID();
+    LIB_ID secondId = secondPlaced->GetFPID();
+
+    BOOST_CHECK_EQUAL( firstId.GetUniStringLibNickname(), cacheNick );
+    BOOST_CHECK_EQUAL( secondId.GetUniStringLibNickname(), cacheNick );
+    BOOST_CHECK_MESSAGE( firstId.GetUniStringLibItemName() != secondId.GetUniStringLibItemName(),
+                         "Footprints from two source libraries share one cache item name" );
+
+    // each instance still resolves to the footprint it was imported as
+    std::unique_ptr<FOOTPRINT> firstLinked(
+            adapter->LoadFootprint( cacheNick, firstId.GetUniStringLibItemName(), true ) );
+    std::unique_ptr<FOOTPRINT> secondLinked(
+            adapter->LoadFootprint( cacheNick, secondId.GetUniStringLibItemName(), true ) );
+
+    BOOST_REQUIRE( firstLinked );
+    BOOST_REQUIRE( secondLinked );
+    BOOST_CHECK_EQUAL( firstLinked->Pads().size(), firstPads );
+    BOOST_CHECK_EQUAL( secondLinked->Pads().size(), secondPads );
+
+    // the user is told which footprint the cache renamed
+    const wxString renamed = firstId.GetUniStringLibItemName() == sharedName
+                                     ? secondId.GetUniStringLibItemName()
+                                     : firstId.GetUniStringLibItemName();
+
+    BOOST_CHECK_MESSAGE( reporter.GetMessages().Contains(
+                                 wxString::Format( wxS( "renamed to '%s'" ), renamed ) ),
+                         "Cache rename was not reported" );
+}
+
+
 // A project row already owning the cache nickname is a user library even when no .pretty sits at
 // the generated path, so publishing must not rewrite its URI
 BOOST_AUTO_TEST_CASE( ExistingUserRowIsNotRepurposed )
@@ -487,7 +590,7 @@ BOOST_AUTO_TEST_CASE( ReconciledFootprintsResolveViaNetlistUpdater )
     PCB_IO_EAGLE           plugin;
     std::unique_ptr<BOARD> imported = std::make_unique<BOARD>();
     imported->SetProject( &project );
-    plugin.LoadBoard( brdFn.GetFullPath(), imported.get(), nullptr, &project );
+    plugin.LoadAndAppendBoard( brdFn.GetFullPath(), *imported, nullptr, &project );
 
     std::vector<FOOTPRINT*>                 raw = plugin.GetImportedCachedLibraryFootprints();
     std::vector<std::unique_ptr<FOOTPRINT>> defs;

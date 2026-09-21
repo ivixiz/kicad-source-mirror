@@ -60,7 +60,13 @@ struct KICOMMON_API LIBRARY_ERROR
         message( aMessage )
     {};
 
+    LIBRARY_ERROR( const wxString& aMessage, const wxString& aExtraDetails ) :
+        message( aMessage ),
+        details( aExtraDetails )
+    {};
+
     wxString message;
+    wxString details;
 };
 
 
@@ -150,7 +156,8 @@ public:
      * @param aPath is the path to a library table file to parse
      * @param aScope is the scope of this table (is it global or part of a project)
      */
-    LIBRARY_TABLE( const wxFileName &aPath, LIBRARY_TABLE_SCOPE aScope, LIBRARY_TABLE_TYPE aExpectedType = LIBRARY_TABLE_TYPE::UNINITIALIZED );
+    LIBRARY_TABLE( const wxFileName &aPath, LIBRARY_TABLE_SCOPE aScope,
+                   LIBRARY_TABLE_TYPE aExpectedType = LIBRARY_TABLE_TYPE::UNINITIALIZED );
 
     /**
      * Creates a library table from parsed text

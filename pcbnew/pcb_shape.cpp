@@ -229,17 +229,23 @@ void PCB_SHAPE::Serialize( google::protobuf::Any &aContainer ) const
     msg.mutable_id()->set_value( m_Uuid.AsStdString() );
     msg.set_locked( IsLocked() ? types::LockedState::LS_LOCKED : types::LockedState::LS_UNLOCKED );
 
-    google::protobuf::Any any;
-    EDA_SHAPE::Serialize( any );
-    any.UnpackTo( msg.mutable_shape() );
+    EDA_SHAPE::Serialize( *msg.mutable_shape(), pcbIUScale );
 
     if( FOOTPRINT* parent = GetParentFootprint() )
         msg.mutable_parent()->set_value( parent->m_Uuid.AsStdString() );
     else if( const BOARD* board = GetBoard() )
         msg.mutable_parent()->set_value( board->m_Uuid.AsStdString() );
 
-    // TODO m_hasSolderMask and m_solderMaskMargin
+    if( HasSolderMask() )
+    {
+        SolderMaskOverrides* sm = msg.mutable_solder_mask();
+        sm->set_expose_copper( true );
 
+        if( GetLocalSolderMaskMargin().has_value() )
+            sm->mutable_solder_mask_margin()->set_value_nm( GetLocalSolderMaskMargin().value() );
+    }
+
+    kiapi::common::PackCustomProperties( msg.mutable_custom_properties(), *this );
     aContainer.PackFrom( msg );
 }
 
@@ -270,12 +276,24 @@ bool PCB_SHAPE::Deserialize( const google::protobuf::Any &aContainer )
     SetLocked( msg.locked() == types::LS_LOCKED );
     SetLayer( FromProtoEnum<PCB_LAYER_ID, BoardLayer>( msg.layer() ) );
     UnpackNet( msg.net() );
+    kiapi::common::UnpackCustomProperties( msg.custom_properties(), *this );
 
-    google::protobuf::Any any;
-    any.PackFrom( msg.shape() );
-    EDA_SHAPE::Deserialize( any );
+    EDA_SHAPE::Deserialize( msg.shape(), pcbIUScale );
 
-    // TODO m_hasSolderMask and m_solderMaskMargin
+    if( msg.has_solder_mask() )
+    {
+        SetHasSolderMask( msg.solder_mask().expose_copper() );
+
+        if( msg.solder_mask().has_solder_mask_margin() )
+            SetLocalSolderMaskMargin( msg.solder_mask().solder_mask_margin().value_nm() );
+        else
+            SetLocalSolderMaskMargin( {} );
+    }
+    else
+    {
+        SetHasSolderMask( false );
+        SetLocalSolderMaskMargin( {} );
+    }
 
     return true;
 }
@@ -738,22 +756,22 @@ void PCB_SHAPE::Normalize()
                 && horizontal( outline.Segment( 2 ) )
                 && vertical( outline.Segment( 3 ) ) )
             {
-                m_shape = SHAPE_T::RECTANGLE;
-                m_start.x = std::min( outline.Segment( 0 ).A.x, outline.Segment( 0 ).B.x );
-                m_start.y = std::min( outline.Segment( 1 ).A.y, outline.Segment( 1 ).B.y );
-                m_end.x = std::max( outline.Segment( 0 ).A.x, outline.Segment( 0 ).B.x );
-                m_end.y = std::max( outline.Segment( 1 ).A.y, outline.Segment( 1 ).B.y );
+                SetShape( SHAPE_T::RECTANGLE );
+                SetStart( VECTOR2I( std::min( outline.Segment( 0 ).A.x, outline.Segment( 0 ).B.x ),
+                                    std::min( outline.Segment( 1 ).A.y, outline.Segment( 1 ).B.y ) ) );
+                SetEnd( VECTOR2I( std::max( outline.Segment( 0 ).A.x, outline.Segment( 0 ).B.x ),
+                                  std::max( outline.Segment( 1 ).A.y, outline.Segment( 1 ).B.y ) ) );
             }
             else if( vertical( outline.Segment( 0 ) )
                   && horizontal( outline.Segment( 1 ) )
                   && vertical( outline.Segment( 2 ) )
                   && horizontal( outline.Segment( 3 ) ) )
             {
-                m_shape = SHAPE_T::RECTANGLE;
-                m_start.x = std::min( outline.Segment( 1 ).A.x, outline.Segment( 1 ).B.x );
-                m_start.y = std::min( outline.Segment( 0 ).A.y, outline.Segment( 0 ).B.y );
-                m_end.x = std::max( outline.Segment( 1 ).A.x, outline.Segment( 1 ).B.x );
-                m_end.y = std::max( outline.Segment( 0 ).A.y, outline.Segment( 0 ).B.y );
+                SetShape( SHAPE_T::RECTANGLE );
+                SetStart( VECTOR2I( std::min( outline.Segment( 1 ).A.x, outline.Segment( 1 ).B.x ),
+                                    std::min( outline.Segment( 0 ).A.y, outline.Segment( 0 ).B.y ) ) );
+                SetEnd( VECTOR2I( std::max( outline.Segment( 1 ).A.x, outline.Segment( 1 ).B.x ),
+                                  std::max( outline.Segment( 0 ).A.y, outline.Segment( 0 ).B.y ) ) );
             }
         }
     }
@@ -789,22 +807,38 @@ void PCB_SHAPE::Rotate( const VECTOR2I& aRotCentre, const EDA_ANGLE& aAngle )
 
 void PCB_SHAPE::Flip( const VECTOR2I& aCentre, FLIP_DIRECTION aFlipDirection )
 {
-    // Null for pad-local primitives, which mirror directly rather than through the FP transform.
     const FOOTPRINT* fp = transformFp();
 
-    if( fp
+    TRANSFORM_TRS xform;
+    bool          mirrorLib = false;
+
+    if( fp )
+    {
+        xform = fp->GetTransform();
+        mirrorLib = true;
+    }
+    else if( GetParent() && GetParent()->Type() == PCB_PAD_T && m_shape != m_libShape )
+    {
+        double sx = 1.0, sy = 1.0;
+        static_cast<const PAD*>( static_cast<const BOARD_ITEM*>( GetParent() ) )->GetPrimitiveLibScale( sx, sy );
+        xform.SetScale( sx, sy );
+        mirrorLib = true;
+    }
+
+    if( mirrorLib
         && ( m_libShape == SHAPE_T::SEGMENT || m_libShape == SHAPE_T::CIRCLE || m_libShape == SHAPE_T::ARC
              || m_libShape == SHAPE_T::RECTANGLE || m_libShape == SHAPE_T::BEZIER || m_libShape == SHAPE_T::POLY ) )
     {
-        const VECTOR2I libCenter = fp->GetTransform().InverseApply( aCentre );
+        const VECTOR2I libCenter = xform.InverseApply( aCentre );
 
-        auto mirrorPt = [&]( VECTOR2I& p )
-        {
-            if( aFlipDirection == FLIP_DIRECTION::LEFT_RIGHT )
-                p.x = 2 * libCenter.x - p.x;
-            else
-                p.y = 2 * libCenter.y - p.y;
-        };
+        auto mirrorPt =
+                [&]( VECTOR2I& p )
+                {
+                    if( aFlipDirection == FLIP_DIRECTION::LEFT_RIGHT )
+                        p.x = 2 * libCenter.x - p.x;
+                    else
+                        p.y = 2 * libCenter.y - p.y;
+                };
 
         if( m_libShape == SHAPE_T::ARC )
         {
@@ -836,13 +870,13 @@ void PCB_SHAPE::Flip( const VECTOR2I& aCentre, FLIP_DIRECTION aFlipDirection )
         }
 
         SetLayer( GetBoard()->FlipLayer( GetLayer() ) );
-        RebakeFromLib();
+        rebakeFromTransform( xform );
         return;
     }
 
-    if( fp && ( m_libShape == SHAPE_T::ELLIPSE || m_libShape == SHAPE_T::ELLIPSE_ARC ) )
+    if( mirrorLib && ( m_libShape == SHAPE_T::ELLIPSE || m_libShape == SHAPE_T::ELLIPSE_ARC ) )
     {
-        const VECTOR2I libCenter = fp->GetTransform().InverseApply( aCentre );
+        const VECTOR2I libCenter = xform.InverseApply( aCentre );
 
         if( aFlipDirection == FLIP_DIRECTION::LEFT_RIGHT )
             m_libEllipseCenter.x = 2 * libCenter.x - m_libEllipseCenter.x;
@@ -866,7 +900,7 @@ void PCB_SHAPE::Flip( const VECTOR2I& aCentre, FLIP_DIRECTION aFlipDirection )
         }
 
         SetLayer( GetBoard()->FlipLayer( GetLayer() ) );
-        RebakeFromLib();
+        rebakeFromTransform( xform );
         return;
     }
 
@@ -1634,9 +1668,23 @@ const BOX2I PCB_SHAPE::ViewBBox() const
 }
 
 
+const BOX2I PCB_SHAPE::GetBoundingBox() const
+{
+    BOX2I bbox = getBoundingBox();
+    BOX2I endingsBBox;
+
+    if( GetLineEndingsBoundingBox( endingsBBox, GetEffectiveWidth() ) )
+        bbox.Merge( endingsBBox );
+
+    bbox.Normalize();
+
+    return bbox;
+}
+
+
 std::shared_ptr<SHAPE> PCB_SHAPE::GetEffectiveShape( PCB_LAYER_ID aLayer, FLASHING, DRC_CONSTRAINT_T ) const
 {
-    return std::make_shared<SHAPE_COMPOUND>( MakeEffectiveShapes() );
+    return std::make_shared<SHAPE_COMPOUND>( MakeEffectiveShapesWithLineEndings( GetEffectiveWidth() ) );
 }
 
 
@@ -1663,6 +1711,7 @@ void PCB_SHAPE::swapData( BOARD_ITEM* aImage )
     std::swap( m_netinfo, image->m_netinfo );
     std::swap( m_hasSolderMask, image->m_hasSolderMask );
     std::swap( m_solderMaskMargin, image->m_solderMaskMargin );
+    std::swap( m_customProperties, image->m_customProperties );
 }
 
 
@@ -1815,20 +1864,21 @@ static struct PCB_SHAPE_DESC
         void ( PCB_SHAPE::*shapeLayerSetter )( PCB_LAYER_ID ) = &PCB_SHAPE::SetLayer;
         PCB_LAYER_ID ( PCB_SHAPE::*shapeLayerGetter )() const = &PCB_SHAPE::GetLayer;
 
-        auto layerProperty = new PROPERTY_ENUM<PCB_SHAPE, PCB_LAYER_ID>(
-                _HKI( "Layer" ), shapeLayerSetter, shapeLayerGetter );
+        propMgr.ReplaceProperty( TYPE_HASH( BOARD_CONNECTED_ITEM ), _HKI( "Layer" ),
+                    new PROPERTY_ENUM<PCB_SHAPE, PCB_LAYER_ID>( _HKI( "Layer" ),
+                                shapeLayerSetter, shapeLayerGetter ) ).SetIsCopyable();
 
-        propMgr.ReplaceProperty( TYPE_HASH( BOARD_CONNECTED_ITEM ), _HKI( "Layer" ), layerProperty );
+        auto isPolygonOrEllipse =
+                []( INSPECTABLE* aItem ) -> bool
+                {
+                    if( PCB_SHAPE* shape = dynamic_cast<PCB_SHAPE*>( aItem ) )
+                    {
+                        const SHAPE_T t = shape->GetShape();
+                        return t == SHAPE_T::POLY || t == SHAPE_T::ELLIPSE || t == SHAPE_T::ELLIPSE_ARC;
+                    }
 
-        auto isPolygonOrEllipse = []( INSPECTABLE* aItem ) -> bool
-        {
-            if( PCB_SHAPE* shape = dynamic_cast<PCB_SHAPE*>( aItem ) )
-            {
-                const SHAPE_T t = shape->GetShape();
-                return t == SHAPE_T::POLY || t == SHAPE_T::ELLIPSE || t == SHAPE_T::ELLIPSE_ARC;
-            }
-            return false;
-        };
+                    return false;
+                };
 
         propMgr.OverrideAvailability( TYPE_HASH( PCB_SHAPE ), TYPE_HASH( BOARD_ITEM ), _HKI( "Position X" ),
                                       isPolygonOrEllipse );
@@ -1838,15 +1888,17 @@ static struct PCB_SHAPE_DESC
         propMgr.Mask( TYPE_HASH( PCB_SHAPE ), TYPE_HASH( EDA_SHAPE ), _HKI( "Line Color" ) );
         propMgr.Mask( TYPE_HASH( PCB_SHAPE ), TYPE_HASH( EDA_SHAPE ), _HKI( "Fill Color" ) );
 
-        auto isNotBezierOrEllipseArc = []( INSPECTABLE* aItem ) -> bool
-        {
-            if( PCB_SHAPE* shape = dynamic_cast<PCB_SHAPE*>( aItem ) )
-            {
-                const SHAPE_T t = shape->GetShape();
-                return t != SHAPE_T::BEZIER && t != SHAPE_T::ELLIPSE_ARC;
-            }
-            return true;
-        };
+        auto isNotBezierOrEllipseArc =
+                []( INSPECTABLE* aItem ) -> bool
+                {
+                    if( PCB_SHAPE* shape = dynamic_cast<PCB_SHAPE*>( aItem ) )
+                    {
+                        const SHAPE_T t = shape->GetShape();
+                        return t != SHAPE_T::BEZIER && t != SHAPE_T::ELLIPSE_ARC;
+                    }
+
+                    return true;
+                };
 
         propMgr.OverrideAvailability( TYPE_HASH( PCB_SHAPE ), TYPE_HASH( EDA_SHAPE ), _HKI( "Fill" ),
                                       isNotBezierOrEllipseArc );
@@ -1860,30 +1912,32 @@ static struct PCB_SHAPE_DESC
                     return false;
                 };
 
-        auto isNotCircleOrEllipse = []( INSPECTABLE* aItem ) -> bool
-        {
-            if( PCB_SHAPE* shape = dynamic_cast<PCB_SHAPE*>( aItem ) )
-            {
-                const SHAPE_T t = shape->GetShape();
-                return t != SHAPE_T::CIRCLE && t != SHAPE_T::ELLIPSE && t != SHAPE_T::ELLIPSE_ARC;
-            }
-            return true;
-        };
+        auto isNotCircleOrEllipse =
+                []( INSPECTABLE* aItem ) -> bool
+                {
+                    if( PCB_SHAPE* shape = dynamic_cast<PCB_SHAPE*>( aItem ) )
+                    {
+                        const SHAPE_T t = shape->GetShape();
+                        return t != SHAPE_T::CIRCLE && t != SHAPE_T::ELLIPSE && t != SHAPE_T::ELLIPSE_ARC;
+                    }
+
+                    return true;
+                };
 
         propMgr.OverrideAvailability( TYPE_HASH( PCB_SHAPE ), TYPE_HASH( EDA_SHAPE ), _HKI( "Start X" ),
-                                      isNotCircleOrEllipse );
+                    isNotCircleOrEllipse );
         propMgr.OverrideAvailability( TYPE_HASH( PCB_SHAPE ), TYPE_HASH( EDA_SHAPE ), _HKI( "Start Y" ),
-                                      isNotCircleOrEllipse );
+                    isNotCircleOrEllipse );
         propMgr.OverrideAvailability( TYPE_HASH( PCB_SHAPE ), TYPE_HASH( EDA_SHAPE ), _HKI( "End X" ),
-                                      isNotCircleOrEllipse );
+                    isNotCircleOrEllipse );
         propMgr.OverrideAvailability( TYPE_HASH( PCB_SHAPE ), TYPE_HASH( EDA_SHAPE ), _HKI( "End Y" ),
-                                      isNotCircleOrEllipse );
-        propMgr.OverrideAvailability( TYPE_HASH( PCB_SHAPE ), TYPE_HASH( EDA_SHAPE ),
-                                      _HKI( "Center X" ), isCircle );
-        propMgr.OverrideAvailability( TYPE_HASH( PCB_SHAPE ), TYPE_HASH( EDA_SHAPE ),
-                                      _HKI( "Center Y" ), isCircle );
-        propMgr.OverrideAvailability( TYPE_HASH( PCB_SHAPE ), TYPE_HASH( EDA_SHAPE ),
-                                      _HKI( "Radius" ), isCircle );
+                    isNotCircleOrEllipse );
+        propMgr.OverrideAvailability( TYPE_HASH( PCB_SHAPE ), TYPE_HASH( EDA_SHAPE ), _HKI( "Center X" ),
+                    isCircle );
+        propMgr.OverrideAvailability( TYPE_HASH( PCB_SHAPE ), TYPE_HASH( EDA_SHAPE ), _HKI( "Center Y" ),
+                    isCircle );
+        propMgr.OverrideAvailability( TYPE_HASH( PCB_SHAPE ), TYPE_HASH( EDA_SHAPE ), _HKI( "Radius" ),
+                    isCircle );
 
         auto isCopper =
                 []( INSPECTABLE* aItem ) -> bool
@@ -1894,8 +1948,8 @@ static struct PCB_SHAPE_DESC
                     return false;
                 };
 
-        propMgr.OverrideAvailability( TYPE_HASH( PCB_SHAPE ), TYPE_HASH( BOARD_CONNECTED_ITEM ),
-                                      _HKI( "Net" ), isCopper );
+        propMgr.OverrideAvailability( TYPE_HASH( PCB_SHAPE ), TYPE_HASH( BOARD_CONNECTED_ITEM ), _HKI( "Net" ),
+                    isCopper );
 
         auto isPadEditMode =
                 []( BOARD* aBoard ) -> bool
@@ -1942,9 +1996,8 @@ static struct PCB_SHAPE_DESC
         const wxString groupPadPrimitives = _HKI( "Pad Primitives" );
 
         propMgr.AddProperty( new PROPERTY<PCB_SHAPE, bool>( _HKI( "Number Box" ),
-                                                            &PCB_SHAPE::SetIsProxyItem,
-                                                            &PCB_SHAPE::IsProxyItem ),
-                             groupPadPrimitives )
+                    &PCB_SHAPE::SetIsProxyItem, &PCB_SHAPE::IsProxyItem ),
+                    groupPadPrimitives )
                 .SetAvailableFunc( showNumberBoxProperty )
                 .SetIsHiddenFromRulesEditor();
 
@@ -1968,12 +2021,12 @@ static struct PCB_SHAPE_DESC
         propMgr.AddProperty( new PROPERTY<PCB_SHAPE, bool>( _HKI( "Soldermask" ),
                     &PCB_SHAPE::SetHasSolderMask, &PCB_SHAPE::HasSolderMask ),
                     groupTechLayers )
-                .SetAvailableFunc( isExternalCuLayer );
+                .SetAvailableFunc( isExternalCuLayer ).SetIsCopyable();
 
         propMgr.AddProperty( new PROPERTY<PCB_SHAPE, std::optional<int>>( _HKI( "Soldermask Margin Override" ),
                     &PCB_SHAPE::SetLocalSolderMaskMargin, &PCB_SHAPE::GetLocalSolderMaskMargin,
                     PROPERTY_DISPLAY::PT_SIZE ),
                     groupTechLayers )
-                .SetAvailableFunc( isExternalCuLayer );
+                .SetAvailableFunc( isExternalCuLayer ).SetIsCopyable();
     }
 } _PCB_SHAPE_DESC;

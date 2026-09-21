@@ -91,13 +91,15 @@ public:
     struct PCB_FP_DATA
     {
         PCB_FP_DATA( const wxString& aRef, const wxString& aFootprint, const wxString& aValue, bool aDNP,
-                     bool aExcludeFromBOM, bool aExcludeFromPosFiles, const std::map<wxString, wxString>& aPinMap,
+                     bool aExcludeFromBOM, bool aExcludeFromSim, bool aExcludeFromPosFiles,
+                     const std::map<wxString, wxString>& aPinMap,
                      const std::map<wxString, wxString>& aFieldsMap ) :
                 m_ref( aRef ),
                 m_footprint( aFootprint ),
                 m_value( aValue ),
                 m_DNP( aDNP ),
                 m_excludeFromBOM( aExcludeFromBOM ),
+                m_excludeFromSim( aExcludeFromSim ),
                 m_excludeFromPosFiles( aExcludeFromPosFiles ),
                 m_pinMap( aPinMap ),
                 m_fieldsMap( aFieldsMap )
@@ -108,6 +110,7 @@ public:
         wxString                     m_value;
         bool                         m_DNP;
         bool                         m_excludeFromBOM;
+        bool                         m_excludeFromSim;
         bool                         m_excludeFromPosFiles;
         std::map<wxString, wxString> m_pinMap;
         std::map<wxString, wxString> m_fieldsMap;
@@ -174,7 +177,7 @@ private:
                                       SCH_COMMIT* aCommit );
 
     void processNetNameChange( SCH_COMMIT* aCommit, const wxString& aRef, SCH_PIN* aPin,
-                               const SCH_CONNECTION* aConnection, const wxString& aOldName, const wxString& aNewName );
+                               const SCH_SHEET_PATH& aSheet, const wxString& aOldName, const wxString& aNewName );
 
 private:
     REPORTER&                    m_reporter;

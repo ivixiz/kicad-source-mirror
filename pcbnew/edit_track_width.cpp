@@ -80,11 +80,46 @@ void PCB_EDIT_FRAME::SetTrackSegmentWidth( PCB_TRACK* aItem, PICKED_ITEMS_LIST* 
         picker.SetLink( aItem->Clone() );
         aItemsListPicker->PushItem( picker );
 
-        aItem->SetWidth( new_width );
+        if( via )
+            via->SetWidth( PADSTACK::ALL_LAYERS, new_width );
+        else
+            aItem->SetWidth( new_width );
 
         if( via && new_drill > 0 )
             via->SetDrill( new_drill );
     }
+}
+
+
+void PCB_EDIT_FRAME::SelectViaStack_Event( wxCommandEvent& event )
+{
+    int nPresets = (int) GetDesignSettings().m_ViaStackPresets.size();
+    int sel = m_SelViaStackBox->GetSelection();
+
+    if( sel == int( m_SelViaStackBox->GetCount() - 2 ) )
+    {
+        // the "---" separator
+        m_SelViaStackBox->SetSelection( GetDesignSettings().GetViaStackIndex() );
+    }
+    else if( sel == int( m_SelViaStackBox->GetCount() - 1 ) )
+    {
+        // "Edit Via Stacks..."
+        m_SelViaStackBox->SetSelection( GetDesignSettings().GetViaStackIndex() );
+
+        // See the matching comment in Tracks_and_Vias_Size_Event: defer so the GTK
+        // EVT_CHOICE signal unwinds before the toolbar is rebuilt.
+        CallAfter(
+                [this]()
+                {
+                    ShowBoardSetupDialog( _( "Microvia Stacks" ) );
+                } );
+    }
+    else if( sel >= 0 && sel < nPresets )
+    {
+        GetDesignSettings().SetViaStackIndex( sel );
+    }
+
+    GetCanvas()->SetFocus();
 }
 
 

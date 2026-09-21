@@ -37,6 +37,8 @@ class PCB_TABLE : public BOARD_ITEM_CONTAINER
 public:
     PCB_TABLE( BOARD_ITEM* aParent, int aLineWidth );
 
+    PCB_TABLE( BOARD_ITEM* aParent );
+
     PCB_TABLE( const PCB_TABLE& aTable );
 
     ~PCB_TABLE();
@@ -120,7 +122,9 @@ public:
 
     int GetRowCount() const
     {
-        return m_cells.size() / m_colCount;
+        // Guarded because a hand-edited or third-party file can present a table with no
+        // columns, and dividing by it crashes the writer rather than failing the load
+        return m_colCount > 0 ? (int) m_cells.size() / m_colCount : 0;
     }
 
     void SetColWidth( int aCol, int aWidth ) { m_colWidths[aCol] = aWidth; }
@@ -171,6 +175,14 @@ public:
         aCell->SetLayer( GetLayer() );
         aCell->SetParent( this );
     }
+
+    /**
+     * Grow or shrink to aRows x aCols, keeping the cells that already exist.
+     *
+     * A regenerating table must not clear and repopulate. That would mint new UUIDs on every
+     * rebuild and break selection restore and file diffs.
+     */
+    void ResizeCells( int aRows, int aCols );
 
     void ClearCells()
     {
@@ -282,6 +294,13 @@ public:
         return new PCB_TABLE( *this );
     }
 
+    BOARD_ITEM* Duplicate( bool addToParentGroup, BOARD_COMMIT* aCommit = nullptr ) const override;
+
+    void CopyFrom( const BOARD_ITEM* aOther ) override;
+
+    void Serialize( google::protobuf::Any &aContainer ) const override;
+    bool Deserialize( const google::protobuf::Any &aContainer ) override;
+
     void GetMsgPanelInfo( EDA_DRAW_FRAME* aFrame, std::vector<MSG_PANEL_ITEM>& aList ) override;
 
     double Similarity( const BOARD_ITEM& aOther ) const override;
@@ -296,9 +315,13 @@ public:
 #endif
 
 protected:
+    /**
+     * Derived tables pass their own KICAD_T
+     */
+    PCB_TABLE( BOARD_ITEM* aParent, KICAD_T aType, int aLineWidth );
+
     virtual void swapData( BOARD_ITEM* aImage ) override;
 
-protected:
     bool                        m_strokeExternal;
     bool                        m_StrokeHeaderSeparator;
     STROKE_PARAMS               m_borderStroke;

@@ -124,8 +124,9 @@ std::vector<FOOTPRINT*> PCB_IO_EASYEDAPRO_V3::GetImportedCachedLibraryFootprints
 }
 
 
-FOOTPRINT* PCB_IO_EASYEDAPRO_V3::FootprintLoad( const wxString& aLibraryPath, const wxString& aFootprintName,
-                                                bool aKeepUUID, const std::map<std::string, UTF8>* aProperties )
+std::unique_ptr<FOOTPRINT> PCB_IO_EASYEDAPRO_V3::FootprintLoad( const wxString& aLibraryPath,
+                                                                const wxString& aFootprintName, bool aKeepUUID,
+                                                                const std::map<std::string, UTF8>* aProperties )
 {
     FONTCONFIG_REPORTER_SCOPE fontconfigScope( nullptr );
 
@@ -147,7 +148,7 @@ FOOTPRINT* PCB_IO_EASYEDAPRO_V3::FootprintLoad( const wxString& aLibraryPath, co
     const nlohmann::json& index = v3.GetLibraryIndex();
 
     PCB_IO_EASYEDAPRO_V3_PARSER parser( nullptr, nullptr );
-    FOOTPRINT*                  footprint = nullptr;
+    std::unique_ptr<FOOTPRINT>  footprint;
 
     try
     {
@@ -196,7 +197,7 @@ FOOTPRINT* PCB_IO_EASYEDAPRO_V3::FootprintLoad( const wxString& aLibraryPath, co
                 modelTransform = EASYEDAPRO::V3JsonToString( attrs.at( "3D Model Transform" ) );
 
             PCB_IO_EASYEDAPRO_PARSER modelParser( nullptr, nullptr );
-            modelParser.FillFootprintModelInfo( footprint, modelUuid, modelTitle, modelTransform );
+            modelParser.FillFootprintModelInfo( footprint.get(), modelUuid, modelTitle, modelTransform );
 
             break;
         }
@@ -212,15 +213,11 @@ FOOTPRINT* PCB_IO_EASYEDAPRO_V3::FootprintLoad( const wxString& aLibraryPath, co
 }
 
 
-BOARD* PCB_IO_EASYEDAPRO_V3::LoadBoard( const wxString& aFileName, BOARD* aAppendToMe,
-                                        const std::map<std::string, UTF8>* aProperties, PROJECT* aProject )
+void PCB_IO_EASYEDAPRO_V3::loadBoard( const wxString& aFileName, BOARD& aBoard, bool aIsNewLoad,
+                                      const std::map<std::string, UTF8>* aProperties, PROJECT* aProject )
 {
     m_props = aProperties;
-
-    m_board = aAppendToMe ? aAppendToMe : new BOARD();
-
-    if( !aAppendToMe )
-        m_board->SetFileName( aFileName );
+    m_board = &aBoard;
 
     FONTCONFIG_REPORTER_SCOPE fontconfigScope( &LOAD_INFO_REPORTER::GetInstance() );
 
@@ -229,7 +226,7 @@ BOARD* PCB_IO_EASYEDAPRO_V3::LoadBoard( const wxString& aFileName, BOARD* aAppen
         m_progressReporter->Report( wxString::Format( _( "Loading %s..." ), aFileName ) );
 
         if( !m_progressReporter->KeepRefreshing() )
-            THROW_IO_ERROR( _( "File import canceled by user." ) );
+            THROW_IO_CANCELLED();
     }
 
     EASYEDAPRO::V3_DOC_PARSER adapter( aFileName );
@@ -266,7 +263,7 @@ BOARD* PCB_IO_EASYEDAPRO_V3::LoadBoard( const wxString& aFileName, BOARD* aAppen
     }
 
     if( pcbToLoad.empty() )
-        return nullptr;
+        THROW_IO_ERROR( _( "No PCB was found in the project to import." ) );
 
     PCB_IO_EASYEDAPRO_V3_PARSER parser( nullptr, nullptr );
 
@@ -322,6 +319,4 @@ BOARD* PCB_IO_EASYEDAPRO_V3::LoadBoard( const wxString& aFileName, BOARD* aAppen
         Report( wxString::Format( _( "EasyEDA (JLCEDA) Pro v3 import skipped %d unsupported object(s)." ),
                                   adapter.GetSkippedCount() ) , RPT_SEVERITY_WARNING );
     }
-
-    return m_board;
 }

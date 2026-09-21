@@ -20,14 +20,16 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include <unordered_set>
+#include "sch_io/sch_io.h"
+
+#include <wx/dir.h>
+#include <wx/filename.h>
+#include <wx/translation.h>
 
 #include <ki_exception.h>
-#include <sch_io/sch_io.h>
+#include <lib_symbol.h>
 #include <sch_io/sch_io_mgr.h>
-#include <wx/translation.h>
-#include <wx/filename.h>
-#include <wx/dir.h>
+
 
 #define FMT_UNIMPLEMENTED wxT( "Plugin \"%s\" does not implement the \"%s\" function." )
 #define NOT_IMPLEMENTED( aCaller )                                                   \
@@ -103,6 +105,14 @@ void SCH_IO::EnumerateSymbolLib( std::vector<LIB_SYMBOL*>& aSymbolList,
 }
 
 
+void SCH_IO::CheckLibrary( const wxString& aLibraryPath,
+                           const std::map<std::string, UTF8>* aProperties )
+{
+    wxArrayString symbolNames;
+    EnumerateSymbolLib( symbolNames, aLibraryPath, aProperties );
+}
+
+
 LIB_SYMBOL* SCH_IO::LoadSymbol( const wxString& aLibraryPath, const wxString& aSymbolName,
                                 const std::map<std::string, UTF8>* aProperties )
 {
@@ -111,7 +121,7 @@ LIB_SYMBOL* SCH_IO::LoadSymbol( const wxString& aLibraryPath, const wxString& aS
 }
 
 
-void SCH_IO::SaveSymbol( const wxString& aLibraryPath, const LIB_SYMBOL* aSymbol,
+void SCH_IO::SaveSymbol( const wxString& aLibraryPath, std::unique_ptr<LIB_SYMBOL> aSymbol,
                          const std::map<std::string, UTF8>* aProperties )
 {
     // not pure virtual so that plugins only have to implement subset of the SCH_IO interface.

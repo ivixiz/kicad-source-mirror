@@ -31,6 +31,7 @@
 #include <properties/property.h>
 #include <properties/property_mgr.h>
 
+#include <api/api_utils.h>
 #include <api/api_enums.h>
 #include <api/board/board_types.pb.h>
 #include <google/protobuf/any.pb.h>
@@ -268,6 +269,7 @@ void PCB_CONSTRAINT::Serialize( google::protobuf::Any& aContainer ) const
             m->set_index( member.m_index );
     }
 
+    kiapi::common::PackCustomProperties( constraint.mutable_custom_properties(), *this );
     aContainer.PackFrom( constraint );
 }
 
@@ -304,7 +306,15 @@ bool PCB_CONSTRAINT::Deserialize( const google::protobuf::Any& aContainer )
         m_members.emplace_back( KIID( m.item().value() ), anchor, index );
     }
 
+    kiapi::common::UnpackCustomProperties( constraint.custom_properties(), *this );
+
     return true;
+}
+
+void PCB_CONSTRAINT::CopyFrom( const BOARD_ITEM* aOther )
+{
+    wxCHECK( aOther && aOther->Type() == PCB_CONSTRAINT_T, /* void */ );
+    *this = *static_cast<const PCB_CONSTRAINT*>( aOther );
 }
 
 
@@ -485,7 +495,7 @@ static struct PCB_CONSTRAINT_DESC
         // Driving vs reference is the one freely-editable property (the "convert to reference"
         // toggle); type and members are intrinsic and set at creation.
         propMgr.AddProperty( new PROPERTY<PCB_CONSTRAINT, bool>( _HKI( "Driving" ),
-                             &PCB_CONSTRAINT::SetDriving, &PCB_CONSTRAINT::IsDriving ),
-                             constraintTab );
+                    &PCB_CONSTRAINT::SetDriving, &PCB_CONSTRAINT::IsDriving ),
+                    constraintTab );
     }
 } _PCB_CONSTRAINT_DESC;

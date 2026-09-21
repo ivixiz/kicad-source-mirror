@@ -74,7 +74,7 @@ BOOST_FIXTURE_TEST_CASE( SheetDNPEffectiveInSymbolFields, ISSUE24663_FIXTURE )
     // The fix: the symbol fields data model reports that effective state. The same code
     // path serves the on screen checkbox and the BOM export. The exclude_from_board,
     // exclude_from_bom and exclude_from_sim attributes share it.
-    SYMBOL_FIELDS_EDITOR_GRID_DATA_MODEL model( refs, nullptr );
+    SYMBOL_FIELDS_EDITOR_GRID_DATA_MODEL model( refs );
     model.AddColumn( wxS( "${DNP}" ), wxS( "DNP" ), false );
 
     int dnpCol = model.GetFieldNameCol( wxS( "${DNP}" ) );
@@ -84,4 +84,18 @@ BOOST_FIXTURE_TEST_CASE( SheetDNPEffectiveInSymbolFields, ISSUE24663_FIXTURE )
     // value of "1" draws it checked. The stored attribute is still the symbol's own "0".
     SYMBOL_FIELDS_TABLE_DATA_MODEL_ROW row( r1, ROW_STATE::NON_EXPANDABLE );
     BOOST_CHECK_EQUAL( model.GetGroupedValue( row, dnpCol ), wxS( "1" ) );
+
+    // Resolved output and filtering use the attribute's visible string representation,
+    // not the checkbox renderer's internal value.
+    BOOST_CHECK_EQUAL( model.GetGroupedValue( row, dnpCol, wxT( ", " ), wxT( "-" ), true, false ), wxS( "DNP" ) );
+
+    model.SetShowColumn( dnpCol, true );
+    model.SetFilterScope( BOM_FILTER_SCOPE::VISIBLE );
+    model.SetFilter( wxS( "DNP" ) );
+    model.RebuildRows();
+    BOOST_CHECK_EQUAL( model.GetNumberRows(), 1 );
+
+    model.SetFilter( wxS( "1" ) );
+    model.RebuildRows();
+    BOOST_CHECK_EQUAL( model.GetNumberRows(), 0 );
 }

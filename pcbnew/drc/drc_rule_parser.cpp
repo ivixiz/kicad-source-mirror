@@ -43,14 +43,20 @@ DRC_RULES_PARSER::DRC_RULES_PARSER( const wxString& aSource, const wxString& aSo
 
 void DRC_RULES_PARSER::reportError( const wxString& aMessage, int aOffset )
 {
+    reportErrorAt( aMessage, CurLineNumber(), CurOffset() + aOffset, CurLine() );
+}
+
+
+void DRC_RULES_PARSER::reportErrorAt( const wxString& aMessage, int aLine, int aOffset, const char* aSourceLine )
+{
     wxString rest;
     wxString first = aMessage.BeforeFirst( '|', &rest );
 
     if( m_reporter )
     {
         wxString msg = wxString::Format( _( "ERROR: <a href='%d:%d'>%s</a>%s" ),
-                                         CurLineNumber(),
-                                         CurOffset() + aOffset,
+                                         aLine,
+                                         aOffset,
                                          first,
                                          rest );
 
@@ -60,7 +66,7 @@ void DRC_RULES_PARSER::reportError( const wxString& aMessage, int aOffset )
     {
         wxString msg = wxString::Format( _( "ERROR: %s%s" ), first, rest );
 
-        THROW_PARSE_ERROR( msg, CurSource(), CurLine(), CurLineNumber(), CurOffset() + aOffset );
+        THROW_PARSE_ERROR( msg, CurSource(), aSourceLine, aLine, aOffset );
     }
 }
 
@@ -300,6 +306,9 @@ void DRC_RULES_PARSER::ParseComponentClassAssignmentRules(
 std::shared_ptr<DRC_RULE> DRC_RULES_PARSER::parseDRC_RULE()
 {
     std::shared_ptr<DRC_RULE> rule = std::make_shared<DRC_RULE>();
+    int                     conditionLine = 0;
+    int                     conditionOffset = 0;
+    std::string             conditionSource;
 
     T        token = NextTok();
     wxString msg;
@@ -337,6 +346,9 @@ std::shared_ptr<DRC_RULE> DRC_RULES_PARSER::parseDRC_RULE()
             {
                 checkUnresolvedTextVariable();
                 rule->m_Condition = new DRC_RULE_CONDITION( FromUTF8() );
+                conditionLine = CurLineNumber();
+                conditionOffset = CurOffset();
+                conditionSource = CurLine();
 
                 if( !rule->m_Condition->Compile( m_reporter, CurLineNumber(), CurOffset() ) )
                     reportError( wxString::Format( _( "Could not parse expression '%s'." ), FromUTF8() ) );
@@ -373,6 +385,29 @@ std::shared_ptr<DRC_RULE> DRC_RULES_PARSER::parseDRC_RULE()
 
     if( (int) CurTok() != DSN_RIGHT )
         reportError( _( "Missing ')'." ) );
+
+    if( rule->m_Condition && rule->m_Condition->RequiresPairItems() )
+    {
+        for( const DRC_CONSTRAINT& constraint : rule->m_Constraints )
+        {
+            // isCoupledDiffPair() can identify the pair from A's net for these constraints
+            if( !rule->m_Condition->ReferencesItemB()
+                    && ( constraint.m_Type == LENGTH_CONSTRAINT
+                         || constraint.m_Type == NET_CHAIN_LENGTH_CONSTRAINT
+                         || constraint.m_Type == SKEW_CONSTRAINT ) )
+            {
+                continue;
+            }
+
+            if( constraint.IsUnary() )
+            {
+                reportErrorAt( wxString::Format(
+                        _( "Item 'B' is not available for a single-item constraint in rule '%s'." ), rule->m_Name ),
+                        conditionLine, conditionOffset, conditionSource.c_str() );
+                break;
+            }
+        }
+    }
 
     return rule;
 }
@@ -509,7 +544,8 @@ void DRC_RULES_PARSER::parseConstraint( DRC_RULE* aRule )
                          "physical_hole_clearance, courtyard_clearance, silk_clearance, hole_size, "
                          "hole_to_hole, track_width, track_angle, track_segment_length, annular_width, "
                          "disallow, zone_connection, thermal_relief_gap, thermal_spoke_width, "
-                         "min_resolved_spokes, solder_mask_expansion, solder_paste_abs_margin, "
+                         "min_resolved_spokes, microvia_stack_depth, microvia_aspect_ratio, solder_mask_expansion, "
+                         "solder_paste_abs_margin, "
                          "solder_paste_rel_margin, length, net_chain_length, skew, via_count, "
                          "via_dangling, via_diameter, diff_pair_gap or diff_pair_uncoupled" ) );
 
@@ -540,6 +576,8 @@ void DRC_RULES_PARSER::parseConstraint( DRC_RULE* aRule )
     case T_zone_connection:           c.m_Type = ZONE_CONNECTION_CONSTRAINT;           break;
     case T_thermal_relief_gap:        c.m_Type = THERMAL_RELIEF_GAP_CONSTRAINT;        break;
     case T_thermal_spoke_width:       c.m_Type = THERMAL_SPOKE_WIDTH_CONSTRAINT;       break;
+    case T_microvia_stack_depth:      c.m_Type = MICROVIA_STACK_DEPTH_CONSTRAINT;      break;
+    case T_microvia_aspect_ratio: c.m_Type = MICROVIA_ASPECT_RATIO_CONSTRAINT; break;
     case T_min_resolved_spokes:       c.m_Type = MIN_RESOLVED_SPOKES_CONSTRAINT;       break;
     case T_solder_mask_expansion:     c.m_Type = SOLDER_MASK_EXPANSION_CONSTRAINT;     break;
     case T_solder_mask_sliver:        c.m_Type = SOLDER_MASK_SLIVER_CONSTRAINT;        break;
@@ -562,7 +600,8 @@ void DRC_RULES_PARSER::parseConstraint( DRC_RULE* aRule )
                        "physical_hole_clearance, courtyard_clearance, silk_clearance, hole_size, "
                        "hole_to_hole, track_width, track_angle, track_segment_length, annular_width, "
                        "disallow, zone_connection, thermal_relief_gap, thermal_spoke_width, "
-                       "min_resolved_spokes, solder_mask_expansion, solder_mask_sliver, "
+                       "min_resolved_spokes, microvia_stack_depth, microvia_aspect_ratio, solder_mask_expansion, "
+                       "solder_mask_sliver, "
                        "solder_paste_abs_margin, solder_paste_rel_margin, length, net_chain_length, "
                        "skew, via_count, via_dangling, via_diameter, diff_pair_gap, "
                        "diff_pair_uncoupled or bridged_mask" ) );
@@ -575,11 +614,11 @@ void DRC_RULES_PARSER::parseConstraint( DRC_RULE* aRule )
         reportError( msg );
     }
 
-    bool unitless = c.m_Type == VIA_COUNT_CONSTRAINT
-                    || c.m_Type == MIN_RESOLVED_SPOKES_CONSTRAINT
-                    || c.m_Type == TRACK_ANGLE_CONSTRAINT
-                    || c.m_Type == VIA_DANGLING_CONSTRAINT
-                    || c.m_Type == BRIDGED_MASK_CONSTRAINT;
+    bool ratio = c.m_Type == MICROVIA_ASPECT_RATIO_CONSTRAINT;
+
+    bool unitless = ratio || c.m_Type == VIA_COUNT_CONSTRAINT || c.m_Type == MIN_RESOLVED_SPOKES_CONSTRAINT
+                    || c.m_Type == MICROVIA_STACK_DEPTH_CONSTRAINT || c.m_Type == TRACK_ANGLE_CONSTRAINT
+                    || c.m_Type == VIA_DANGLING_CONSTRAINT || c.m_Type == BRIDGED_MASK_CONSTRAINT;
 
     allowsTimeDomain = c.m_Type == LENGTH_CONSTRAINT || c.m_Type == NET_CHAIN_LENGTH_CONSTRAINT
                        || c.m_Type == NET_CHAIN_STUB_LENGTH_CONSTRAINT
@@ -729,6 +768,9 @@ void DRC_RULES_PARSER::parseConstraint( DRC_RULE* aRule )
             c.m_Test = new DRC_RULE_CONDITION( FromUTF8() );
             c.m_Test->Compile( m_reporter, CurLineNumber(), CurOffset() );
 
+            if( c.m_Test->RequiresPairItems() )
+                reportError( _( "Item 'B' is not available in assertion expressions." ) );
+
             if( (int) NextTok() != DSN_RIGHT )
                 reportError( _( "Missing ')'." ) );
         }
@@ -772,7 +814,7 @@ void DRC_RULES_PARSER::parseConstraint( DRC_RULE* aRule )
                 break;
             }
 
-            parseValueWithUnits( (int) offset, expr, value, units, unitless );
+            parseValueWithUnits( (int) offset, expr, value, units, unitless, ratio );
             validateAndSetValueWithUnits( value, units,
                                           [&c]( const int aValue )
                                           {
@@ -793,7 +835,7 @@ void DRC_RULES_PARSER::parseConstraint( DRC_RULE* aRule )
                 break;
             }
 
-            parseValueWithUnits( (int) offset, expr, value, units, unitless );
+            parseValueWithUnits( (int) offset, expr, value, units, unitless, ratio );
             validateAndSetValueWithUnits( value, units,
                                           [&c]( const int aValue )
                                           {
@@ -814,7 +856,7 @@ void DRC_RULES_PARSER::parseConstraint( DRC_RULE* aRule )
                 break;
             }
 
-            parseValueWithUnits( (int) offset, expr, value, units, unitless );
+            parseValueWithUnits( (int) offset, expr, value, units, unitless, ratio );
             validateAndSetValueWithUnits( value, units,
                                           [&c]( const int aValue )
                                           {
@@ -837,8 +879,8 @@ void DRC_RULES_PARSER::parseConstraint( DRC_RULE* aRule )
 }
 
 
-void DRC_RULES_PARSER::parseValueWithUnits( int aOffset, const wxString& aExpr, int& aResult,
-                                            EDA_UNITS& aUnits, bool aUnitless )
+void DRC_RULES_PARSER::parseValueWithUnits( int aOffset, const wxString& aExpr, int& aResult, EDA_UNITS& aUnits,
+                                            bool aUnitless, bool aRatio )
 {
     aResult = 0.0;
     aUnits = EDA_UNITS::UNSCALED;
@@ -874,7 +916,8 @@ void DRC_RULES_PARSER::parseValueWithUnits( int aOffset, const wxString& aExpr, 
 
     if( evaluator.Evaluate( aExpr ) )
     {
-        aResult = evaluator.Result();
+        // A ratio is fractional, so keep three decimals rather than rounding to a whole number.
+        aResult = aRatio ? KiROUND( evaluator.ResultAsDouble() * 1000.0 ) : evaluator.Result();
         aUnits = evaluator.Units();
     }
 }

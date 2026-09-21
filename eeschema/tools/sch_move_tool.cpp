@@ -18,6 +18,8 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <advanced_config.h>
+#include <sch_shape.h>
 #include <algorithm>
 #include <cmath>
 #include <memory>
@@ -125,7 +127,7 @@ static bool makeScopeMeasurementSignal( SCH_EDIT_FRAME* aFrame, SCH_SYMBOL* aSym
             if( !connection || connection->IsBus() || connection->Name().IsEmpty() )
                 continue;
 
-            wxString net = UnescapeString( connection->Name() );
+            wxString net = connection->Name();
             NETLIST_EXPORTER_SPICE::ConvertToSpiceMarkup( &net );
 
             // ngspice treats both names as its reference node.  A voltage relative to either
@@ -990,8 +992,14 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
         }
     }
 
-    if( !selection.Empty() )
+    const bool graphicsOnly = ADVANCED_CFG::GetCfg().m_ConnectivityEngine
+            && std::all_of( selection.begin(), selection.end(),
+                            []( EDA_ITEM* item )
+                            {
+                                return isGraphicItemForDrop( static_cast<SCH_ITEM*>( item ) );
+                            } );
 
+    if( !selection.Empty() && !graphicsOnly )
     {
         netCollisionMonitor = std::make_unique<SCH_DRAG_NET_COLLISION_MONITOR>( m_frame, m_view );
         netCollisionMonitor->Initialize( selection );
@@ -1019,15 +1027,12 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
     // Must be done after Activate() so that it gets set into the correct context
     controls->ShowCursor( true );
 
-    m_frame->PushTool( aEvent );
+    SCOPED_TOOL_PUSHER raii( m_frame, aEvent );
 
+    // Note that it's important to go through push/pop even when the selection is empty.
+    // This keeps other tools from having to special-case an empty move.
     if( selection.Empty() )
-    {
-        // Note that it's important to go through push/pop even when the selection is empty.
-        // This keeps other tools from having to special-case an empty move.
-        m_frame->PopTool( aEvent );
         return false;
-    }
 
     bool        restore_state = false;
     TOOL_EVENT  copy = aEvent;
@@ -1296,7 +1301,9 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
         //------------------------------------------------------------------------
         // Handle drop
         //
-        else if( evt->IsMouseUp( BUT_LEFT ) || evt->IsClick( BUT_LEFT ) )
+        else if( evt->IsMouseUp( BUT_LEFT )
+                || evt->IsClick( BUT_LEFT )
+                || evt->IsAction( &ACTIONS::cursorClick ) )
         {
             if( m_mode != BREAK )
             {
@@ -1358,7 +1365,8 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
                 }
             }
         }
-        else if( evt->IsDblClick( BUT_LEFT ) )
+        else if( evt->IsDblClick( BUT_LEFT )
+                || evt->IsAction( &ACTIONS::cursorDblClick ) )
         {
             // Double click always finishes, even breaks
             break;
@@ -1455,7 +1463,6 @@ bool SCH_MOVE_TOOL::doMoveSelection( const TOOL_EVENT& aEvent, SCH_COMMIT* aComm
 
     m_hiddenJunctions.clear();
     m_view->ClearPreview();
-    m_frame->PopTool( aEvent );
 
     return !restore_state;
 }
@@ -2259,7 +2266,7 @@ bool SCH_MOVE_TOOL::handleMoveToolActions( const TOOL_EVENT* aEvent, SCH_COMMIT*
 
             if( symbol )
             {
-                m_frame->SelectUnit( symbol, unit );
+                m_frame->SelectUnit( symbol, unit, aCommit );
                 m_toolMgr->PostAction( ACTIONS::refreshPreview );
             }
         }
@@ -2271,7 +2278,7 @@ bool SCH_MOVE_TOOL::handleMoveToolActions( const TOOL_EVENT* aEvent, SCH_COMMIT*
 
             if( symbol && symbol->GetBodyStyle() != bodyStyle )
             {
-                m_frame->SelectBodyStyle( symbol, bodyStyle );
+                m_frame->SelectBodyStyle( symbol, bodyStyle, aCommit );
                 m_toolMgr->PostAction( ACTIONS::refreshPreview );
             }
         }

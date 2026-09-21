@@ -400,13 +400,12 @@ bool SIMULATOR_FRAME::LoadSimulator( const wxString& aSimCommand, unsigned aSimO
                                            nullptr, true ) )
         return false;
 
-    // If we are using the new connectivity, make sure that we do a full-rebuild
-    if( ADVANCED_CFG::GetCfg().m_IncrementalConnectivity )
-        m_schematicFrame->RecalculateConnections( nullptr, GLOBAL_CLEANUP );
+    m_schematicFrame->PrepareForNetlist();
 
     bool success = m_simulator->Attach( m_circuitModel, aSimCommand, aSimOptions,
                                         Prj().GetProjectPath(), s_reporter );
 
+    m_schematicFrame->RefreshConnectivity( true );
     showNetlistErrors( s_reporter );
 
     return success;
@@ -420,6 +419,7 @@ void SIMULATOR_FRAME::ReloadSimulator( const wxString& aSimCommand, unsigned aSi
     m_simulator->Attach( m_circuitModel, aSimCommand, aSimOptions, Prj().GetProjectPath(),
                          s_reporter );
 
+    m_schematicFrame->RefreshConnectivity( true );
     showNetlistErrors( s_reporter );
 }
 

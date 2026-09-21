@@ -22,17 +22,21 @@
 
 #pragma once
 
+#include <set>
+#include <vector>
+
+#include <core/multivector.h>
+
 #include <base_units.h>
+#include <default_values.h>
 #include <embedded_files.h>
 #include <symbol.h>
 #include <sch_field.h>
 #include <sch_pin.h>
+#include <jumper_group.h>
 #include <lib_tree_item.h>
 #include <pin_map.h>
-#include <set>
-#include <vector>
-#include <core/multivector.h>
-#include <default_values.h>
+#include <lib_symbol_attributes.h>
 
 class LINE_READER;
 class OUTPUTFORMATTER;
@@ -40,6 +44,11 @@ class REPORTER;
 class LEGACY_SYMBOL_LIB;
 class LIB_SYMBOL;
 class TEST_LIB_SYMBOL_FIXTURE;
+
+namespace kiapi::schematic::types
+{
+class SchematicSymbol;
+}
 
 namespace KIFONT
 {
@@ -49,15 +58,6 @@ namespace KIFONT
 
 typedef MULTIVECTOR<SCH_ITEM, SCH_SHAPE_T, SCH_PIN_T> LIB_ITEMS_CONTAINER;
 typedef LIB_ITEMS_CONTAINER::ITEM_PTR_VECTOR LIB_ITEMS;
-
-
-/* values for member .m_options */
-enum LIBRENTRYOPTIONS
-{
-    ENTRY_NORMAL,     // Libentry is a standard symbol (real or alias)
-    ENTRY_GLOBAL_POWER,      // Libentry is a power symbol
-    ENTRY_LOCAL_POWER // Libentry is a local power symbol
-};
 
 
 extern bool operator<( const LIB_SYMBOL& aItem1, const LIB_SYMBOL& aItem2 );
@@ -119,6 +119,8 @@ public:
 
     virtual ~LIB_SYMBOL() = default;
 
+    LIB_SYMBOL_ATTRIBUTES ComparisonAttributes() const;
+
     /// http://www.boost.org/doc/libs/1_55_0/libs/smart_ptr/sp_techniques.html#weak_without_shared.
     std::shared_ptr<LIB_SYMBOL> SharedPtr() const { return m_me; }
 
@@ -176,7 +178,7 @@ public:
     wxString GetName() const override { return m_name; }
 
     LIB_ID GetLIB_ID() const override { return m_libId; }
-    wxString GetDesc() override { return GetShownDescription(); }
+    wxString GetDesc() override { return GetShownDescription( FOR_GUI ); }
     wxString GetFootprint() override;
     int GetSubUnitCount() const override { return GetUnitCount(); }
 
@@ -203,9 +205,12 @@ public:
         return GetDescriptionField().GetText();
     }
 
-    wxString GetShownDescription( int aDepth = 0 ) const override;
+    wxString GetShownDescription( RESOLUTION_CONTEXT aContext, int aDepth = 0 ) const override;
 
     void SetKeyWords( const wxString& aKeyWords );
+
+    /// Return only this symbol's keywords, without inheriting from its parent.
+    const wxString& GetRawKeyWords() const { return m_keyWords; }
 
     wxString GetKeyWords() const override
     {
@@ -218,7 +223,7 @@ public:
         return m_keyWords;
     }
 
-    wxString GetShownKeyWords( int aDepth = 0 ) const override;
+    wxString GetShownKeyWords( RESOLUTION_CONTEXT aContext, int aDepth = 0 ) const override;
 
     std::vector<SEARCH_TERM>& GetSearchTerms() override { return m_searchTermsCache; }
 
@@ -361,9 +366,13 @@ public:
 
     /**
      * Check whether symbol units are interchangeable.
+     *
+     * The units belong to the drawings, so a derived symbol resolves this through its root
+     * symbol.
+     *
      * @return False when interchangeable, true otherwise.
      */
-    bool UnitsLocked() const { return m_unitsLocked; }
+    bool UnitsLocked() const;
 
     /**
      * Overwrite all the existing fields in this symbol with fields supplied in \a aFieldsList.
@@ -424,23 +433,23 @@ public:
     const SCH_FIELD* GetField( FIELD_T aFieldType ) const;
     SCH_FIELD* GetField( FIELD_T aFieldType );
 
-    /** Return reference to the value field. */
+    // Return reference to the value field.
     SCH_FIELD& GetValueField() { return *GetField( FIELD_T::VALUE ); }
     const SCH_FIELD& GetValueField() const;
 
-    /** Return reference to the reference designator field. */
+    // Return reference to the reference designator field.
     SCH_FIELD& GetReferenceField() { return *GetField( FIELD_T::REFERENCE ); }
     const SCH_FIELD& GetReferenceField() const;
 
-    /** Return reference to the footprint field */
+    // Return reference to the footprint field
     SCH_FIELD& GetFootprintField() { return *GetField( FIELD_T::FOOTPRINT ); }
     const SCH_FIELD& GetFootprintField() const;
 
-    /** Return reference to the datasheet field. */
+    // Return reference to the datasheet field.
     SCH_FIELD& GetDatasheetField() { return *GetField( FIELD_T::DATASHEET ); }
     const SCH_FIELD& GetDatasheetField() const;
 
-    /** Return reference to the description field. */
+    // Return reference to the description field.
     SCH_FIELD& GetDescriptionField() {return *GetField( FIELD_T::DESCRIPTION ); }
     const SCH_FIELD& GetDescriptionField() const;
 
@@ -451,7 +460,7 @@ public:
         return GetReferenceField().GetText();
     }
 
-    const wxString GetValue( bool aResolve, const SCH_SHEET_PATH* aPath, bool aAllowExtraText,
+    const wxString GetValue( const SCH_SHEET_PATH* aPath, RESOLUTION_CONTEXT aContext,
                              const wxString& aVariantName = wxEmptyString ) const override
     {
         return GetValueField().GetText();
@@ -488,6 +497,7 @@ public:
     void SetFootprintProp( const wxString& aFootprint )
     {
         GetFootprintField().SetText( aFootprint );
+        cacheSearchTerms();
     }
 
     wxString GetDatasheetProp() const
@@ -614,6 +624,12 @@ public:
 
     bool GetExcludedFromPosFilesProp() const { return GetExcludedFromPosFiles(); }
     void SetExcludedFromPosFilesProp( bool aExclude ) { SetExcludedFromPosFiles( aExclude ); }
+
+    void Serialize( kiapi::schematic::types::SchematicSymbol& aOutput, bool aSkipPins = false ) const;
+    bool Deserialize( const kiapi::schematic::types::SchematicSymbol& aInput );
+
+    void Serialize( google::protobuf::Any& aContainer ) const override;
+    bool Deserialize( const google::protobuf::Any& aContainer ) override;
 
     std::set<KIFONT::OUTLINE_FONT*> GetFonts() const override;
 
@@ -861,34 +877,28 @@ public:
      * Each jumper pin group is a set of pin numbers that should be treated as internally connected.
      * @return The list of jumper pin groups in this symbols
      */
-    std::vector<std::set<wxString>>& JumperPinGroups() { return m_jumperPinGroups; }
-    const std::vector<std::set<wxString>>& JumperPinGroups() const { return m_jumperPinGroups; }
-
-    /// Retrieves the jumper group containing the specified pin number, if one exists
-    std::optional<const std::set<wxString>> GetJumperPinGroup( const wxString& aPinNumber ) const;
+    JUMPER_GROUP_SET&       JumperPinGroups() { return m_jumperPinGroups; }
+    const JUMPER_GROUP_SET& JumperPinGroups() const { return m_jumperPinGroups; }
 
     /**
      * @return true if the symbol has multiple units per symbol.
      * When true, the reference has a sub reference to identify symbol.
      */
-    bool IsMultiUnit() const override { return m_unitCount > 1; }
+    bool IsMultiUnit() const override { return GetUnitCount() > 1; }
 
     static wxString LetterSubReference( int aUnit, wxChar aInitialLetter );
 
     bool IsMultiBodyStyle() const override { return GetBodyStyleCount() > 1; }
 
-    int GetBodyStyleCount() const override
-    {
-        if( m_demorgan )
-            return 2;
-        else
-            return std::max( 1, (int) m_bodyStyleNames.size() );
-    }
+    /**
+     * The body styles are a property of the drawings, which a derived symbol inherits from its
+     * root symbol rather than owning, so these resolve through the inheritance chain.
+     */
+    int GetBodyStyleCount() const override;
+    bool HasDeMorganBodyStyles() const override;
+    const std::vector<wxString>& GetBodyStyleNames() const;
 
-    bool HasDeMorganBodyStyles() const override { return m_demorgan; }
     void SetHasDeMorganBodyStyles( bool aFlag ) { m_demorgan = aFlag; }
-
-    const std::vector<wxString>& GetBodyStyleNames() const { return m_bodyStyleNames; }
     void SetBodyStyleNames( const std::vector<wxString>& aBodyStyleNames ) { m_bodyStyleNames = aBodyStyleNames; }
 
     /**
@@ -998,6 +1008,8 @@ private:
 
     void deleteAllFields();
 
+    wxString getShownDescription( RESOLUTION_CONTEXT aContext, int aDepth ) const;
+
     /// @return true when this symbol defines its own pin-map bundle (either named maps or
     ///         associated footprints), so the bundle is not inherited from the parent.
     bool definesOwnPinMapBundle() const { return !m_pinMaps.IsEmpty() || !m_associatedFootprints.empty(); }
@@ -1044,7 +1056,7 @@ private:
 
     /// A list of jumper pin groups, each of which is a set of pin numbers that should be jumpered
     /// together (treated as internally connected for the purposes of connectivity)
-    std::vector<std::set<wxString> > m_jumperPinGroups;
+    JUMPER_GROUP_SET m_jumperPinGroups;
 
     /// Flag that this symbol should automatically treat sets of two or more pins with the same
     /// number as jumpered pin groups

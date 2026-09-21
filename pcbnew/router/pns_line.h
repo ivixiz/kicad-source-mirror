@@ -127,6 +127,10 @@ public:
         return IsLinked() && LinkCount() == ShapeCount();
     }
 
+    ///< Finds a linked SEGMENT whose endpoints match aSeg (either direction)
+    SEGMENT* FindLinkedSegment( const SEG& aSeg ) const;
+
+
     ///< Assign a shape to the line (a polyline/line chain).
     void SetShape( const SHAPE_LINE_CHAIN& aLine )
     {
@@ -259,11 +263,20 @@ public:
         return m_snapThreshhold;
     }
 
+    SEGMENT* FindLinkContainingVertex( const VECTOR2I& aP ) const;
+
 private:
     void dragSegment45( const VECTOR2I& aP, int aIndex );
     void dragCorner45( const VECTOR2I& aP, int aIndex, DIRECTION_45 aPreferredEndingDirection );
     void dragSegmentFree( const VECTOR2I& aP, int aIndex );
     void dragCornerFree( const VECTOR2I& aP, int aIndex );
+
+    /**
+     * Used to rebuild arcs in the walkaround since the graph only stores vertices.  This looks at
+     * points that are untouched between the output and the input and pushes the arc data back into 
+     * the path
+     */
+    void restoreUntouchedArcs( SHAPE_LINE_CHAIN& aPath, const SHAPE_LINE_CHAIN& aOriginal ) const;
 
     VECTOR2I snapToNeighbourSegments( const SHAPE_LINE_CHAIN& aPath, const VECTOR2I& aP,
                                       int aIndex ) const;

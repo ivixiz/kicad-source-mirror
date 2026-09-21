@@ -510,6 +510,7 @@ FOOTPRINT* GPCB_FPL_CACHE::parseFOOTPRINT( LINE_READER* aLineReader )
             static const LSET pad_front( { F_Cu, F_Mask, F_Paste } );
             static const LSET pad_back( { B_Cu, B_Mask, B_Paste } );
 
+            pad->SetPadstackMode( PADSTACK::MODE::NORMAL );     // gEDA doesn't have complex padstacks
             pad->SetShape( PADSTACK::ALL_LAYERS, PAD_SHAPE::RECTANGLE );
             pad->SetAttribute( PAD_ATTRIB::SMD );
             pad->SetLayerSet( pad_front );
@@ -603,6 +604,7 @@ FOOTPRINT* GPCB_FPL_CACHE::parseFOOTPRINT( LINE_READER* aLineReader )
 
             PAD* pad = new PAD( footprint.get() );
 
+            pad->SetPadstackMode( PADSTACK::MODE::NORMAL );     // gEDA doesn't have complex padstacks
             pad->SetShape( PADSTACK::ALL_LAYERS, PAD_SHAPE::CIRCLE );
 
             static const LSET pad_set = LSET::AllCuMask() | LSET( { F_SilkS, F_Mask, B_Mask } );
@@ -849,9 +851,8 @@ void PCB_IO_GEDA::validateCache( const wxString& aLibraryPath, bool checkModifie
 }
 
 
-FOOTPRINT* PCB_IO_GEDA::ImportFootprint( const wxString&        aFootprintPath,
-                                         wxString&              aFootprintNameOut,
-                                         const std::map<std::string, UTF8>* aProperties )
+std::unique_ptr<FOOTPRINT> PCB_IO_GEDA::ImportFootprint( const wxString& aFootprintPath, wxString& aFootprintNameOut,
+                                                         const std::map<std::string, UTF8>* aProperties )
 {
     wxFileName fn( aFootprintPath );
 
@@ -927,10 +928,8 @@ const FOOTPRINT* PCB_IO_GEDA::getFootprint( const wxString& aLibraryPath,
 }
 
 
-FOOTPRINT* PCB_IO_GEDA::FootprintLoad( const wxString& aLibraryPath,
-                                       const wxString& aFootprintName,
-                                       bool  aKeepUUID,
-                                       const std::map<std::string, UTF8>* aProperties )
+std::unique_ptr<FOOTPRINT> PCB_IO_GEDA::FootprintLoad( const wxString& aLibraryPath, const wxString& aFootprintName,
+                                                       bool aKeepUUID, const std::map<std::string, UTF8>* aProperties )
 {
     // Suppress font substitution warnings (RAII - automatically restored on scope exit)
     FONTCONFIG_REPORTER_SCOPE fontconfigScope( nullptr );
@@ -939,7 +938,7 @@ FOOTPRINT* PCB_IO_GEDA::FootprintLoad( const wxString& aLibraryPath,
 
     if( footprint )
     {
-        FOOTPRINT* copy = (FOOTPRINT*) footprint->Duplicate( IGNORE_PARENT_GROUP );
+        std::unique_ptr<FOOTPRINT> copy( static_cast<FOOTPRINT*>( footprint->Duplicate( IGNORE_PARENT_GROUP ) ) );
         copy->SetParent( nullptr );
         return copy;
     }
@@ -1283,6 +1282,7 @@ void PCB_IO_GEDA::parseVia( wxArrayString& aParameters, double aConvUnit )
     int drill     = static_cast<int>( parseInt( aParameters[7], aConvUnit ) );
 
     via->SetPosition( VECTOR2I( x, y ) );
+    via->SetPadstackMode( PADSTACK::MODE::NORMAL );     // gEDA doesn't have complex padstacks
     via->SetWidth( PADSTACK::ALL_LAYERS, thickness );
     via->SetDrill( drill );
     via->SetViaType( VIATYPE::THROUGH );
@@ -1443,6 +1443,7 @@ FOOTPRINT* PCB_IO_GEDA::parseElement( wxArrayString& aParameters, LINE_READER* a
             static const LSET pad_front( { F_Cu, F_Mask, F_Paste } );
             static const LSET pad_back( { B_Cu, B_Mask, B_Paste } );
 
+            pad->SetPadstackMode( PADSTACK::MODE::NORMAL );     // gEDA doesn't have complex padstacks
             pad->SetShape( PADSTACK::ALL_LAYERS, PAD_SHAPE::RECTANGLE );
             pad->SetAttribute( PAD_ATTRIB::SMD );
             pad->SetLayerSet( pad_front );
@@ -1502,6 +1503,7 @@ FOOTPRINT* PCB_IO_GEDA::parseElement( wxArrayString& aParameters, LINE_READER* a
 
             PAD* pad = new PAD( footprint.get() );
 
+            pad->SetPadstackMode( PADSTACK::MODE::NORMAL );     // gEDA doesn't have complex padstacks
             pad->SetShape( PADSTACK::ALL_LAYERS, PAD_SHAPE::CIRCLE );
 
             static const LSET pad_set = LSET::AllCuMask() | LSET( { F_SilkS, F_Mask, B_Mask } );
@@ -1916,20 +1918,14 @@ void PCB_IO_GEDA::parseNetList( LINE_READER* aLineReader )
 }
 
 
-BOARD* PCB_IO_GEDA::LoadBoard( const wxString& aFileName, BOARD* aAppendToMe,
-                               const std::map<std::string, UTF8>* aProperties,
-                               PROJECT* aProject )
+void PCB_IO_GEDA::loadBoard( const wxString& aFileName, BOARD& aBoard, bool aIsNewLoad,
+                             const std::map<std::string, UTF8>* aProperties, PROJECT* aProject )
 {
     FONTCONFIG_REPORTER_SCOPE fontconfigScope( &LOAD_INFO_REPORTER::GetInstance() );
 
     init( aProperties );
 
-    m_board = aAppendToMe ? aAppendToMe : new BOARD();
-
-    if( !aAppendToMe )
-        m_board->SetFileName( aFileName );
-
-    std::unique_ptr<BOARD> deleter( aAppendToMe ? nullptr : m_board );
+    m_board = &aBoard;
 
     for( FOOTPRINT* fp : m_cachedFootprints )
         delete fp;
@@ -2056,9 +2052,6 @@ BOARD* PCB_IO_GEDA::LoadBoard( const wxString& aFileName, BOARD* aAppendToMe,
 
     m_board->m_LegacyDesignSettingsLoaded = true;
     m_board->m_LegacyNetclassesLoaded = true;
-
-    deleter.release();
-    return m_board;
 }
 
 

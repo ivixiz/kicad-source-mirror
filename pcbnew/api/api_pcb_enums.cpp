@@ -21,6 +21,7 @@
 #include <import_export.h>
 #include <api/api_enums.h>
 #include <api/board/board.pb.h>
+#include <api/board/board_rules.pb.h>
 #include <api/board/board_types.pb.h>
 #include <api/board/board_commands.pb.h>
 #include <api/board/board_jobs.pb.h>
@@ -44,12 +45,16 @@
 #include <jobs/job_export_pcb_ps.h>
 #include <jobs/job_export_pcb_stats.h>
 #include <jobs/job_export_pcb_svg.h>
+#include <jobs/job_export_pcb_png.h>
 #include <jobs/job_pcb_render.h>
 #include <drc/drc_rule.h>
 #include <plotprint_opts.h>
 #include <zones.h>
 #include <zone_settings.h>
 #include <project/board_project_settings.h>
+#include <generators/pcb_tuning_pattern.h>
+#include <generators/pcb_via_stack.h>
+#include <generators/pcb_via_stitch.h>
 
 // Adding something new here?  Add it to test_api_enums.cpp!
 
@@ -195,6 +200,51 @@ PADSTACK::MODE FromProtoEnum( types::PadStackType aValue )
 
 
 template<>
+PAD_PROP FromProtoEnum( types::PadFabricationProperty aValue )
+{
+    switch( aValue )
+    {
+    case types::PadFabricationProperty::PFP_UNKNOWN:
+    case types::PadFabricationProperty::PFP_NONE:            return PAD_PROP::NONE;
+    case types::PadFabricationProperty::PFP_BGA:             return PAD_PROP::BGA;
+    case types::PadFabricationProperty::PFP_FIDUCIAL_GLOBAL: return PAD_PROP::FIDUCIAL_GLBL;
+    case types::PadFabricationProperty::PFP_FIDUCIAL_LOCAL:  return PAD_PROP::FIDUCIAL_LOCAL;
+    case types::PadFabricationProperty::PFP_TESTPOINT:       return PAD_PROP::TESTPOINT;
+    case types::PadFabricationProperty::PFP_HEATSINK:        return PAD_PROP::HEATSINK;
+    case types::PadFabricationProperty::PFP_CASTELLATED:     return PAD_PROP::CASTELLATED;
+    case types::PadFabricationProperty::PFP_MECHANICAL:      return PAD_PROP::MECHANICAL;
+    case types::PadFabricationProperty::PFP_PRESSFIT:        return PAD_PROP::PRESSFIT;
+
+    default:
+        wxCHECK_MSG( false, PAD_PROP::NONE,
+                     "Unhandled case in FromProtoEnum<types::PadFabricationProperty>" );
+    }
+}
+
+
+template<>
+types::PadFabricationProperty ToProtoEnum( PAD_PROP aValue )
+{
+    switch( aValue )
+    {
+    case PAD_PROP::NONE:           return types::PadFabricationProperty::PFP_NONE;
+    case PAD_PROP::BGA:            return types::PadFabricationProperty::PFP_BGA;
+    case PAD_PROP::FIDUCIAL_GLBL:  return types::PadFabricationProperty::PFP_FIDUCIAL_GLOBAL;
+    case PAD_PROP::FIDUCIAL_LOCAL: return types::PadFabricationProperty::PFP_FIDUCIAL_LOCAL;
+    case PAD_PROP::TESTPOINT:      return types::PadFabricationProperty::PFP_TESTPOINT;
+    case PAD_PROP::HEATSINK:       return types::PadFabricationProperty::PFP_HEATSINK;
+    case PAD_PROP::CASTELLATED:    return types::PadFabricationProperty::PFP_CASTELLATED;
+    case PAD_PROP::MECHANICAL:     return types::PadFabricationProperty::PFP_MECHANICAL;
+    case PAD_PROP::PRESSFIT:       return types::PadFabricationProperty::PFP_PRESSFIT;
+
+    default:
+        wxCHECK_MSG( false, types::PadFabricationProperty::PFP_UNKNOWN,
+                     "Unhandled case in ToProtoEnum<PAD_PROP>" );
+    }
+}
+
+
+template<>
 types::ViaType ToProtoEnum( VIATYPE aValue )
 {
     switch( aValue )
@@ -290,6 +340,8 @@ CustomRuleConstraintType ToProtoEnum( DRC_CONSTRAINT_T aValue )
     case THERMAL_RELIEF_GAP_CONSTRAINT:   return CustomRuleConstraintType::CRCT_THERMAL_RELIEF_GAP;
     case THERMAL_SPOKE_WIDTH_CONSTRAINT:  return CustomRuleConstraintType::CRCT_THERMAL_SPOKE_WIDTH;
     case MIN_RESOLVED_SPOKES_CONSTRAINT:  return CustomRuleConstraintType::CRCT_MIN_RESOLVED_SPOKES;
+    case MICROVIA_STACK_DEPTH_CONSTRAINT: return CustomRuleConstraintType::CRCT_MICROVIA_STACK_DEPTH;
+    case MICROVIA_ASPECT_RATIO_CONSTRAINT: return CustomRuleConstraintType::CRCT_MICROVIA_ASPECT_RATIO;
     case SOLDER_MASK_EXPANSION_CONSTRAINT:return CustomRuleConstraintType::CRCT_SOLDER_MASK_EXPANSION;
     case SOLDER_PASTE_ABS_MARGIN_CONSTRAINT:return CustomRuleConstraintType::CRCT_SOLDER_PASTE_ABS_MARGIN;
     case SOLDER_PASTE_REL_MARGIN_CONSTRAINT:return CustomRuleConstraintType::CRCT_SOLDER_PASTE_REL_MARGIN;
@@ -345,6 +397,8 @@ DRC_CONSTRAINT_T FromProtoEnum( CustomRuleConstraintType aValue )
     case CustomRuleConstraintType::CRCT_THERMAL_RELIEF_GAP:    return THERMAL_RELIEF_GAP_CONSTRAINT;
     case CustomRuleConstraintType::CRCT_THERMAL_SPOKE_WIDTH:   return THERMAL_SPOKE_WIDTH_CONSTRAINT;
     case CustomRuleConstraintType::CRCT_MIN_RESOLVED_SPOKES:   return MIN_RESOLVED_SPOKES_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_MICROVIA_STACK_DEPTH:  return MICROVIA_STACK_DEPTH_CONSTRAINT;
+    case CustomRuleConstraintType::CRCT_MICROVIA_ASPECT_RATIO: return MICROVIA_ASPECT_RATIO_CONSTRAINT;
     case CustomRuleConstraintType::CRCT_SOLDER_MASK_EXPANSION: return SOLDER_MASK_EXPANSION_CONSTRAINT;
     case CustomRuleConstraintType::CRCT_SOLDER_PASTE_ABS_MARGIN:return SOLDER_PASTE_ABS_MARGIN_CONSTRAINT;
     case CustomRuleConstraintType::CRCT_SOLDER_PASTE_REL_MARGIN:return SOLDER_PASTE_REL_MARGIN_CONSTRAINT;
@@ -578,6 +632,39 @@ ZONE_FILL_MODE FromProtoEnum( types::ZoneFillMode aValue )
 
 
 template<>
+types::ZoneCornerSmoothingMode ToProtoEnum( ZONE_SETTINGS::CORNER_SMOOTHING aValue )
+{
+    switch( aValue )
+    {
+    case ZONE_SETTINGS::CORNER_SMOOTHING::NO_SMOOTHING:    return types::ZoneCornerSmoothingMode::ZCSM_NONE;
+    case ZONE_SETTINGS::CORNER_SMOOTHING::CHAMFER: return types::ZoneCornerSmoothingMode::ZCSM_CHAMFER;
+    case ZONE_SETTINGS::CORNER_SMOOTHING::FILLET:  return types::ZoneCornerSmoothingMode::ZCSM_FILLET;
+
+    default:
+        wxCHECK_MSG( false, types::ZoneCornerSmoothingMode::ZCSM_UNKNOWN,
+                     "Unhandled case in ToProtoEnum<ZONE_SETTINGS::CORNER_SMOOTHING>" );
+    }
+}
+
+
+template<>
+ZONE_SETTINGS::CORNER_SMOOTHING FromProtoEnum( types::ZoneCornerSmoothingMode aValue )
+{
+    switch( aValue )
+    {
+    case types::ZoneCornerSmoothingMode::ZCSM_UNKNOWN:
+    case types::ZoneCornerSmoothingMode::ZCSM_NONE:     return ZONE_SETTINGS::CORNER_SMOOTHING::NO_SMOOTHING;
+    case types::ZoneCornerSmoothingMode::ZCSM_CHAMFER:  return ZONE_SETTINGS::CORNER_SMOOTHING::CHAMFER;
+    case types::ZoneCornerSmoothingMode::ZCSM_FILLET:   return ZONE_SETTINGS::CORNER_SMOOTHING::FILLET;
+
+    default:
+        wxCHECK_MSG( false, ZONE_SETTINGS::CORNER_SMOOTHING::NO_SMOOTHING,
+                     "Unhandled case in FromProtoEnum<ZoneCornerSmoothingMode>" );
+    }
+}
+
+
+template<>
 types::ThievingPattern ToProtoEnum( THIEVING_PATTERN aValue )
 {
     switch( aValue )
@@ -695,36 +782,36 @@ PLACEMENT_SOURCE_T FromProtoEnum( types::PlacementRuleSourceType aValue )
 
 
 template<>
-types::TeardropType ToProtoEnum( TEARDROP_TYPE aValue )
+types::ZoneTeardropType ToProtoEnum( TEARDROP_TYPE aValue )
 {
     switch( aValue )
     {
-    case TEARDROP_TYPE::TD_NONE:        return types::TeardropType::TDT_NONE;
-    case TEARDROP_TYPE::TD_UNSPECIFIED: return types::TeardropType::TDT_UNSPECIFIED;
-    case TEARDROP_TYPE::TD_VIAPAD:      return types::TeardropType::TDT_VIA_PAD;
-    case TEARDROP_TYPE::TD_TRACKEND:    return types::TeardropType::TDT_TRACK_END;
+    case TEARDROP_TYPE::TD_NONE:        return types::ZoneTeardropType::ZTDT_NONE;
+    case TEARDROP_TYPE::TD_UNSPECIFIED: return types::ZoneTeardropType::ZTDT_UNSPECIFIED;
+    case TEARDROP_TYPE::TD_VIAPAD:      return types::ZoneTeardropType::ZTDT_VIA_PAD;
+    case TEARDROP_TYPE::TD_TRACKEND:    return types::ZoneTeardropType::ZTDT_TRACK_END;
 
     default:
-        wxCHECK_MSG( false, types::TeardropType::TDT_UNKNOWN,
+        wxCHECK_MSG( false, types::ZoneTeardropType::ZTDT_UNKNOWN,
                      "Unhandled case in ToProtoEnum<TEARDROP_TYPE>");
     }
 }
 
 
 template<>
-TEARDROP_TYPE FromProtoEnum( types::TeardropType aValue )
+TEARDROP_TYPE FromProtoEnum( types::ZoneTeardropType aValue )
 {
     switch( aValue )
     {
-    case types::TeardropType::TDT_UNKNOWN:
-    case types::TeardropType::TDT_NONE:         return TEARDROP_TYPE::TD_NONE;
-    case types::TeardropType::TDT_UNSPECIFIED:  return TEARDROP_TYPE::TD_UNSPECIFIED;
-    case types::TeardropType::TDT_VIA_PAD:      return TEARDROP_TYPE::TD_VIAPAD;
-    case types::TeardropType::TDT_TRACK_END:    return TEARDROP_TYPE::TD_TRACKEND;
+    case types::ZoneTeardropType::ZTDT_UNKNOWN:
+    case types::ZoneTeardropType::ZTDT_NONE:         return TEARDROP_TYPE::TD_NONE;
+    case types::ZoneTeardropType::ZTDT_UNSPECIFIED:  return TEARDROP_TYPE::TD_UNSPECIFIED;
+    case types::ZoneTeardropType::ZTDT_VIA_PAD:      return TEARDROP_TYPE::TD_VIAPAD;
+    case types::ZoneTeardropType::ZTDT_TRACK_END:    return TEARDROP_TYPE::TD_TRACKEND;
 
     default:
         wxCHECK_MSG( false, TEARDROP_TYPE::TD_NONE,
-                     "Unhandled case in FromProtoEnum<types::ZoneHatchBorderMode>" );
+                     "Unhandled case in FromProtoEnum<types::ZoneTeardropType>" );
     }
 }
 
@@ -1573,6 +1660,37 @@ JOB_EXPORT_PCB_PS::GEN_MODE FromProtoEnum( BoardJobPaginationMode aValue )
 
 
 template<>
+BoardJobPaginationMode ToProtoEnum( JOB_EXPORT_PCB_PNG::GEN_MODE aValue )
+{
+    switch( aValue )
+    {
+    case JOB_EXPORT_PCB_PNG::GEN_MODE::SINGLE: return BoardJobPaginationMode::BJPM_ALL_LAYERS_ONE_PAGE;
+    case JOB_EXPORT_PCB_PNG::GEN_MODE::MULTI:  return BoardJobPaginationMode::BJPM_EACH_LAYER_OWN_FILE;
+    default:
+        wxCHECK_MSG( false, BoardJobPaginationMode::BJPM_UNKNOWN,
+                     "Unhandled case in ToProtoEnum<JOB_EXPORT_PCB_PNG::GEN_MODE>" );
+    }
+}
+
+
+template<>
+JOB_EXPORT_PCB_PNG::GEN_MODE FromProtoEnum( BoardJobPaginationMode aValue )
+{
+    switch( aValue )
+    {
+    case BoardJobPaginationMode::BJPM_ALL_LAYERS_ONE_PAGE:
+        return JOB_EXPORT_PCB_PNG::GEN_MODE::SINGLE;
+    case BoardJobPaginationMode::BJPM_EACH_LAYER_OWN_FILE:
+        return JOB_EXPORT_PCB_PNG::GEN_MODE::MULTI;
+    case BoardJobPaginationMode::BJPM_UNKNOWN:
+    case BoardJobPaginationMode::BJPM_EACH_LAYER_OWN_PAGE:
+    default:
+        return JOB_EXPORT_PCB_PNG::GEN_MODE::MULTI;
+    }
+}
+
+
+template<>
 DrillFormat ToProtoEnum( JOB_EXPORT_PCB_DRILL::DRILL_FORMAT aValue )
 {
     switch( aValue )
@@ -2069,6 +2187,11 @@ DrcErrorType ToProtoEnum( PCB_DRC_CODE aValue )
     case DRCE_PADSTACK:                      return DrcErrorType::DRCET_PADSTACK;
     case DRCE_PADSTACK_INVALID:              return DrcErrorType::DRCET_PADSTACK_INVALID;
     case DRCE_MICROVIA_DRILL_OUT_OF_RANGE:   return DrcErrorType::DRCET_MICROVIA_DRILL_OUT_OF_RANGE;
+    case DRCE_MALFORMED_MICROVIA_STACK_SPAN: return DrcErrorType::DRCET_MALFORMED_MICROVIA_STACK_SPAN;
+    case DRCE_MICROVIA_STACK_NOT_FILLED:     return DrcErrorType::DRCET_MICROVIA_STACK_NOT_FILLED;
+    case DRCE_MICROVIA_STACK_DEPTH:          return DrcErrorType::DRCET_MICROVIA_STACK_DEPTH;
+    case DRCE_MICROVIA_ASPECT_RATIO:         return DrcErrorType::DRCET_MICROVIA_ASPECT_RATIO;
+    case DRCE_MICROVIA_CROSSES_CORE: return DrcErrorType::DRCET_MICROVIA_CROSSES_CORE;
     case DRCE_OVERLAPPING_FOOTPRINTS:        return DrcErrorType::DRCET_OVERLAPPING_FOOTPRINTS;
     case DRCE_MISSING_COURTYARD:             return DrcErrorType::DRCET_MISSING_COURTYARD;
     case DRCE_MALFORMED_COURTYARD:           return DrcErrorType::DRCET_MALFORMED_COURTYARD;
@@ -2151,6 +2274,11 @@ PCB_DRC_CODE FromProtoEnum( DrcErrorType aValue )
     case DrcErrorType::DRCET_PADSTACK:                            return DRCE_PADSTACK;
     case DrcErrorType::DRCET_PADSTACK_INVALID:                    return DRCE_PADSTACK_INVALID;
     case DrcErrorType::DRCET_MICROVIA_DRILL_OUT_OF_RANGE:         return DRCE_MICROVIA_DRILL_OUT_OF_RANGE;
+    case DrcErrorType::DRCET_MALFORMED_MICROVIA_STACK_SPAN:       return DRCE_MALFORMED_MICROVIA_STACK_SPAN;
+    case DrcErrorType::DRCET_MICROVIA_STACK_NOT_FILLED:           return DRCE_MICROVIA_STACK_NOT_FILLED;
+    case DrcErrorType::DRCET_MICROVIA_STACK_DEPTH:                return DRCE_MICROVIA_STACK_DEPTH;
+    case DrcErrorType::DRCET_MICROVIA_ASPECT_RATIO:               return DRCE_MICROVIA_ASPECT_RATIO;
+    case DrcErrorType::DRCET_MICROVIA_CROSSES_CORE: return DRCE_MICROVIA_CROSSES_CORE;
     case DrcErrorType::DRCET_OVERLAPPING_FOOTPRINTS:              return DRCE_OVERLAPPING_FOOTPRINTS;
     case DrcErrorType::DRCET_MISSING_COURTYARD:                   return DRCE_MISSING_COURTYARD;
     case DrcErrorType::DRCET_MALFORMED_COURTYARD:                 return DRCE_MALFORMED_COURTYARD;
@@ -2306,6 +2434,237 @@ CONSTRAINT_ANCHOR FromProtoEnum( types::ConstraintAnchor aValue )
         wxCHECK_MSG( false, CONSTRAINT_ANCHOR::WHOLE,
                      "Unhandled case in FromProtoEnum<types::ConstraintAnchor>" );
     }
+}
+
+
+template<>
+types::TuningPatternMode ToProtoEnum( LENGTH_TUNING_MODE aValue )
+{
+    switch( aValue )
+    {
+    case LENGTH_TUNING_MODE::SINGLE:         return types::TuningPatternMode::TPM_SINGLE;
+    case LENGTH_TUNING_MODE::DIFF_PAIR:      return types::TuningPatternMode::TPM_DIFF_PAIR;
+    case LENGTH_TUNING_MODE::DIFF_PAIR_SKEW: return types::TuningPatternMode::TPM_DIFF_PAIR_SKEW;
+
+    default:
+        wxCHECK_MSG( false, types::TuningPatternMode::TPM_UNKNOWN,
+                     "Unhandled case in ToProtoEnum<LENGTH_TUNING_MODE>" );
+    }
+}
+
+
+template<>
+LENGTH_TUNING_MODE FromProtoEnum( types::TuningPatternMode aValue )
+{
+    switch( aValue )
+    {
+    case types::TuningPatternMode::TPM_SINGLE:         return LENGTH_TUNING_MODE::SINGLE;
+    case types::TuningPatternMode::TPM_DIFF_PAIR:      return LENGTH_TUNING_MODE::DIFF_PAIR;
+    case types::TuningPatternMode::TPM_DIFF_PAIR_SKEW: return LENGTH_TUNING_MODE::DIFF_PAIR_SKEW;
+
+    default:
+    case types::TuningPatternMode::TPM_UNKNOWN:        return LENGTH_TUNING_MODE::SINGLE;
+    }
+
+    wxCHECK_MSG( false, LENGTH_TUNING_MODE::SINGLE,
+                 "Unhandled case in FromProtoEnum<types::TuningPatternMode>" );
+}
+
+
+
+template<>
+types::TuningPatternMeanderSide ToProtoEnum( PNS::MEANDER_SIDE aValue )
+{
+    switch( aValue )
+    {
+    case PNS::MEANDER_SIDE_DEFAULT: return types::TuningPatternMeanderSide::TPMS_DEFAULT;
+    case PNS::MEANDER_SIDE_LEFT:    return types::TuningPatternMeanderSide::TPMS_LEFT;
+    case PNS::MEANDER_SIDE_RIGHT:   return types::TuningPatternMeanderSide::TPMS_RIGHT;
+
+    default:
+        wxCHECK_MSG( false, types::TuningPatternMeanderSide::TPMS_UNKNOWN,
+                     "Unhandled case in ToProtoEnum<PNS::MEANDER_SIDE>" );
+    }
+}
+
+
+template<>
+PNS::MEANDER_SIDE FromProtoEnum( types::TuningPatternMeanderSide aValue )
+{
+    switch( aValue )
+    {
+    case types::TuningPatternMeanderSide::TPMS_DEFAULT: return PNS::MEANDER_SIDE_DEFAULT;
+    case types::TuningPatternMeanderSide::TPMS_LEFT:    return PNS::MEANDER_SIDE_LEFT;
+    case types::TuningPatternMeanderSide::TPMS_RIGHT:   return PNS::MEANDER_SIDE_RIGHT;
+
+    default:
+    case types::TuningPatternMeanderSide::TPMS_UNKNOWN: return PNS::MEANDER_SIDE_DEFAULT;
+    }
+
+    wxCHECK_MSG( false, PNS::MEANDER_SIDE_DEFAULT,
+                 "Unhandled case in FromProtoEnum<types::TuningPatternMeanderSide>" );
+}
+
+template<>
+types::TuningPatternCornerStyle ToProtoEnum( PNS::MEANDER_STYLE aValue )
+{
+    switch( aValue )
+    {
+    case PNS::MEANDER_STYLE_CHAMFER: return types::TuningPatternCornerStyle::TPCS_CHAMFERED;
+    case PNS::MEANDER_STYLE_ROUND:   return types::TuningPatternCornerStyle::TPCS_ROUNDED;
+
+    default:
+        wxCHECK_MSG( false, types::TuningPatternCornerStyle::TPCS_UNKNOWN,
+                     "Unhandled case in ToProtoEnum<PNS::MEANDER_STYLE>" );
+    }
+}
+
+
+template<>
+PNS::MEANDER_STYLE FromProtoEnum( types::TuningPatternCornerStyle aValue )
+{
+    switch( aValue )
+    {
+    case types::TuningPatternCornerStyle::TPCS_CHAMFERED: return PNS::MEANDER_STYLE_CHAMFER;
+    case types::TuningPatternCornerStyle::TPCS_ROUNDED:   return PNS::MEANDER_STYLE_ROUND;
+
+    default:
+    case types::TuningPatternCornerStyle::TPCS_UNKNOWN:   return PNS::MEANDER_STYLE_CHAMFER;
+    }
+
+    wxCHECK_MSG( false, PNS::MEANDER_STYLE_CHAMFER,
+                 "Unhandled case in FromProtoEnum<types::TuningPatternCornerStyle>" );
+}
+
+template<>
+types::TuningPatternStatus ToProtoEnum( PNS::MEANDER_PLACER_BASE::TUNING_STATUS aValue )
+{
+    switch( aValue )
+    {
+    case PNS::MEANDER_PLACER_BASE::TOO_SHORT: return types::TuningPatternStatus::TPS_TOO_SHORT;
+    case PNS::MEANDER_PLACER_BASE::TOO_LONG:  return types::TuningPatternStatus::TPS_TOO_LONG;
+    case PNS::MEANDER_PLACER_BASE::TUNED:     return types::TuningPatternStatus::TPS_TUNED;
+
+    default:
+        wxCHECK_MSG( false, types::TuningPatternStatus::TPS_UNKNOWN,
+                     "Unhandled case in ToProtoEnum<TUNING_STATUS>" );
+    }
+}
+
+
+template<>
+PNS::MEANDER_PLACER_BASE::TUNING_STATUS FromProtoEnum( types::TuningPatternStatus aValue )
+{
+    switch( aValue )
+    {
+    case types::TuningPatternStatus::TPS_TOO_SHORT: return PNS::MEANDER_PLACER_BASE::TOO_SHORT;
+    case types::TuningPatternStatus::TPS_TOO_LONG:  return PNS::MEANDER_PLACER_BASE::TOO_LONG;
+    case types::TuningPatternStatus::TPS_TUNED:     return PNS::MEANDER_PLACER_BASE::TUNED;
+
+    default:
+    case types::TuningPatternStatus::TPS_UNKNOWN:   return PNS::MEANDER_PLACER_BASE::TUNED;
+    }
+
+    wxCHECK_MSG( false, PNS::MEANDER_PLACER_BASE::TUNED,
+                 "Unhandled case in FromProtoEnum<types::TuningPatternStatus>" );
+}
+
+
+template<>
+types::ViaStitchLayout ToProtoEnum( PCB_VIA_STITCH_LAYOUT aValue )
+{
+    switch( aValue )
+    {
+    case PCB_VIA_STITCH_LAYOUT::PLAIN:     return types::ViaStitchLayout::VSL_PLAIN;
+    case PCB_VIA_STITCH_LAYOUT::STAGGERED: return types::ViaStitchLayout::VSL_STAGGERED;
+    case PCB_VIA_STITCH_LAYOUT::POISSON:   return types::ViaStitchLayout::VSL_POISSON;
+
+    default:
+        wxCHECK_MSG( false, types::ViaStitchLayout::VSL_UNKNOWN,
+                     "Unhandled case in ToProtoEnum<PCB_VIA_STITCH_LAYOUT>" );
+    }
+}
+
+
+template<>
+PCB_VIA_STITCH_LAYOUT FromProtoEnum( types::ViaStitchLayout aValue )
+{
+    switch( aValue )
+    {
+    case types::ViaStitchLayout::VSL_PLAIN:     return PCB_VIA_STITCH_LAYOUT::PLAIN;
+    case types::ViaStitchLayout::VSL_STAGGERED: return PCB_VIA_STITCH_LAYOUT::STAGGERED;
+    case types::ViaStitchLayout::VSL_POISSON:   return PCB_VIA_STITCH_LAYOUT::POISSON;
+
+    default:
+    case types::ViaStitchLayout::VSL_UNKNOWN:   return PCB_VIA_STITCH_LAYOUT::PLAIN;
+    }
+
+    wxCHECK_MSG( false, PCB_VIA_STITCH_LAYOUT::PLAIN,
+                 "Unhandled case in FromProtoEnum<types::ViaStitchLayout>" );
+}
+
+
+template<>
+types::ViaStitchMode ToProtoEnum( PCB_VIA_STITCH_MODE aValue )
+{
+    switch( aValue )
+    {
+    case PCB_VIA_STITCH_MODE::STITCH: return types::ViaStitchMode::VSM_STITCH;
+    case PCB_VIA_STITCH_MODE::GUARD:  return types::ViaStitchMode::VSM_GUARD;
+
+    default:
+        wxCHECK_MSG( false, types::ViaStitchMode::VSM_UNKNOWN,
+                     "Unhandled case in ToProtoEnum<PCB_VIA_STITCH_MODE>" );
+    }
+}
+
+
+template<>
+PCB_VIA_STITCH_MODE FromProtoEnum( types::ViaStitchMode aValue )
+{
+    switch( aValue )
+    {
+    case types::ViaStitchMode::VSM_STITCH: return PCB_VIA_STITCH_MODE::STITCH;
+    case types::ViaStitchMode::VSM_GUARD:  return PCB_VIA_STITCH_MODE::GUARD;
+
+    default:
+    case types::ViaStitchMode::VSM_UNKNOWN: return PCB_VIA_STITCH_MODE::STITCH;
+    }
+
+    wxCHECK_MSG( false, PCB_VIA_STITCH_MODE::STITCH,
+                 "Unhandled case in FromProtoEnum<types::ViaStitchMode>" );
+}
+
+
+template<>
+types::ViaStackStyle ToProtoEnum( VIA_STACK_STYLE aValue )
+{
+    switch( aValue )
+    {
+    case VIA_STACK_STYLE::STACKED:   return types::ViaStackStyle::VSK_STACKED;
+    case VIA_STACK_STYLE::STAGGERED: return types::ViaStackStyle::VSK_STAGGERED;
+
+    default:
+        wxCHECK_MSG( false, types::ViaStackStyle::VSK_UNKNOWN,
+                     "Unhandled case in ToProtoEnum<VIA_STACK_STYLE>" );
+    }
+}
+
+
+template<>
+VIA_STACK_STYLE FromProtoEnum( types::ViaStackStyle aValue )
+{
+    switch( aValue )
+    {
+    case types::ViaStackStyle::VSK_STACKED:   return VIA_STACK_STYLE::STACKED;
+    case types::ViaStackStyle::VSK_STAGGERED: return VIA_STACK_STYLE::STAGGERED;
+
+    default:
+    case types::ViaStackStyle::VSK_UNKNOWN:   return VIA_STACK_STYLE::STACKED;
+    }
+
+    wxCHECK_MSG( false, VIA_STACK_STYLE::STACKED,
+                 "Unhandled case in FromProtoEnum<types::ViaStackStyle>" );
 }
 
 

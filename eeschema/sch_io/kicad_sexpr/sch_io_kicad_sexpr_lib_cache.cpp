@@ -450,17 +450,17 @@ void SCH_IO_KICAD_SEXPR_LIB_CACHE::SaveSymbol( LIB_SYMBOL* aSymbol, OUTPUTFORMAT
         KICAD_FORMAT::FormatBool( &aFormatter, "duplicate_pin_numbers_are_jumpers",
                                   aSymbol->GetDuplicatePinNumbersAreJumpers() );
 
-        const std::vector<std::set<wxString>>& jumperGroups = aSymbol->JumperPinGroups();
+        const JUMPER_GROUP_SET& jumperGroups = aSymbol->JumperPinGroups();
 
-        if( !jumperGroups.empty() )
+        if( !jumperGroups.IsEmpty() )
         {
             aFormatter.Print( "(jumper_pin_groups" );
 
-            for( const std::set<wxString>& group : jumperGroups )
+            for( const JUMPER_GROUP& group : jumperGroups.GetAll() )
             {
                 aFormatter.Print( "(" );
 
-                for( const wxString& padName : group )
+                for( const wxString& padName : group.GetNames() )
                     aFormatter.Print( "%s ", aFormatter.Quotew( padName ).c_str() );
 
                 aFormatter.Print( ")" );
@@ -578,11 +578,11 @@ void SCH_IO_KICAD_SEXPR_LIB_CACHE::saveDcmInfoAsFields( LIB_SYMBOL* aSymbol,
 {
     wxCHECK_RET( aSymbol, "Invalid LIB_SYMBOL pointer." );
 
-    if( !aSymbol->GetKeyWords().IsEmpty() )
+    if( !aSymbol->GetRawKeyWords().IsEmpty() )
     {
         SCH_FIELD keywords( nullptr, FIELD_T::USER, wxString( "ki_keywords" ) );
         keywords.SetVisible( false );
-        keywords.SetText( aSymbol->GetKeyWords() );
+        keywords.SetText( aSymbol->GetRawKeyWords() );
         saveField( &keywords, aFormatter );
     }
 
@@ -738,7 +738,7 @@ void SCH_IO_KICAD_SEXPR_LIB_CACHE::saveField( SCH_FIELD* aField, OUTPUTFORMATTER
     wxString fieldName = aField->GetName();
 
     if( aField->IsMandatory() )
-        fieldName = GetCanonicalFieldName( aField->GetId() );
+        fieldName = GetDefaultFieldName( aField->GetId(), UNTRANSLATED );
 
     aFormatter.Print( "(property %s %s %s (at %s %s %s)",
                       aField->IsPrivate() ? "private" : "",
@@ -756,6 +756,7 @@ void SCH_IO_KICAD_SEXPR_LIB_CACHE::saveField( SCH_FIELD* aField, OUTPUTFORMATTER
         KICAD_FORMAT::FormatBool( &aFormatter, "hide", true );
 
     aField->Format( &aFormatter, 0 );
+    KICAD_FORMAT::FormatCustomProperties( &aFormatter, *aField );
     aFormatter.Print( ")" );
 }
 
@@ -803,6 +804,7 @@ void SCH_IO_KICAD_SEXPR_LIB_CACHE::savePin( SCH_PIN* aPin, OUTPUTFORMATTER& aFor
                           getPinShapeToken( alt.second.m_Shape ) );
     }
 
+    KICAD_FORMAT::FormatCustomProperties( &aFormatter, *aPin );
     aFormatter.Print( ")" );
 }
 
@@ -819,6 +821,7 @@ void SCH_IO_KICAD_SEXPR_LIB_CACHE::saveText( SCH_TEXT* aText, OUTPUTFORMATTER& a
                       aText->GetTextAngle().AsTenthsOfADegree() );
 
     aText->EDA_TEXT::Format( &aFormatter, 0 );
+    KICAD_FORMAT::FormatCustomProperties( &aFormatter, *aText );
     aFormatter.Print( ")" );
 }
 
@@ -848,6 +851,7 @@ void SCH_IO_KICAD_SEXPR_LIB_CACHE::saveTextBox( SCH_TEXTBOX* aTextBox, OUTPUTFOR
     aTextBox->GetStroke().Format( &aFormatter, schIUScale );
     formatFill( &aFormatter, aTextBox->GetFillMode(), aTextBox->GetFillColor() );
     aTextBox->EDA_TEXT::Format( &aFormatter, 0 );
+    KICAD_FORMAT::FormatCustomProperties( &aFormatter, *aTextBox );
     aFormatter.Print( ")" );
 }
 

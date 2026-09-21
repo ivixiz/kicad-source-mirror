@@ -20,6 +20,7 @@
 
 
 #include "board_stackup.h"
+#include <algorithm>
 #include <base_units.h>
 #include <string_utils.h>
 #include <layer_ids.h>
@@ -467,10 +468,9 @@ bool BOARD_STACKUP::operator==( const BOARD_STACKUP& aOther ) const
 }
 
 
-void BOARD_STACKUP::Serialize( google::protobuf::Any& aContainer ) const
+void BOARD_STACKUP::Serialize( kiapi::board::BoardStackup& stackup ) const
 {
     using namespace kiapi::board;
-    BoardStackup stackup;
 
     for( const BOARD_STACKUP_ITEM* item : m_list )
     {
@@ -564,11 +564,30 @@ void BOARD_STACKUP::Serialize( google::protobuf::Any& aContainer ) const
             ToProtoEnum<BS_EDGE_CONNECTOR_CONSTRAINTS, BoardEdgeConnectorType>( m_EdgeConnectorConstraints ) );
     edge->mutable_plating()->set_has_edge_plating( m_EdgePlating );
 
+}
+
+
+void BOARD_STACKUP::Serialize( google::protobuf::Any& aContainer ) const
+{
+    kiapi::board::BoardStackup stackup;
+    Serialize( stackup );
     aContainer.PackFrom( stackup );
 }
 
 
 bool BOARD_STACKUP::Deserialize( const google::protobuf::Any& aContainer )
+{
+    // Read-only for now
+    kiapi::board::BoardStackup stackup;
+
+    if( !aContainer.UnpackTo( &stackup ) )
+        return false;
+
+    return Deserialize( stackup );
+}
+
+
+bool BOARD_STACKUP::Deserialize( const kiapi::board::BoardStackup& aInput )
 {
     // Read-only for now
     return false;
@@ -624,35 +643,18 @@ bool BOARD_STACKUP::SynchronizeWithBoard( BOARD_DESIGN_SETTINGS* aSettings )
     BOARD_STACKUP stackup;
     stackup.BuildDefaultStackupList( aSettings );
 
+    auto sameLayer = []( const BOARD_STACKUP_ITEM* aFirst, const BOARD_STACKUP_ITEM* aSecond )
+    {
+        return aFirst->GetBrdLayerId() == aSecond->GetBrdLayerId()
+               && ( aFirst->GetBrdLayerId() != UNDEFINED_LAYER
+                    || aFirst->GetDielectricLayerId() == aSecond->GetDielectricLayerId() );
+    };
+
     // First, find removed layers:
     for( BOARD_STACKUP_ITEM* curr_item: m_list )
     {
-        bool found = false;
-
-        for( BOARD_STACKUP_ITEM* item: stackup.GetList() )
-        {
-            if( curr_item->GetBrdLayerId() != UNDEFINED_LAYER )
-            {
-                if( item->GetBrdLayerId() == curr_item->GetBrdLayerId() )
-                {
-                    found = true;
-                    break;
-                }
-            }
-            else    // curr_item = dielectric layer
-            {
-                if( item->GetBrdLayerId() != UNDEFINED_LAYER )
-                    continue;
-
-                if( item->GetDielectricLayerId() == curr_item->GetDielectricLayerId() )
-                {
-                    found = true;
-                    break;
-                }
-            }
-        }
-
-        if( !found )    // a layer was removed: a change is found
+        if( std::ranges::none_of( stackup.GetList(),
+                                  [&]( const BOARD_STACKUP_ITEM* aItem ) { return sameLayer( curr_item, aItem ); } ) )
         {
             change = true;
             break;
@@ -662,38 +664,16 @@ bool BOARD_STACKUP::SynchronizeWithBoard( BOARD_DESIGN_SETTINGS* aSettings )
     // Now initialize all stackup items to the initial values, when exist
     for( BOARD_STACKUP_ITEM* item : stackup.GetList() )
     {
-        bool found = false;
-        // Search for initial settings:
-        for( const BOARD_STACKUP_ITEM* initial_item : m_list )
-        {
-            if( item->GetBrdLayerId() != UNDEFINED_LAYER )
-            {
-                if( item->GetBrdLayerId() == initial_item->GetBrdLayerId() )
-                {
-                    *item = *initial_item;
-                    found = true;
-                    break;
-                }
-            }
-            else    // dielectric layer: see m_DielectricLayerId for identification
-            {
-                // Compare dielectric layer with dielectric layer
-                if( initial_item->GetBrdLayerId() != UNDEFINED_LAYER )
-                    continue;
+        auto initial = std::ranges::find_if( m_list,
+                                             [&]( const BOARD_STACKUP_ITEM* aItem )
+                                             {
+                                                 return sameLayer( item, aItem );
+                                             } );
 
-                if( item->GetDielectricLayerId() == initial_item->GetDielectricLayerId() )
-                {
-                    *item = *initial_item;
-                    found = true;
-                    break;
-                }
-            }
-        }
-
-        if( !found )
-        {
+        if( initial != m_list.end() )
+            *item = **initial;
+        else
             change = true;
-        }
     }
 
     // Transfer layer settings:

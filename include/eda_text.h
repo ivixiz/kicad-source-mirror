@@ -18,8 +18,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#ifndef EDA_TEXT_H_
-#define EDA_TEXT_H_
+#pragma once
 
 #include <memory>
 #include <mutex>
@@ -30,12 +29,18 @@
 #include <font/text_attributes.h>
 #include <api/serializable.h>
 #include <text_var_dependency.h>
+#include <common.h>
 
 
 class OUTPUTFORMATTER;
 class SHAPE_COMPOUND;
 class SHAPE_POLY_SET;
 struct EDA_IU_SCALE;
+
+namespace kiapi::common::types
+{
+    class Text;
+}
 
 
 struct EDA_TEXT_RENDER_CACHE_DATA
@@ -102,6 +107,9 @@ public:
     void Serialize( google::protobuf::Any &aContainer, const EDA_IU_SCALE& aScale ) const;
     bool Deserialize( const google::protobuf::Any &aContainer, const EDA_IU_SCALE& aScale );
 
+    void Serialize( kiapi::common::types::Text& aOutput, const EDA_IU_SCALE& aScale ) const;
+    bool Deserialize( const kiapi::common::types::Text& aInput, const EDA_IU_SCALE& aScale );
+
     /**
      * Return the string associated with the text object.
      *
@@ -112,14 +120,16 @@ public:
     /**
      * Return the string actually shown after processing of the base text.
      *
-     * @param aAllowExtraText is true to allow adding more text than the initial expanded text,
-     * for intance a title, a prefix for texts in display functions.
-     * False to disable any added text (for instance when writing the shown text in netlists).
-     * @param aDepth is used to prevent infinite recursions and loops when expanding
-     * text variables.
+     * @param aContext controls some features of the expansion, such as whether or not field names
+     *                 are included, or whether or not escaped literal variable references should
+     *                 be prefixed with a '\'.
+     * @param aDepth is used to prevent infinite recursions and loops when expanding text variables.
      */
-    virtual wxString GetShownText( bool aAllowExtraText, int aDepth = 0 ) const
+    virtual wxString GetShownText( RESOLUTION_CONTEXT aContext, int aDepth = 0 ) const
     {
+        if( aContext == RAW_VALUE )
+            return m_text;
+
         return m_shown_text;
     }
 
@@ -203,6 +213,14 @@ public:
      */
     void SetBoldFlag( bool aBold );
     bool IsBold() const                         { return m_attributes.m_Bold; }
+
+    /**
+     * Migrate a pre-v11 bold stroke text so its stored thickness holds the base (non-bold)
+     * width. Older files baked the bolded pen size into the stroke width; Bold is now a
+     * render-time multiplier, so divide it back out. No-op for auto width, non-bold text, or
+     * outline fonts (where thickness is not the weight mechanism).
+     */
+    void MigrateLegacyBoldStrokeWidth();
 
     virtual void SetVisible( bool aVisible );
     virtual bool IsVisible() const              { return m_visible; }
@@ -470,6 +488,12 @@ protected:
 
     bool containsURL() const;
 
+    /**
+     * Return true if this text is (or, while a font resolution is still pending, is
+     * named as) a stroke font, as opposed to an outline font.
+     */
+    bool isStrokeFont() const;
+
 protected:
     /**
      * A hyperlink URL.  If empty, this text object is not a hyperlink.
@@ -521,5 +545,3 @@ struct std::hash<EDA_TEXT>
                          aText.GetTextPos().y );
     }
 };
-
-#endif   //  EDA_TEXT_H_

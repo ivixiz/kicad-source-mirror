@@ -20,7 +20,6 @@
 #include "dialog_lib_symbol_properties.h"
 
 #include <pgm_base.h>
-#include <eeschema_settings.h>
 #include <bitmaps.h>
 #include <confirm.h>
 #include <dialogs/dialog_text_entry.h>
@@ -38,16 +37,19 @@
 #include <project_sch.h>
 #include <refdes_utils.h>
 #include <dialog_sim_model.h>
-#include <vector>
-
+#include <tools/sch_actions.h>
 #include <panel_embedded_files.h>
 #include <panel_symbol_pin_map.h>
-#include <settings/settings_manager.h>
+#include <settings/common_settings.h>
 #include <symbol_editor_settings.h>
 #include <widgets/listbox_tricks.h>
 
+#include <vector>
+
 #include <wx/clipbrd.h>
 #include <wx/msgdlg.h>
+
+#include "pin_numbers.h"
 
 
 int DIALOG_LIB_SYMBOL_PROPERTIES::m_lastOpenedPage = 0;
@@ -55,8 +57,7 @@ DIALOG_LIB_SYMBOL_PROPERTIES::LAST_LAYOUT DIALOG_LIB_SYMBOL_PROPERTIES::m_lastLa
         DIALOG_LIB_SYMBOL_PROPERTIES::LAST_LAYOUT::NONE;
 
 
-DIALOG_LIB_SYMBOL_PROPERTIES::DIALOG_LIB_SYMBOL_PROPERTIES( SYMBOL_EDIT_FRAME* aParent,
-                                                            LIB_SYMBOL* aLibEntry ) :
+DIALOG_LIB_SYMBOL_PROPERTIES::DIALOG_LIB_SYMBOL_PROPERTIES( SYMBOL_EDIT_FRAME* aParent, LIB_SYMBOL* aLibEntry ) :
         DIALOG_LIB_SYMBOL_PROPERTIES_BASE( aParent ),
         m_Parent( aParent ),
         m_libEntry( aLibEntry ),
@@ -105,12 +106,30 @@ DIALOG_LIB_SYMBOL_PROPERTIES::DIALOG_LIB_SYMBOL_PROPERTIES( SYMBOL_EDIT_FRAME* a
     if( std::shared_ptr<LIB_SYMBOL> parent = m_libEntry->GetParent().lock() )
         addInheritedFields( parent );
 
+    int minWidth = wxSystemSettings::GetMetric( wxSYS_VSCROLL_X );
+
+    for( int ii = 0; ii <= 7; ++ii )
+    {
+        if( m_grid->IsColShown( ii ) )
+            minWidth += m_grid->GetColSize( ii );
+    }
+
+    m_grid->SetMinSize( wxSize( minWidth, -1 ) );
+
+    // Putting too many columns in wxFormBuilder results in the minimum dialog size getting set too
+    // large (even with the m_grid->SetMinSize() call above).
+    m_grid->SetColSize( 13, 48 );     // "Color"
+    m_grid->SetColSize( 14, 136 );    // "Allow Autoplace"
+    m_grid->SetColSize( 15, 62 );     // "Private"
+    m_grid->SetupColumnAutosizer( 1 );
+
     m_grid->ShowHideColumns( "0 1 2 3 4 5 6 7" );
 
     m_SymbolNameCtrl->SetValidator( FIELD_VALIDATOR( FIELD_T::VALUE ) );
 
     m_unitNamesGrid->PushEventHandler( new GRID_TRICKS( m_unitNamesGrid ) );
     m_unitNamesGrid->SetSelectionMode( wxGrid::wxGridSelectRows );
+    m_unitNamesGrid->SetupColumnAutosizer( 1 );
 
     m_bodyStyleNamesGrid->PushEventHandler( new GRID_TRICKS( m_bodyStyleNamesGrid,
                                                              [this]( wxCommandEvent& aEvent )
@@ -118,6 +137,7 @@ DIALOG_LIB_SYMBOL_PROPERTIES::DIALOG_LIB_SYMBOL_PROPERTIES( SYMBOL_EDIT_FRAME* a
                                                                  OnAddBodyStyle( aEvent );
                                                              } ) );
     m_bodyStyleNamesGrid->SetSelectionMode( wxGrid::wxGridSelectRows );
+    m_bodyStyleNamesGrid->SetupColumnAutosizer( 0 );
 
     m_jumperGroupsGrid->SetupColumnAutosizer( 0 );
     m_jumperGroupsGrid->SetSelectionMode( wxGrid::wxGridSelectRows );
@@ -253,7 +273,7 @@ void DIALOG_LIB_SYMBOL_PROPERTIES::addInheritedFields( const std::shared_ptr<LIB
             if( field.IsMandatory() )
                 continue; // Don't inherit mandatory fields
 
-            if( field.GetCanonicalName() == parentField->GetCanonicalName() )
+            if( field.GetUntranslatedName() == parentField->GetUntranslatedName() )
             {
                 m_fields->SetFieldInherited( ii, *parentField );
                 found = true;
@@ -277,24 +297,16 @@ bool DIALOG_LIB_SYMBOL_PROPERTIES::TransferDataToWindow()
     for( SCH_FIELD& field : *m_fields )
         defined.insert( field.GetName() );
 
-    // Add in any template fieldnames not yet defined:
-    // Read global fieldname templates
-    if( EESCHEMA_SETTINGS* cfg = GetAppSettings<EESCHEMA_SETTINGS>( "eeschema" ) )
+    // Add in any global template field names not yet defined.
+    for( const TEMPLATE_FIELDNAME& templateFieldname :
+                Pgm().GetCommonSettings()->m_FieldNameTemplates.GetTemplateFieldNames( TEMPLATES::SCOPE::GLOBAL ) )
     {
-        TEMPLATES templateMgr;
-
-        if( !cfg->m_Drawing.field_names.IsEmpty() )
-            templateMgr.AddTemplateFieldNames( cfg->m_Drawing.field_names );
-
-        for( const TEMPLATE_FIELDNAME& templateFieldname : templateMgr.GetTemplateFieldNames() )
+        if( defined.count( templateFieldname.m_Name ) <= 0 )
         {
-            if( defined.count( templateFieldname.m_Name ) <= 0 )
-            {
-                SCH_FIELD field( m_libEntry, FIELD_T::USER, templateFieldname.m_Name );
-                field.SetVisible( templateFieldname.m_Visible );
-                m_fields->push_back( field );
-                m_addedTemplateFields.insert( templateFieldname.m_Name );
-            }
+            SCH_FIELD field( m_libEntry, FIELD_T::USER, templateFieldname.m_Name );
+            field.SetVisible( templateFieldname.m_Visible );
+            m_fields->push_back( field );
+            m_addedTemplateFields.insert( templateFieldname.m_Name );
         }
     }
 
@@ -313,10 +325,14 @@ bool DIALOG_LIB_SYMBOL_PROPERTIES::TransferDataToWindow()
 
     updateUnitCount();
 
+    // The map accessor is raw storage, so a derived symbol has to be shown its root's names
+    std::shared_ptr<LIB_SYMBOL>    root = m_libEntry->GetRootSymbol();
+    const std::map<int, wxString>& unitNames = root->GetUnitDisplayNames();
+
     for( int unit = 0; unit < m_libEntry->GetUnitCount(); unit++ )
     {
-        if( m_libEntry->GetUnitDisplayNames().contains( unit + 1 ) )
-            m_unitNamesGrid->SetCellValue( unit, 1, m_libEntry->GetUnitDisplayNames().at( unit + 1 ) );
+        if( unitNames.contains( unit + 1 ) )
+            m_unitNamesGrid->SetCellValue( unit, 1, unitNames.at( unit + 1 ) );
     }
 
     if( m_libEntry->HasDeMorganBodyStyles() )
@@ -338,6 +354,8 @@ bool DIALOG_LIB_SYMBOL_PROPERTIES::TransferDataToWindow()
     {
         m_radioSingle->SetValue( true );
     }
+
+    syncBodyStyleControls();
 
     m_OptionPower->SetValue( m_libEntry->IsPower() );
     m_OptionLocalPower->SetValue( m_libEntry->IsLocalPower() );
@@ -372,11 +390,11 @@ bool DIALOG_LIB_SYMBOL_PROPERTIES::TransferDataToWindow()
     for( const SCH_PIN* pin : m_libEntry->GetGraphicalPins( 0, 0 ) )
         availablePins.insert( pin->GetNumber() );
 
-    for( const std::set<wxString>& group : m_libEntry->JumperPinGroups() )
+    for( const JUMPER_GROUP& group : m_libEntry->JumperPinGroups().GetAll() )
     {
         wxString groupTxt;
 
-        for( const wxString& pinNumber : group )
+        for( const wxString& pinNumber : group.GetNames() )
         {
             if( !groupTxt.IsEmpty() )
                 groupTxt << ", ";
@@ -399,11 +417,10 @@ bool DIALOG_LIB_SYMBOL_PROPERTIES::TransferDataToWindow()
             m_Parent->GetLibManager().GetSymbolNames( libName, symbolNames );
 
             // Sort the list of symbols for easier search
-            symbolNames.Sort(
-                    []( const wxString& a, const wxString& b ) -> int
-                    {
-                        return StrNumCmp( a, b, true );
-                    } );
+            symbolNames.Sort( []( const wxString& a, const wxString& b ) -> int
+                              {
+                                  return StrNumCmp( a, b, true );
+                              } );
 
             // Don't allow a symbol to be derived from itself
             if( symbolNames.Index( m_libEntry->GetName() ) != wxNOT_FOUND )
@@ -627,12 +644,9 @@ bool DIALOG_LIB_SYMBOL_PROPERTIES::TransferDataFromWindow()
 
         if( !libName.empty() && m_Parent->GetLibManager().SymbolNameInUse( newName, libName ) )
         {
-            wxString msg;
-
-            msg.Printf( _( "Symbol name '%s' already in use in library '%s'." ),
-                        UnescapeString( newName ),
-                        libName );
-            DisplayErrorMessage( this, msg );
+            DisplayErrorMessage( this, wxString::Format( _( "Symbol name '%s' already in use in library '%s'." ),
+                                                         UnescapeString( newName ),
+                                                         libName ) );
             return false;
         }
 
@@ -658,9 +672,9 @@ bool DIALOG_LIB_SYMBOL_PROPERTIES::TransferDataFromWindow()
         SCH_FIELD& field = m_fields->at( ii );
 
         if( !field.IsMandatory() )
-            field.SetOrdinal( ordinal++ );
+            field.SetOrdinal( ordinal++, FIELD_T::USER );
 
-        wxString fieldName = field.GetCanonicalName();
+        wxString fieldName = field.GetUntranslatedName();
 
         // Writing an unmodified inherited row into the derived symbol would stop it from
         // tracking the parent field.  Fields the symbol already owns (transferred user
@@ -704,44 +718,50 @@ bool DIALOG_LIB_SYMBOL_PROPERTIES::TransferDataFromWindow()
 
     m_libEntry->SetName( newName );
     m_libEntry->SetKeyWords( m_KeywordCtrl->GetValue() );
-    m_libEntry->SetUnitCount( m_unitSpinCtrl->GetValue(), true );
-    m_libEntry->LockUnits( m_libEntry->GetUnitCount() > 1 && !m_OptionPartsInterchangeable->GetValue() );
 
-    m_libEntry->GetUnitDisplayNames().clear();
+    // A derived symbol owns no drawings, so none of this is its to change and none of it is
+    // written out on save
+    if( !m_libEntry->IsDerived() )
+    {
+        m_libEntry->SetUnitCount( m_unitSpinCtrl->GetValue(), true );
+        m_libEntry->LockUnits( m_libEntry->GetUnitCount() > 1 && !m_OptionPartsInterchangeable->GetValue() );
 
-    for( int row = 0; row < m_unitNamesGrid->GetNumberRows(); row++ )
-    {
-        if( !m_unitNamesGrid->GetCellValue( row, 1 ).IsEmpty() )
-            m_libEntry->GetUnitDisplayNames()[row+1] = m_unitNamesGrid->GetCellValue( row, 1 );
-    }
+        m_libEntry->GetUnitDisplayNames().clear();
 
-    // SetBodyStyleCount() adds and deletes draw items relative to the current body style count,
-    // so it has to run before the flag and the names it is derived from are overwritten
-    if( m_radioSingle->GetValue() )
-    {
-        m_libEntry->SetBodyStyleCount( 1, false, false );
-        m_libEntry->SetHasDeMorganBodyStyles( false );
-        m_libEntry->SetBodyStyleNames( {} );
-    }
-    else if( m_radioDeMorgan->GetValue() )
-    {
-        m_libEntry->SetBodyStyleCount( 2, false, true );
-        m_libEntry->SetHasDeMorganBodyStyles( true );
-        m_libEntry->SetBodyStyleNames( {} );
-    }
-    else
-    {
-        std::vector<wxString> bodyStyleNames;
-
-        for( int row = 0; row < m_bodyStyleNamesGrid->GetNumberRows(); ++row )
+        for( int row = 0; row < m_unitNamesGrid->GetNumberRows(); row++ )
         {
-            if( !m_bodyStyleNamesGrid->GetCellValue( row, 0 ).IsEmpty() )
-                bodyStyleNames.push_back( m_bodyStyleNamesGrid->GetCellValue( row, 0 ) );
+            if( !m_unitNamesGrid->GetCellValue( row, 1 ).IsEmpty() )
+                m_libEntry->GetUnitDisplayNames()[row+1] = m_unitNamesGrid->GetCellValue( row, 1 );
         }
 
-        m_libEntry->SetBodyStyleCount( bodyStyleNames.size(), true, true );
-        m_libEntry->SetHasDeMorganBodyStyles( false );
-        m_libEntry->SetBodyStyleNames( bodyStyleNames );
+        // SetBodyStyleCount() adds and deletes draw items relative to the current count, so it
+        // has to run before the flag and the names it derives from are overwritten
+        if( m_radioSingle->GetValue() )
+        {
+            m_libEntry->SetBodyStyleCount( 1, false, false );
+            m_libEntry->SetHasDeMorganBodyStyles( false );
+            m_libEntry->SetBodyStyleNames( {} );
+        }
+        else if( m_radioDeMorgan->GetValue() )
+        {
+            m_libEntry->SetBodyStyleCount( 2, false, true );
+            m_libEntry->SetHasDeMorganBodyStyles( true );
+            m_libEntry->SetBodyStyleNames( {} );
+        }
+        else
+        {
+            std::vector<wxString> bodyStyleNames;
+
+            for( int row = 0; row < m_bodyStyleNamesGrid->GetNumberRows(); ++row )
+            {
+                if( !m_bodyStyleNamesGrid->GetCellValue( row, 0 ).IsEmpty() )
+                    bodyStyleNames.push_back( m_bodyStyleNamesGrid->GetCellValue( row, 0 ) );
+            }
+
+            m_libEntry->SetBodyStyleCount( bodyStyleNames.size(), true, true );
+            m_libEntry->SetHasDeMorganBodyStyles( false );
+            m_libEntry->SetBodyStyleNames( bodyStyleNames );
+        }
     }
 
     if( m_OptionPower->GetValue() )
@@ -783,13 +803,13 @@ bool DIALOG_LIB_SYMBOL_PROPERTIES::TransferDataFromWindow()
 
     m_libEntry->SetDuplicatePinNumbersAreJumpers( m_cbDuplicatePinsAreJumpers->GetValue() );
 
-    std::vector<std::set<wxString>>& jumpers = m_libEntry->JumperPinGroups();
-    jumpers.clear();
+    JUMPER_GROUP_SET& jumpers = m_libEntry->JumperPinGroups();
+    jumpers.Clear();
 
     for( int ii = 0; ii < m_jumperGroupsGrid->GetNumberRows(); ++ii )
     {
-        wxStringTokenizer tokenizer( m_jumperGroupsGrid->GetCellValue( ii, 0 ), ", \t\r\n", wxTOKEN_STRTOK );
-        std::set<wxString>& group = jumpers.emplace_back();
+        wxStringTokenizer  tokenizer( m_jumperGroupsGrid->GetCellValue( ii, 0 ), ", \t\r\n", wxTOKEN_STRTOK );
+        std::set<wxString> names;
 
         while( tokenizer.HasMoreTokens() )
         {
@@ -800,15 +820,18 @@ bool DIALOG_LIB_SYMBOL_PROPERTIES::TransferDataFromWindow()
 
             if( !m_libEntry->HasPinNumber( token ) )
             {
-                wxString msg;
-                msg.Printf( _( "Pin '%s' in jumper pin group %d does not exist in this symbol." ),
-                             token, ii + 1 );
-                DisplayErrorMessage( this, msg );
+                DisplayErrorMessage( this, wxString::Format( _( "Pin '%s' in jumper pin group %d does not exist "
+                                                                "in this symbol." ),
+                                                             token,
+                                                             ii + 1 ) );
                 return false;
             }
 
-            group.insert( token );
+            names.insert( token );
         }
+
+        if( std::optional<JUMPER_GROUP> group = JUMPER_GROUP::Make( std::move( names ) ) )
+            jumpers.Add( std::move( *group ) );
     }
 
     if( !m_pinMapPanel->CommitPendingChanges() )
@@ -825,12 +848,27 @@ bool DIALOG_LIB_SYMBOL_PROPERTIES::TransferDataFromWindow()
 
 void DIALOG_LIB_SYMBOL_PROPERTIES::OnBodyStyle( wxCommandEvent& event )
 {
-    m_bodyStyleNamesGrid->Enable( m_radioCustom->GetValue() );
+    if( event.GetEventObject() == m_radioDeMorgan || event.GetEventObject() == m_radioCustom  )
+    {
+        PIN_NUMBERS pinNumbersWithAlternates;
 
-    m_bpAddBodyStyle->Enable( m_radioCustom->GetValue() );
-    m_bpMoveUpBodyStyle->Enable( m_radioCustom->GetValue() );
-    m_bpMoveDownBodyStyle->Enable( m_radioCustom->GetValue() );
-    m_bpDeleteBodyStyle->Enable( m_radioCustom->GetValue() );
+        for( SCH_PIN* pin : m_libEntry->GetPins() )
+        {
+            if( !pin->GetAlternates().empty() )
+                pinNumbersWithAlternates.insert( pin->GetNumber() );
+        }
+
+        if( pinNumbersWithAlternates.size() )
+        {
+            DisplayErrorMessage( this, NO_BODY_STYLES_WITH_ALTERNATE_PIN_FUNCTIONS,
+                                 wxString::Format( _( "(Pins %s.)" ), pinNumbersWithAlternates.GetSummary() ) );
+
+            m_radioSingle->SetValue( true );
+            return;
+        }
+    }
+
+    syncBodyStyleControls();
 }
 
 
@@ -879,7 +917,7 @@ void DIALOG_LIB_SYMBOL_PROPERTIES::OnGridCellChanging( wxGridEvent& event )
 
             if( FieldNamesAreDuplicates( newName, m_grid->GetCellValue( i, FDC_NAME ) ) )
             {
-                DisplayError( this, wxString::Format( _( "The name '%s' is already in use." ), newName ) );
+                DisplayErrorMessage( this, wxString::Format( _( "The name '%s' is already in use." ), newName ) );
                 event.Veto();
                 m_delayedFocusRow = event.GetRow();
                 m_delayedFocusColumn = event.GetCol();
@@ -934,7 +972,7 @@ void DIALOG_LIB_SYMBOL_PROPERTIES::OnAddField( wxCommandEvent& event )
             [&]() -> std::pair<int, int>
             {
                 SYMBOL_EDITOR_SETTINGS* settings = m_Parent->GetSettings();
-                SCH_FIELD newField( m_libEntry, FIELD_T::USER, GetUserFieldName( m_fields->size(), DO_TRANSLATE ) );
+                SCH_FIELD newField( m_libEntry, FIELD_T::USER, GetUserFieldName( m_fields->size(), TRANSLATED ) );
 
                 const int textSize = settings->GetDefaultTextSize();
                 newField.SetTextSize( VECTOR2I( textSize, textSize ) );
@@ -959,8 +997,8 @@ void DIALOG_LIB_SYMBOL_PROPERTIES::OnDeleteField( wxCommandEvent& event )
             {
                 if( row < m_fields->GetMandatoryRowCount() )
                 {
-                    DisplayError( this, wxString::Format( _( "The first %d fields are mandatory." ),
-                                                          m_fields->GetMandatoryRowCount() ) );
+                    DisplayErrorMessage( this, wxString::Format( _( "The first %d fields are mandatory." ),
+                                                                 m_fields->GetMandatoryRowCount() ) );
                     return false;
                 }
 
@@ -1192,7 +1230,7 @@ void DIALOG_LIB_SYMBOL_PROPERTIES::OnEditFootprintFilter( wxCommandEvent& event 
 
 void DIALOG_LIB_SYMBOL_PROPERTIES::OnUpdateUI( wxUpdateUIEvent& event )
 {
-    m_OptionPartsInterchangeable->Enable( m_unitSpinCtrl->GetValue() > 1 );
+    m_OptionPartsInterchangeable->Enable( !m_libEntry->IsDerived() && m_unitSpinCtrl->GetValue() > 1 );
     m_pinNameOffset.Enable( m_PinsNameInsideButt->GetValue() );
 
     if( m_grid->IsCellEditControlShown() )
@@ -1271,7 +1309,31 @@ void DIALOG_LIB_SYMBOL_PROPERTIES::syncControlStates( bool aIsAlias )
     bSizerLowerBasicPanel->Show( !aIsAlias );
     m_inheritanceSelectCombo->Enable( aIsAlias );
     m_inheritsStaticText->Enable( aIsAlias );
+
+    // The drawings a derived symbol inherits carry the units and body styles with them
+    m_unitSpinCtrl->Enable( !aIsAlias );
+    m_unitNamesGrid->Enable( !aIsAlias );
+
+    syncBodyStyleControls();
+
     m_grid->ForceRefresh();
+}
+
+
+void DIALOG_LIB_SYMBOL_PROPERTIES::syncBodyStyleControls()
+{
+    bool editable = !m_libEntry->IsDerived();
+    bool custom = editable && m_radioCustom->GetValue();
+
+    m_radioSingle->Enable( editable );
+    m_radioDeMorgan->Enable( editable );
+    m_radioCustom->Enable( editable );
+
+    m_bodyStyleNamesGrid->Enable( custom );
+    m_bpAddBodyStyle->Enable( custom );
+    m_bpMoveUpBodyStyle->Enable( custom );
+    m_bpMoveDownBodyStyle->Enable( custom );
+    m_bpDeleteBodyStyle->Enable( custom );
 }
 
 

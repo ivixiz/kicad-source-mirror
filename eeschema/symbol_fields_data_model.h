@@ -47,33 +47,26 @@ public:
     {
         SCOPE_ALL = 0,
         SCOPE_SHEET,
-        SCOPE_SHEET_RECURSIVE
+        SCOPE_SHEET_RECURSIVE,
+        SCOPE_SELECTION
     };
 
-    SYMBOL_FIELDS_EDITOR_GRID_DATA_MODEL( const SCH_REFERENCE_LIST& aSymbolsList, wxGridCellAttr* aURLEditor ) :
+    SYMBOL_FIELDS_EDITOR_GRID_DATA_MODEL( const SCH_REFERENCE_LIST& aSymbolsList ) :
             m_symbolsList( aSymbolsList ),
-            m_scope( SCOPE_ALL ),
-            m_urlEditor( aURLEditor ),
-            m_textVarRenderer( nullptr )
+            m_scope( SCOPE_ALL )
     {
         m_symbolsList.SplitReferences();
     }
 
-    ~SYMBOL_FIELDS_EDITOR_GRID_DATA_MODEL() override
-    {
-        wxSafeDecRef( m_urlEditor );
-        wxSafeDecRef( m_textVarRenderer );
-    }
-
-    void AddColumn( const wxString& aFieldName, const wxString& aLabel, bool aAddedByUser ) override;
-
     wxGridCellAttr* GetAttr( int aRow, int aCol, wxGridCellAttr::wxAttrKind aKind ) override;
 
     void SetValue( int aRow, int aCol, const wxString& aValue ) override;
+    void ClearCell( int aRow, int aCol ) override;
+    void RevertRow( int aRow ) override;
 
     void RebuildRows() override;
 
-    void ApplyData( SCH_COMMIT& aCommit, TEMPLATES& aTemplateFieldnames, const wxString& aVariantName );
+    void ApplyData( SCH_COMMIT& aCommit, TEMPLATES& aTemplateFieldnames );
 
     void  SetScope( SCOPE aScope ) { m_scope = aScope; }
     SCOPE GetScope() { return m_scope; }
@@ -91,6 +84,8 @@ public:
     const SCH_REFERENCE_LIST& GetReferenceList() const { return m_symbolsList; }
 
 private:
+    bool fieldSupportsVariants( const wxString& aFieldName ) const override;
+
     bool unitMatch( const SCH_REFERENCE& lhItem, const SCH_REFERENCE& rhItem ) override;
 
     /**
@@ -100,19 +95,19 @@ private:
      * common must be recorded against all of those paths, while variant overrides belong to
      * a single symbol instance.
      *
-     * @param aFieldName is the canonical field or attribute name.
+     * @param aFieldName is the untranslated field or attribute name.
      * @retval true if the field is stored on the symbol.
      * @retval false if the field is stored on the symbol instance.
      */
     bool storageIsSharedAcrossPaths( const wxString& aFieldName ) const;
 
     // True when an ancestor sheet forces this attribute on, not the symbol itself.
-    bool attributeInheritedFromSheet( const SCH_REFERENCE& aRef, const wxString& aAttributeName ) const override;
+    bool attributeForcedOnBySheet( const SCH_REFERENCE& aRef, const wxString& aAttributeName ) const override;
 
     wxString getAttributeValue( const SCH_REFERENCE& aRef, const wxString& aAttributeName,
                                 const wxString& aVariantNames );
-    wxString getFieldValueForVariant( const SCH_REFERENCE& aRef, const wxString& aFieldName,
-                                      const wxString& aVariantName );
+    bool     getLiveFieldValueForVariant( const SCH_REFERENCE& aRef, const wxString& aFieldName,
+                                          const wxString& aVariantName, wxString& aValue ) override;
 
     /**
      * Get the default (non-variant) value for a field.
@@ -138,13 +133,15 @@ private:
     bool setAttributeValue( SCH_REFERENCE& aRef, const wxString& aAttributeName, const wxString& aValue,
                             const wxString& aVariantName = wxEmptyString );
 
+    bool getLiveFieldValue( const SCH_REFERENCE& aRef, const wxString& aFieldName,
+                            wxString& aValue ) override;
+    std::vector<SCH_REFERENCE> getAllItems() const override;
+
     wxString getFieldResolvedLiveValue( const SCH_REFERENCE& aRef, const wxString& aFieldName ) override;
     wxString resolveTextVars( const SCH_REFERENCE& aRef, const wxString& aText ) override;
 
-    void updateDataStoreSymbolField( const SCH_REFERENCE& aSymbolRef, const wxString& aFieldName );
-
     KIID_PATH getDataStoreKey( const SCH_REFERENCE& aItem ) const override;
-    wxString  getItemReference( const SCH_REFERENCE& aItem ) const override;
+    wxString  getItemIdentifier( const SCH_REFERENCE& aItem ) const override;
 
 protected:
     /**
@@ -156,6 +153,4 @@ protected:
     SCH_REFERENCE_LIST    m_symbolsList;
     SCOPE                 m_scope;
     SCH_SHEET_PATH        m_path;
-    wxGridCellAttr*       m_urlEditor;
-    wxGridCellRenderer*   m_textVarRenderer; ///< Renderer for cells with text variable references
 };

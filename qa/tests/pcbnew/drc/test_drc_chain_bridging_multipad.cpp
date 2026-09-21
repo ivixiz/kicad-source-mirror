@@ -85,8 +85,7 @@ size_t runChainLengthDrc( const std::string& aBoardFile, const std::string& aRul
     }
 
     PCB_IO_KICAD_SEXPR     plugin;
-    std::unique_ptr<BOARD> board = std::make_unique<BOARD>();
-    plugin.LoadBoard( KI_TEST::GetPcbnewTestDataDir() + aBoardFile, board.get() );
+    std::unique_ptr<BOARD> board = plugin.LoadBoard( KI_TEST::GetPcbnewTestDataDir() + aBoardFile );
     board->BuildConnectivity();
 
     for( NETINFO_ITEM* net : board->GetNetInfo() )

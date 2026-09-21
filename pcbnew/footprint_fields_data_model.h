@@ -60,35 +60,23 @@ public:
     {
         SCOPE_ALL = 0,
         SCOPE_SHEET,
-        SCOPE_SHEET_RECURSIVE
+        SCOPE_SHEET_RECURSIVE,
+        SCOPE_SELECTION
     };
 
-    FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL( const FOOTPRINT_REFERENCE_LIST& aFootprintReferenceList,
-                                             wxGridCellAttr*                 aURLEditor ) :
+    FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL( const FOOTPRINT_REFERENCE_LIST& aFootprintReferenceList ) :
             m_footprintsList( aFootprintReferenceList ),
-            m_scope( SCOPE_ALL ),
-            m_urlEditor( aURLEditor ),
-            m_textVarRenderer( nullptr )
+            m_scope( SCOPE_ALL )
     {
     }
-
-    ~FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL() override
-    {
-        wxSafeDecRef( m_urlEditor );
-        wxSafeDecRef( m_textVarRenderer );
-    }
-
-    void AddColumn( const wxString& aFieldName, const wxString& aLabel, bool aAddedByUser ) override;
 
     wxGridCellAttr* GetAttr( int aRow, int aCol, wxGridCellAttr::wxAttrKind aKind ) override;
-
-    bool IsCellReadOnly( int aRow, int aCol ) { return isCellReadOnly( aRow, aCol ); }
 
     void SetValue( int aRow, int aCol, const wxString& aValue ) override;
 
     void RebuildRows() override;
 
-    void ApplyData( BOARD_COMMIT& aCommit, TEMPLATES& aTemplateFieldnames, const wxString& aVariantName );
+    void ApplyData( BOARD_COMMIT& aCommit, TEMPLATES& aTemplateFieldnames );
 
     void  SetScope( SCOPE aScope ) { m_scope = aScope; }
     SCOPE GetScope() { return m_scope; }
@@ -105,8 +93,10 @@ public:
 
     const FOOTPRINT_REFERENCE_LIST& GetReferenceList() const { return m_footprintsList; }
 
+    bool ColIsReadOnly( int aCol ) const override;
+
 private:
-    bool isCellReadOnly( int aRow, int aCol ) override;
+    bool fieldSupportsVariants( const wxString& aFieldName ) const override;
 
     bool unitMatch( const FOOTPRINT_REF& lhItem, const FOOTPRINT_REF& rhItem ) override;
 
@@ -114,12 +104,12 @@ private:
      * Footprint attributes are don't currently track when they are inherited from the sheet,
      * so this function always returns false. That probably needs to change.
      */
-    bool attributeInheritedFromSheet( const FOOTPRINT_REF& aRef, const wxString& aAttributeName ) const override;
+    bool attributeForcedOnBySheet( const FOOTPRINT_REF& aRef, const wxString& aAttributeName ) const override;
 
     wxString getAttributeValue( const FOOTPRINT_REF& aRef, const wxString& aAttributeName,
                                 const wxString& aVariantNames );
-    wxString getFieldValueForVariant( const FOOTPRINT_REF& aRef, const wxString& aFieldName,
-                                      const wxString& aVariantName );
+    bool     getLiveFieldValueForVariant( const FOOTPRINT_REF& aRef, const wxString& aFieldName,
+                                          const wxString& aVariantName, wxString& aValue ) override;
 
     /**
      * Get the default (non-variant) value for a field.
@@ -131,6 +121,13 @@ private:
      * @return The default field value.
      */
     wxString getDefaultFieldValue( const FOOTPRINT_REF& aRef, const wxString& aFieldName );
+
+protected:
+    /**
+     * Returns whether or the the aDestFootprint was changed by applying the data from aSourceRef.
+     */
+    bool applyDataToFootprint( const FOOTPRINT_REF& aSourceRef, FOOTPRINT& aDestFootprint,
+                               TEMPLATES* aTemplateFieldnames, const wxString& aVariantName );
 
     /**
      * Set the attribute value.
@@ -145,18 +142,52 @@ private:
     bool setAttributeValue( const FOOTPRINT_REF& aRef, const wxString& aAttributeName, const wxString& aValue,
                             const wxString& aVariantName = wxEmptyString );
 
+    bool getLiveFieldValue( const FOOTPRINT_REF& aRef, const wxString& aFieldName,
+                            wxString& aValue ) override;
+
+private:
+    std::vector<FOOTPRINT_REF> getAllItems() const override;
+
     wxString getFieldResolvedLiveValue( const FOOTPRINT_REF& aRef, const wxString& aFieldName ) override;
     wxString resolveTextVars( const FOOTPRINT_REF& aRef, const wxString& aText ) override;
 
-    void updateDataStoreFootprintField( const FOOTPRINT_REF& aFootprintRef, const wxString& aFieldName );
-
     KIID_PATH getDataStoreKey( const FOOTPRINT_REF& aItem ) const override;
-    wxString  getItemReference( const FOOTPRINT_REF& aItem ) const override;
+    wxString  getItemIdentifier( const FOOTPRINT_REF& aItem ) const override;
 
 protected:
     FOOTPRINT_REFERENCE_LIST m_footprintsList;
     SCOPE                    m_scope;
     KIID_PATH                m_path;
-    wxGridCellAttr*          m_urlEditor;
-    wxGridCellRenderer*      m_textVarRenderer; ///< Renderer for cells with text variable references
+};
+
+
+class LIB_FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL : public FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL
+{
+public:
+    static const wxString FOOTPRINT_NAME;
+    static const wxString FOOTPRINT_KEYWORDS;
+    static const wxString FOOTPRINT_LIBRARY_DESCRIPTION;
+
+    explicit LIB_FOOTPRINT_FIELDS_EDITOR_GRID_DATA_MODEL( const FOOTPRINT_REFERENCE_LIST& aFootprints );
+
+    bool ColIsItemIdentifier( int aCol ) const override;
+
+    bool ApplyData( std::function<bool( FOOTPRINT& )> aChangeHandler );
+
+private:
+    bool fieldSupportsVariants( const wxString& aFieldName ) const override { return false; }
+    bool fieldIsItemProperty( const wxString& aFieldName ) const override;
+
+    bool getLiveFieldValueForVariant( const FOOTPRINT_REF& aRef, const wxString& aFieldName, const wxString& aVariant,
+                                      wxString& aValue ) override
+    {
+        return getLiveFieldValue( aRef, aFieldName, aValue );
+    }
+
+    bool getLiveFieldValue( const FOOTPRINT_REF& aRef, const wxString& aFieldName,
+                            wxString& aValue ) override;
+
+    wxString getItemIdentifier( const FOOTPRINT_REF& aRef ) const override;
+
+    bool applyDataToFootprint( const FOOTPRINT_REF& aRef, FOOTPRINT& aFootprint );
 };

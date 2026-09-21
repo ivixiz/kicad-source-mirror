@@ -72,6 +72,7 @@ public:
         SPRINT_LAYOUT,
         DIPTRACE,
         AUTOTRAX,
+        PADS_BINARY,
         // add your type here.
 
         // etc.
@@ -191,6 +192,13 @@ public:
     static bool ImportGeneratesProjectLibrary( PCB_FILE_T aFileType );
 
     /**
+     * Return true when importing \a aFileType writes netclasses, rules or other settings that
+     * belong to the project rather than to the board, so the board must be attached to a project
+     * before it is loaded.
+     */
+    static bool ImportPopulatesProjectSettings( PCB_FILE_T aFileType );
+
+    /**
      * Return a plugin type given a footprint library's libPath.
      */
     static PCB_FILE_T GuessPluginTypeFromLibPath( const wxString& aLibPath, int aCtl = 0 );
@@ -202,22 +210,19 @@ public:
      *
      * @param aFileType is the #PCB_FILE_T of file to load.
      * @param aFileName is the name of the file to load.
-     * @param aAppendToMe is an existing BOARD to append to, use NULL if fresh
-     *                    board load is wanted.
      * @param aProperties is an associative array that allows the caller to
      *                    pass additional tuning parameters to the PLUGIN.
      * @param aProject is the optional #PROJECT object primarily used by third party
      *                 importers.
-     * @return the loaded #BOARD object.  The  caller owns it an it will never NULL because
-     *         exception thrown if error.
+     * @return the loaded #BOARD object. The caller owns it and it will never be NULL
+     *         because an exception is thrown on error.
      *
      * @throw IO_ERROR if the #PLUGIN cannot be found, file cannot be found, or file cannot
      *                 be loaded.
      */
-    static BOARD* Load( PCB_FILE_T aFileType, const wxString& aFileName,
-                        BOARD* aAppendToMe = nullptr, const std::map<std::string, UTF8>* aProperties = nullptr,
-                        PROJECT* aProject = nullptr,
-                        PROGRESS_REPORTER* aProgressReporter = nullptr );
+    static std::unique_ptr<BOARD> Load( PCB_FILE_T aFileType, const wxString& aFileName,
+                                        const std::map<std::string, UTF8>* aProperties = nullptr,
+                                        PROJECT* aProject = nullptr, PROGRESS_REPORTER* aProgressReporter = nullptr );
 
     /**
      * Write either a full \a aBoard to a storage file in a format that this implementation
@@ -238,7 +243,7 @@ public:
      *
      * @throw IO_ERROR if there is a problem saving or exporting.
      */
-    static void Save( PCB_FILE_T aFileType, const wxString& aFileName, BOARD* aBoard,
+    static void Save( PCB_FILE_T aFileType, const wxString& aFileName, BOARD& aBoard,
                       const std::map<std::string, UTF8>* aProperties = nullptr );
 
     /**

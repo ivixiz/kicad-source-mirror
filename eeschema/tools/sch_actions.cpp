@@ -25,6 +25,7 @@
 #include <hotkeys_basic.h>
 #include <layer_ids.h>
 #include <sch_bitmap.h>
+#include <sch_shape.h>
 #include <sch_line_wire_bus_tool.h>
 #include <tool/tool_action.h>
 

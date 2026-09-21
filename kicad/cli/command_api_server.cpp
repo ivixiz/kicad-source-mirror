@@ -24,6 +24,8 @@
 #include <vector>
 
 #include <api/api_handler_common.h>
+#include <api/api_handler_libraries.h>
+#include <libraries/library_table.h>
 #include <api/api_utils.h>
 #include <api/api_server.h>
 #include <cli/exit_codes.h>
@@ -72,6 +74,16 @@ int CLI::API_SERVER_COMMAND::doPerform( KIWAY& aKiway )
 
     std::unique_ptr<KICAD_API_SERVER> server = std::make_unique<KICAD_API_SERVER>( false );
     API_HANDLER_COMMON                commonHandler;
+    API_HANDLER_LIBRARIES             designBlockLibrariesHandler( LIBRARY_TABLE_TYPE::DESIGN_BLOCK );
+
+    // The design block library handler handles LoadAllLibraries commands which need to be able
+    // to lazy-load the eeschema/pcbnew faces if they aren't loaded
+    designBlockLibrariesHandler.SetKiway( &aKiway );
+    designBlockLibrariesHandler.SetLibraryHandlerRegistrar(
+            [&server]( KIFACE* aKiface )
+            {
+                aKiface->RegisterLibraryHandlers( server.get() );
+            } );
 
     wxString socketPath = wxString::FromUTF8( m_argParser.get<std::string>( ARG_SOCKET ) );
 
@@ -88,6 +100,7 @@ int CLI::API_SERVER_COMMAND::doPerform( KIWAY& aKiway )
     {
         types::DocumentType type;
         wxString            fileName;
+        LIB_ID              libId;
     };
 
     std::vector<OPEN_DOCUMENT> openDocuments;
@@ -108,11 +121,22 @@ int CLI::API_SERVER_COMMAND::doPerform( KIWAY& aKiway )
     {
         for( const OPEN_DOCUMENT& doc : openDocuments )
         {
+            // The project has no document face; it is released by UnloadProject below.
+            if( doc.type == types::DOCTYPE_PROJECT )
+                continue;
+
             wxString error;
             aKiway.ProcessApiCloseDocument( faceForDocument( doc.type ), doc.fileName, server.get(), &error );
         }
 
         openDocuments.clear();
+
+        if( openProjectPath )
+        {
+            PROJECT& project = Pgm().GetSettingsManager().Prj();
+            Pgm().GetSettingsManager().UnloadProject( &project, false );
+        }
+
         openProjectPath.reset();
 
         return google::protobuf::Empty();
@@ -142,6 +166,50 @@ int CLI::API_SERVER_COMMAND::doPerform( KIWAY& aKiway )
             return tl::unexpected( e );
         }
 
+        if( requestType == types::DOCTYPE_FOOTPRINT )
+        {
+            LIB_ID fpid;
+
+            if( fpid.Parse( inputPath ) >= 0 )
+            {
+                ApiResponseStatus e;
+                e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+                e.set_error_message( wxString::Format( wxS( "Invalid footprint LIB_ID: %s" ),
+                                                       inputPath ).ToStdString() );
+                return tl::unexpected( e );
+            }
+
+            KIFACE::DOCUMENT_SPEC spec;
+            spec.kind = KIFACE::DOCUMENT_SPEC::KIND::FPID_KIND;
+            spec.libId = fpid;
+
+            if( openProjectPath )
+                spec.path = openProjectPath->GetFullPath();
+
+            wxString error;
+
+            if( !aKiway.ProcessApiOpenDocument( KIWAY::FACE_PCB, spec, server.get(), &error ) )
+            {
+                ApiResponseStatus e;
+                e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+                e.set_error_message( error.ToStdString() );
+                return tl::unexpected( e );
+            }
+
+            OPEN_DOCUMENT doc;
+            doc.type = requestType;
+            doc.libId = fpid;
+            openDocuments.push_back( doc );
+
+            commands::OpenDocumentResponse response;
+            types::DocumentSpecifier* docSpec = response.mutable_document();
+            docSpec->set_type( requestType );
+            docSpec->mutable_lib_id()->set_library_nickname( fpid.GetUniStringLibNickname() );
+            docSpec->mutable_lib_id()->set_entry_name( fpid.GetUniStringLibItemName() );
+
+            return response;
+        }
+
         wxFileName projectPath( inputPath );
         projectPath.SetExt( FILEEXT::ProjectFileExtension );
         projectPath.MakeAbsolute();
@@ -161,6 +229,14 @@ int CLI::API_SERVER_COMMAND::doPerform( KIWAY& aKiway )
         {
             if( !openProjectPath )
             {
+                if( !openDocuments.empty() )
+                {
+                    auto closeResult = closeAllDocuments( commands::CloseAllDocuments() );
+
+                    if( !closeResult )
+                        return tl::unexpected( closeResult.error() );
+                }
+
                 if( !Pgm().GetSettingsManager().LoadProject( projectPath.GetFullPath(), true ) )
                 {
                     wxLogTrace( traceApi, "Warning: no project file found for %s", inputPath );
@@ -176,6 +252,18 @@ int CLI::API_SERVER_COMMAND::doPerform( KIWAY& aKiway )
                 }
 
                 openProjectPath = projectPath;
+            }
+
+            if( std::ranges::find_if( openDocuments,
+                                      []( const OPEN_DOCUMENT& d )
+                                      {
+                                          return d.type == types::DOCTYPE_PROJECT;
+                                      } ) == openDocuments.end() )
+            {
+                OPEN_DOCUMENT doc;
+                doc.type = types::DOCTYPE_PROJECT;
+                doc.fileName = projectPath.GetFullName();
+                openDocuments.push_back( doc );
             }
 
             commands::OpenDocumentResponse response;
@@ -216,9 +304,13 @@ int CLI::API_SERVER_COMMAND::doPerform( KIWAY& aKiway )
             }
         }
 
+        KIFACE::DOCUMENT_SPEC spec;
+        spec.kind = KIFACE::DOCUMENT_SPEC::KIND::FILE_KIND;
+        spec.path = projectPath.GetFullPath();
+
         wxString error;
 
-        if( !aKiway.ProcessApiOpenDocument( face, projectPath.GetFullPath(), server.get(), &error ) )
+        if( !aKiway.ProcessApiOpenDocument( face, spec, server.get(), &error ) )
         {
             ApiResponseStatus e;
             e.set_status( ApiStatusCode::AS_BAD_REQUEST );
@@ -247,6 +339,74 @@ int CLI::API_SERVER_COMMAND::doPerform( KIWAY& aKiway )
 
         docSpec->mutable_project()->set_name( project.GetProjectName().ToUTF8() );
         docSpec->mutable_project()->set_path( project.GetProjectPath().ToUTF8() );
+
+        return response;
+    };
+
+    auto createDocument =
+            [&]( const commands::CreateDocument& aRequest ) -> HANDLER_RESULT<commands::OpenDocumentResponse>
+    {
+        types::DocumentType requestType = aRequest.type();
+
+        // TODO could allow creating entire projects in one go
+        // or expose create from template
+        if( requestType != types::DOCTYPE_PCB && requestType != types::DOCTYPE_SCHEMATIC )
+        {
+            ApiResponseStatus e;
+            e.set_status( ApiStatusCode::AS_UNIMPLEMENTED );
+            e.set_error_message( "Only PCB and schematic documents can be created" );
+            return tl::unexpected( e );
+        }
+
+        wxString inputPath = wxString::FromUTF8( aRequest.path() );
+
+        if( inputPath.IsEmpty() )
+        {
+            ApiResponseStatus e;
+            e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+            e.set_error_message( "CreateDocument requires a non-empty path" );
+            return tl::unexpected( e );
+        }
+
+        wxFileName docPath( inputPath );
+        docPath.MakeAbsolute();
+        docPath.SetExt( requestType == types::DOCTYPE_PCB ? FILEEXT::KiCadPcbFileExtension
+                                                          : FILEEXT::KiCadSchematicFileExtension );
+
+        KIFACE::DOCUMENT_SPEC spec;
+        spec.kind = KIFACE::DOCUMENT_SPEC::KIND::CREATE_KIND;
+        spec.path = docPath.GetFullPath();
+
+        KIWAY::FACE_T face = ( requestType == types::DOCTYPE_PCB ) ? KIWAY::FACE_PCB : KIWAY::FACE_SCH;
+        wxString error;
+
+        if( !aKiway.ProcessApiOpenDocument( face, spec, server.get(), &error ) )
+        {
+            ApiResponseStatus e;
+            e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+            e.set_error_message( error.ToStdString() );
+            return tl::unexpected( e );
+        }
+
+        PROJECT& project = Pgm().GetSettingsManager().Prj();
+        openProjectPath =
+                wxFileName( project.GetProjectPath(), project.GetProjectName(), FILEEXT::ProjectFileExtension );
+
+        OPEN_DOCUMENT doc;
+        doc.type = requestType;
+        doc.fileName = docPath.GetFullName();
+
+        openDocuments.push_back( doc );
+
+        commands::OpenDocumentResponse response;
+        types::DocumentSpecifier*      docSpec = response.mutable_document();
+
+        docSpec->set_type( requestType );
+
+        if( requestType == types::DOCTYPE_PCB )
+            docSpec->set_board_filename( doc.fileName.ToStdString() );
+
+        PackProject( *docSpec->mutable_project(), project );
 
         return response;
     };
@@ -283,11 +443,40 @@ int CLI::API_SERVER_COMMAND::doPerform( KIWAY& aKiway )
             }
 
             if( typeToClose == types::DOCTYPE_PCB
-                && !aRequest.document().board_filename().empty() )
+                && !aRequest.document().board_filename().empty()
+                && it->fileName != wxString::FromUTF8( aRequest.document().board_filename() ) )
             {
-                wxString requestedName = wxString::FromUTF8( aRequest.document().board_filename() );
+                ApiResponseStatus e;
+                e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+                e.set_error_message( "Requested document does not match the open document" );
+                return tl::unexpected( e );
+            }
 
-                if( it->fileName != requestedName )
+            if( ( typeToClose == types::DOCTYPE_SCHEMATIC || typeToClose == types::DOCTYPE_PROJECT )
+                && aRequest.document().has_project()
+                && openProjectPath
+                && aRequest.document().project().name() != openProjectPath->GetName().ToStdString() )
+            {
+                ApiResponseStatus e;
+                e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+                e.set_error_message( "Requested document does not match the open project" );
+                return tl::unexpected( e );
+            }
+
+            if( typeToClose == types::DOCTYPE_FOOTPRINT && aRequest.document().has_lib_id() )
+            {
+                LIB_ID fpid = UnpackLibId( aRequest.document().lib_id() );
+
+                if( !fpid.IsValid() )
+                {
+                    ApiResponseStatus e;
+                    e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+                    e.set_error_message( wxString::Format( wxS( "Invalid footprint LIB_ID: %s" ),
+                                                           fpid.GetUniStringLibId() ).ToStdString() );
+                    return tl::unexpected( e );
+                }
+
+                if( it->libId != fpid )
                 {
                     ApiResponseStatus e;
                     e.set_status( ApiStatusCode::AS_BAD_REQUEST );
@@ -302,19 +491,26 @@ int CLI::API_SERVER_COMMAND::doPerform( KIWAY& aKiway )
             it = openDocuments.begin();
         }
 
-        wxString error;
-
-        if( !aKiway.ProcessApiCloseDocument( faceForDocument( it->type ), it->fileName, server.get(), &error ) )
+        if( it->type == types::DOCTYPE_PROJECT )
         {
-            ApiResponseStatus e;
-            e.set_status( ApiStatusCode::AS_BAD_REQUEST );
-            e.set_error_message( error.ToStdString() );
-            return tl::unexpected( e );
+            return closeAllDocuments( commands::CloseAllDocuments() );
+        }
+        else
+        {
+            wxString error;
+
+            if( !aKiway.ProcessApiCloseDocument( faceForDocument( it->type ), it->fileName, server.get(), &error ) )
+            {
+                ApiResponseStatus e;
+                e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+                e.set_error_message( error.ToStdString() );
+                return tl::unexpected( e );
+            }
         }
 
         openDocuments.erase( it );
 
-        if( openDocuments.empty() )
+        if( openDocuments.empty() && openProjectPath )
         {
             PROJECT& project = Pgm().GetSettingsManager().Prj();
             Pgm().GetSettingsManager().UnloadProject( &project, false );
@@ -325,10 +521,12 @@ int CLI::API_SERVER_COMMAND::doPerform( KIWAY& aKiway )
     };
 
     commonHandler.SetOpenDocumentHandler( openDocument );
+    commonHandler.SetCreateDocumentHandler( createDocument );
     commonHandler.SetCloseDocumentHandler( closeDocument );
     commonHandler.SetCloseAllDocumentsHandler( closeAllDocuments );
 
     server->RegisterHandler( &commonHandler );
+    server->RegisterHandler( &designBlockLibrariesHandler );
     server->Start();
 
     if( !server->Running() )
@@ -361,6 +559,7 @@ int CLI::API_SERVER_COMMAND::doPerform( KIWAY& aKiway )
         {
             wxFprintf( stderr, "%s\n", preloadResult.error().error_message() );
             server->DeregisterHandler( &commonHandler );
+            server->DeregisterHandler( &designBlockLibrariesHandler );
             return EXIT_CODES::ERR_ARGS;
         }
     }
@@ -393,6 +592,7 @@ int CLI::API_SERVER_COMMAND::doPerform( KIWAY& aKiway )
     commands::CloseAllDocuments closeAllReq;
     closeAllDocuments( closeAllReq );
     server->DeregisterHandler( &commonHandler );
+    server->DeregisterHandler( &designBlockLibrariesHandler );
 
     return EXIT_CODES::OK;
 }

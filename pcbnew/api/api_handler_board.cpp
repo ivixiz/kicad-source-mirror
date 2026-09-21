@@ -20,6 +20,7 @@
  */
 
 #include <set>
+#include <fmt/ranges.h>
 #include <magic_enum.hpp>
 
 #include <common.h>
@@ -33,10 +34,16 @@
 #include <kicad_clipboard.h>
 #include <pad.h>
 #include <pcb_base_edit_frame.h>
+#include <pcb_field.h>
 #include <pcb_group.h>
+#include <tools/generator_tool.h>
 #include <pcb_track.h>
+#include <pcb_table.h>
+#include <pcb_tablecell.h>
+
 #include <layer_ids.h>
 #include <project.h>
+#include <tool/common_tools.h>
 #include <tool/tool_manager.h>
 #include <tools/pcb_actions.h>
 #include <tools/pcb_selection_tool.h>
@@ -46,6 +53,7 @@
 
 using namespace kiapi::common::commands;
 using types::CommandStatus;
+
 using types::DocumentType;
 using types::ItemRequestStatus;
 
@@ -66,6 +74,7 @@ API_HANDLER_BOARD::API_HANDLER_BOARD( std::shared_ptr<BOARD_CONTEXT> aContext,
     registerHandler<AddToSelection, SelectionResponse>( &API_HANDLER_BOARD::handleAddToSelection );
     registerHandler<RemoveFromSelection, SelectionResponse>(
             &API_HANDLER_BOARD::handleRemoveFromSelection );
+    registerHandler<FocusOnItems, Empty>( &API_HANDLER_BOARD::handleFocusOnItems );
 
     registerHandler<GetBoardStackup, BoardStackupResponse>( &API_HANDLER_BOARD::handleGetStackup );
     registerHandler<GetBoardEnabledLayers, BoardEnabledLayersResponse>(
@@ -119,9 +128,7 @@ void API_HANDLER_BOARD::pushCurrentCommit( const std::string& aClientName,
                                             const wxString& aMessage )
 {
     API_HANDLER_EDITOR::pushCurrentCommit( aClientName, aMessage );
-
-    if( m_frame )
-        m_frame->Refresh();
+    onModified();
 }
 
 
@@ -130,7 +137,9 @@ std::unique_ptr<COMMIT> API_HANDLER_BOARD::createCommit()
     if( m_frame )
         return std::make_unique<BOARD_COMMIT>( static_cast<EDA_DRAW_FRAME*>( m_frame ) );
 
-    return std::make_unique<BOARD_COMMIT>( toolManager(), true, false );
+    bool isFootprintEditor = thisDocumentType() == kiapi::common::types::DOCTYPE_FOOTPRINT;
+
+    return std::make_unique<BOARD_COMMIT>( toolManager(), !isFootprintEditor, isFootprintEditor );
 }
 
 
@@ -173,6 +182,25 @@ HANDLER_RESULT<std::unique_ptr<BOARD_ITEM>> API_HANDLER_BOARD::createItemForType
         return tl::unexpected( e );
     }
 
+    if( dynamic_cast<FOOTPRINT*>( aContainer ) )
+    {
+        static const std::set<KICAD_T> s_footprintItemTypes = {
+            PCB_FIELD_T, PCB_BARCODE_T, PCB_TEXT_T, PCB_TEXTBOX_T, PCB_SHAPE_T,
+            PCB_REFERENCE_IMAGE_T, PCB_TABLE_T, PCB_PAD_T, PCB_ZONE_T, PCB_GROUP_T,
+            PCB_CONSTRAINT_T, PCB_POINT_T, PCB_DIM_ALIGNED_T, PCB_DIM_LEADER_T,
+            PCB_DIM_CENTER_T, PCB_DIM_RADIAL_T, PCB_DIM_ORTHOGONAL_T
+        };
+
+        if( !s_footprintItemTypes.contains( aType ) )
+        {
+            ApiResponseStatus e;
+            e.set_status( ApiStatusCode::AS_BAD_REQUEST );
+            e.set_error_message( fmt::format( "items of type {} cannot be created in a footprint",
+                                              magic_enum::enum_name( aType ) ) );
+            return tl::unexpected( e );
+        }
+    }
+
     std::unique_ptr<BOARD_ITEM> created = CreateItemForType( aType, aContainer );
 
     if( !created )
@@ -198,6 +226,14 @@ void API_HANDLER_BOARD::deleteItemsInternal( std::map<KIID, ItemDeletionStatus>&
     {
         if( BOARD_ITEM* item = board->ResolveItem( pair.first, true ) )
         {
+            // A footprint without its mandatory fields is not a state the editor can load or
+            // render; the const field accessors return nullptr and callers dereference them
+            if( item->Type() == PCB_FIELD_T && static_cast<PCB_FIELD*>( item )->IsMandatory() )
+            {
+                aItemsToDelete[pair.first] = ItemDeletionStatus::IDS_IMMUTABLE;
+                continue;
+            }
+
             validatedItems.push_back( item );
             aItemsToDelete[pair.first] = ItemDeletionStatus::IDS_OK;
         }
@@ -209,10 +245,86 @@ void API_HANDLER_BOARD::deleteItemsInternal( std::map<KIID, ItemDeletionStatus>&
     COMMIT* commit = getCurrentCommit( aClientName );
 
     for( BOARD_ITEM* item : validatedItems )
-        commit->Remove( item );
+    {
+        if( item->Type() == PCB_TABLECELL_T )
+        {
+            // Cells are owned by their table; the commit removal path doesn't handle them.
+            // Match the GUI delete: clear the cell contents (drill-chart cells have no user text).
+            if( item->GetParent() && item->GetParent()->Type() == PCB_DRILL_CHART_T )
+                continue;
+
+            commit->Modify( item );
+            static_cast<PCB_TABLECELL*>( item )->SetText( wxEmptyString );
+        }
+        else if( item->Type() == PCB_GENERATOR_T )
+        {
+            TOOL_MANAGER* mgr = toolManager();
+
+            if( ensureGeneratorTool() )
+            {
+                mgr->RunSynchronousAction<PCB_GENERATOR*>( PCB_ACTIONS::genRemove, commit,
+                                                           static_cast<PCB_GENERATOR*>( item ) );
+            }
+            else
+            {
+                commit->Remove( item );
+            }
+        }
+        else
+        {
+            commit->Remove( item );
+        }
+    }
 
     if( !m_activeClients.count( aClientName ) )
         pushCurrentCommit( aClientName, _( "Deleted items via API" ) );
+}
+
+
+GENERATOR_TOOL* API_HANDLER_BOARD::ensureGeneratorTool() const
+{
+    TOOL_MANAGER* mgr = toolManager();
+
+    if( !mgr->FindTool( GENERATOR_TOOL_NAME ) )
+    {
+        mgr->RegisterTool( new GENERATOR_TOOL );
+        mgr->ResetTools( TOOL_BASE::RUN );
+    }
+
+    return mgr->GetTool<GENERATOR_TOOL>();
+}
+
+
+void API_HANDLER_BOARD::regenerateGenerators( GENERATOR_TOOL* aTool, BOARD_COMMIT* aCommit,
+                                              const std::vector<PCB_GENERATOR*>& aGenerators,
+                                              std::function<void( const KIID&, ItemStatus )> aResultHandler ) const
+{
+    BOARD* board = this->board();
+
+    for( PCB_GENERATOR* generator : aGenerators )
+    {
+        ItemStatus status;
+
+        try
+        {
+            generator->EditStart( aTool, board, aCommit );
+            bool ok = generator->Update( aTool, board, aCommit );
+            generator->EditFinish( aTool, board, aCommit );
+
+            status.set_code( ok ? ItemStatusCode::ISC_OK : ItemStatusCode::ISC_INVALID_DATA );
+
+            if( !ok )
+                status.set_error_message( "the generator reported an update failure" );
+        }
+        catch( const std::exception& exc )
+        {
+            status.set_code( ItemStatusCode::ISC_INVALID_DATA );
+            status.set_error_message( fmt::format( "regeneration exception: {}", exc.what() ) );
+        }
+
+        if( aResultHandler )
+            aResultHandler( generator->m_Uuid, status );
+    }
 }
 
 
@@ -263,18 +375,16 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_BOARD::handleCreateUpdateItemsInte
             if( !container )
             {
                 e.set_status( ApiStatusCode::AS_BAD_REQUEST );
-                e.set_error_message( fmt::format(
-                        "The requested container {} is not a valid board item container",
-                        containerId.AsStdString() ) );
+                e.set_error_message( fmt::format( "The requested container {} is not a valid board item container",
+                                                  containerId.AsStdString() ) );
                 return tl::unexpected( e );
             }
         }
         else
         {
             e.set_status( ApiStatusCode::AS_BAD_REQUEST );
-            e.set_error_message( fmt::format(
-                    "The requested container {} does not exist in this document",
-                    containerId.AsStdString() ) );
+            e.set_error_message( fmt::format( "The requested container {} does not exist in this document",
+                                              containerId.AsStdString() ) );
             return tl::unexpected( e );
         }
     }
@@ -312,24 +422,87 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_BOARD::handleCreateUpdateItemsInte
         }
 
         HANDLER_RESULT<std::unique_ptr<BOARD_ITEM>> creationResult =
-                createItemForType( *type, container );
-
-        if( !creationResult )
+                [&]() -> HANDLER_RESULT<std::unique_ptr<BOARD_ITEM>>
         {
-            status.set_code( ItemStatusCode::ISC_INVALID_TYPE );
-            status.set_error_message( creationResult.error().error_message() );
-            aItemHandler( status, anyItem );
+            if( *type == PCB_GENERATOR_T )
+            {
+                std::optional<wxString> generatorType = GeneratorTypeFromAny( anyItem );
+
+                if( !generatorType )
+                {
+                    ItemStatus genStatus;
+                    genStatus.set_code( ItemStatusCode::ISC_INVALID_TYPE );
+                    genStatus.set_error_message(
+                            fmt::format( "could not decode a generator from {}", anyItem.type_url() ) );
+                    aItemHandler( genStatus, anyItem );
+                    return HANDLER_RESULT<std::unique_ptr<BOARD_ITEM>>( std::unique_ptr<BOARD_ITEM>() );
+                }
+
+                std::unique_ptr<BOARD_ITEM> genItem = CreateGeneratorForType( *generatorType, container );
+
+                if( !genItem )
+                {
+                    ItemStatus genStatus;
+                    genStatus.set_code( ItemStatusCode::ISC_INVALID_TYPE );
+                    genStatus.set_error_message( fmt::format( "generator type {} is not registered",
+                                                              generatorType->ToStdString() ) );
+                    aItemHandler( genStatus, anyItem );
+                    return HANDLER_RESULT<std::unique_ptr<BOARD_ITEM>>( std::unique_ptr<BOARD_ITEM>() );
+                }
+
+                return HANDLER_RESULT<std::unique_ptr<BOARD_ITEM>>( std::move( genItem ) );
+            }
+
+            return createItemForType( *type, container );
+        }();
+
+        if( !creationResult || !creationResult.value() )
+        {
+            if( !creationResult )
+            {
+                status.set_code( ItemStatusCode::ISC_INVALID_TYPE );
+                status.set_error_message( creationResult.error().error_message() );
+                aItemHandler( status, anyItem );
+            }
+
             continue;
         }
 
         std::unique_ptr<BOARD_ITEM> item( std::move( *creationResult ) );
 
-        if( !item->Deserialize( anyItem ) )
+        bool unpacked = false;
+
+        if( item->Type() == PCB_GENERATOR_T )
+            unpacked = item->Deserialize( anyItem );
+        else if( PCB_GROUP* group = dynamic_cast<PCB_GROUP*>( item.get() ) )
+            unpacked = group->DeserializeGroup( anyItem, commit );
+        else
+            unpacked = item->Deserialize( anyItem );
+
+        if( !unpacked )
         {
             e.set_status( ApiStatusCode::AS_BAD_REQUEST );
             e.set_error_message( fmt::format( "could not unpack {} from request",
                                               item->GetClass().ToStdString() ) );
             return tl::unexpected( e );
+        }
+
+        if( std::vector<wxString> removed = item->RemoveConflictingCustomProperties(); !removed.empty() )
+        {
+            auto as_str =
+                []( const wxString& aIn )
+                {
+                    return std::string( aIn.ToUTF8() );
+                };
+
+            status.set_code( ItemStatusCode::ISC_INVALID_DATA );
+            status.set_error_message( fmt::format( "Invalid custom properties for item {}: property name(s) '{}' "
+                                                   "already in use",
+                                                   item->m_Uuid.AsStdString(),
+                                                   fmt::join( std::views::transform( removed, as_str ), ", " ) ) );
+
+            aItemHandler( status, anyItem );
+            continue;
         }
 
         std::optional<BOARD_ITEM*> optItem = getItemById( item->m_Uuid );
@@ -351,12 +524,22 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_BOARD::handleCreateUpdateItemsInte
             continue;
         }
 
+        if( !aCreate && ( *optItem )->Type() != item->Type() )
+        {
+            status.set_code( ItemStatusCode::ISC_INVALID_TYPE );
+            status.set_error_message( fmt::format( "item {} is of type {}, not {}",
+                                                   item->m_Uuid.AsStdString(),
+                                                   magic_enum::enum_name( ( *optItem )->Type() ),
+                                                   magic_enum::enum_name( item->Type() ) ) );
+            aItemHandler( status, anyItem );
+            continue;
+        }
+
         if( aCreate
             && !item->FitsEnabledLayers( board->GetEnabledLayers(), board->GetCopperLayerCount() ) )
         {
             status.set_code( ItemStatusCode::ISC_INVALID_DATA );
-            status.set_error_message(
-                "attempted to add item with no overlapping layers with the board" );
+            status.set_error_message( "attempted to add item with no overlapping layers with the board" );
             aItemHandler( status, anyItem );
             continue;
         }
@@ -364,26 +547,72 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_BOARD::handleCreateUpdateItemsInte
         status.set_code( ItemStatusCode::ISC_OK );
         google::protobuf::Any newItem;
 
+        if( item->Type() == PCB_GROUP_T )
+            static_cast<PCB_GROUP*>( item.get() )->FinalizeGroupDeserialization();
+
         if( aCreate )
         {
-            if( item->Type() == PCB_FOOTPRINT_T )
+            if( item->Type() == PCB_TABLECELL_T )
             {
-                // Ensure children have unique identifiers; in case the API client created this new
-                // footprint by cloning an existing one and only changing the parent UUID.
-                item->RunOnChildren(
-                        []( BOARD_ITEM* aChild )
-                        {
-                            aChild->ResetUuid();
-                        },
-                        RECURSE );
-            }
+                PCB_TABLE* table = dynamic_cast<PCB_TABLE*>( container );
 
-            item->Serialize( newItem );
-            commit->Add( item.release() );
+                if( !table )
+                {
+                    status.set_code( ItemStatusCode::ISC_INVALID_DATA );
+                    status.set_error_message( "a table cell must target a table container" );
+                    aItemHandler( status, anyItem );
+                    continue;
+                }
+
+                PCB_TABLECELL* cell = static_cast<PCB_TABLECELL*>( item.release() );
+                commit->Modify( table );
+                table->AddCell( cell );
+                cell->Serialize( newItem );
+            }
+            else
+            {
+                if( item->Type() == PCB_FOOTPRINT_T || item->Type() == PCB_TABLE_T )
+                {
+                    // Ensure children have unique identifiers; in case the API client created
+                    // this new item by cloning an existing one and only changing the parent UUID.
+                    item->RunOnChildren(
+                            []( BOARD_ITEM* aChild )
+                            {
+                                aChild->ResetUuid();
+                            },
+                            RECURSE );
+                }
+
+                BOARD_ITEM* newBoardItem = item.get();
+                item->Serialize( newItem );
+                commit->Add( item.release() );
+
+                if( newBoardItem->Type() == PCB_GENERATOR_T )
+                {
+                    if( GENERATOR_TOOL* genTool = ensureGeneratorTool() )
+                        regenerateGenerators( genTool, commit, { static_cast<PCB_GENERATOR*>( newBoardItem ) }, {} );
+
+                    // The regeneration may have added members
+                    newBoardItem->Serialize( newItem );
+                }
+            }
         }
         else
         {
             BOARD_ITEM* boardItem = *optItem;
+
+            if( boardItem->Type() == PCB_GENERATOR_T )
+            {
+                commit->Modify( boardItem );
+                boardItem->Deserialize( anyItem );
+
+                static_cast<PCB_GROUP*>( boardItem )->FinalizeGroupDeserialization();
+
+                if( GENERATOR_TOOL* genTool = ensureGeneratorTool() )
+                    regenerateGenerators( genTool, commit, { static_cast<PCB_GENERATOR*>( boardItem ) }, {} );
+
+                boardItem->Serialize( newItem );
+            }
 
             // Footprints can't be modified by CopyFrom at the moment because the commit system
             // doesn't currently know what to do with a footprint that has had its children
@@ -391,7 +620,7 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_BOARD::handleCreateUpdateItemsInte
             // cached geometry for footprint children updated when you move a footprint around.
             // And also, groups are special because they can contain any item type, so we
             // can't use CopyFrom on them either.
-            if( boardItem->Type() == PCB_FOOTPRINT_T  || boardItem->Type() == PCB_GROUP_T )
+            else if( boardItem->Type() == PCB_FOOTPRINT_T  || boardItem->Type() == PCB_GROUP_T )
             {
                 // Save group membership before removal, since Remove() severs the relationship
                 PCB_GROUP* parentGroup = dynamic_cast<PCB_GROUP*>( boardItem->GetParentGroup() );
@@ -408,8 +637,18 @@ HANDLER_RESULT<ItemRequestStatus> API_HANDLER_BOARD::handleCreateUpdateItemsInte
             }
             else
             {
+                EDA_GROUP*  parentGroup = boardItem->GetParentGroup();
+                BOARD_ITEM* parent = boardItem->GetParent();
+
                 commit->Modify( boardItem );
                 boardItem->CopyFrom( item.get() );
+
+                if( parentGroup )
+                    boardItem->SetParentGroup( parentGroup );
+
+                if( parent )
+                    boardItem->SetParent( parent );
+
                 boardItem->Serialize( newItem );
             }
         }
@@ -526,7 +765,18 @@ HANDLER_RESULT<SelectionResponse> API_HANDLER_BOARD::handleGetSelection(
     std::set<KICAD_T> filter;
 
     for( KICAD_T type : parseRequestedItemTypes( aCtx.Request.types() ) )
+    {
         filter.insert( type );
+
+        if( type == PCB_DIMENSION_T )
+        {
+            filter.insert( PCB_DIM_ALIGNED_T );
+            filter.insert( PCB_DIM_ORTHOGONAL_T );
+            filter.insert( PCB_DIM_RADIAL_T );
+            filter.insert( PCB_DIM_LEADER_T );
+            filter.insert( PCB_DIM_CENTER_T );
+        }
+    }
 
     TOOL_MANAGER* mgr = toolManager();
     PCB_SELECTION_TOOL* selectionTool = mgr->GetTool<PCB_SELECTION_TOOL>();
@@ -608,6 +858,55 @@ HANDLER_RESULT<SelectionResponse> API_HANDLER_BOARD::handleAddToSelection(
 }
 
 
+HANDLER_RESULT<Empty> API_HANDLER_BOARD::handleFocusOnItems( const HANDLER_CONTEXT<FocusOnItems>& aCtx )
+{
+    if( std::optional<ApiResponseStatus> headless = checkForHeadless( "FocusOnItems" ) )
+        return tl::unexpected( *headless );
+
+    if( HANDLER_RESULT<bool> documentValidation = validateDocument( aCtx.Request.document() ); !documentValidation )
+        return tl::unexpected( documentValidation.error() );
+
+    if( std::optional<ApiResponseStatus> busy = checkForBusy() )
+        return tl::unexpected( *busy );
+
+    if( aCtx.Request.items().empty() )
+        return tl::unexpected( MakeResponseStatus( AS_BAD_REQUEST, "no items were given to focus on" ) );
+
+    std::optional<BOX2I>     bbox;
+    std::vector<std::string> missing;
+
+    for( const types::KIID& idMsg : aCtx.Request.items() )
+    {
+        std::optional<BOARD_ITEM*> item = getItemById( KIID( idMsg.value() ) );
+
+        if( !item )
+        {
+            missing.push_back( idMsg.value() );
+            continue;
+        }
+
+        if( bbox )
+            bbox->Merge( ( *item )->GetBoundingBox() );
+        else
+            bbox = ( *item )->GetBoundingBox();
+    }
+
+    if( !missing.empty() )
+    {
+        return tl::unexpected(
+                MakeResponseStatus( AS_BAD_REQUEST, fmt::format( "the items {} are not in the requested document",
+                                                                 fmt::join( missing, ", " ) ) ) );
+    }
+
+    if( aCtx.Request.has_margin() )
+        bbox->Inflate( UnpackDistance( aCtx.Request.margin() ) );
+
+    toolManager()->GetTool<COMMON_TOOLS>()->ZoomFitBox( *bbox );
+
+    return Empty();
+}
+
+
 HANDLER_RESULT<SelectionResponse> API_HANDLER_BOARD::handleRemoveFromSelection(
         const HANDLER_CONTEXT<RemoveFromSelection>& aCtx )
 {
@@ -656,24 +955,9 @@ HANDLER_RESULT<BoardStackupResponse> API_HANDLER_BOARD::handleGetStackup(
     if( !documentValidation )
         return tl::unexpected( documentValidation.error() );
 
-    BoardStackupResponse  response;
-    google::protobuf::Any any;
+    BoardStackupResponse response;
 
-    board()->GetStackupOrDefault().Serialize( any );
-
-    any.UnpackTo( response.mutable_stackup() );
-
-    // User-settable layer names are not stored in BOARD_STACKUP at the moment
-    for( board::BoardStackupLayer& layer : *response.mutable_stackup()->mutable_layers() )
-    {
-        if( layer.type() == board::BoardStackupLayerType::BSLT_DIELECTRIC )
-            continue;
-
-        PCB_LAYER_ID id = FromProtoEnum<PCB_LAYER_ID>( layer.layer() );
-        wxCHECK2( id != UNDEFINED_LAYER, continue );
-
-        layer.set_user_name( board()->GetLayerName( id ) );
-    }
+    board::PackBoardStackup( *board(), *response.mutable_stackup() );
 
     return response;
 }
@@ -840,7 +1124,14 @@ HANDLER_RESULT<PadstackPresenceResponse> API_HANDLER_BOARD::handleCheckPadstackP
     LSET layers;
 
     for( const int layer : aCtx.Request.layers() )
-        layers.set( FromProtoEnum<PCB_LAYER_ID, BoardLayer>( static_cast<BoardLayer>( layer ) ) );
+    {
+        PCB_LAYER_ID pcbLayer = FromProtoEnum<PCB_LAYER_ID, BoardLayer>( static_cast<BoardLayer>( layer ) );
+
+        if( pcbLayer < 0 || pcbLayer >= PCB_LAYER_ID_COUNT )
+            continue;
+
+        layers.set( pcbLayer );
+    }
 
     for( const types::KIID& padRequest : aCtx.Request.items() )
     {
@@ -911,7 +1202,11 @@ HANDLER_RESULT<ExpandTextVariablesResponse> API_HANDLER_BOARD::handleExpandTextV
 
     for( const std::string& textMsg : aCtx.Request.text() )
     {
-        wxString text = ExpandTextVars( wxString::FromUTF8( textMsg ), &textResolver );
+        wxString text = ExpandTextVars( wxString::FromUTF8( textMsg ), &textResolver, INTERNAL );
+
+        if( aCtx.Request.expand_env_vars() )
+            text = ExpandEnvVarSubstitutions( text, board->GetProject() );
+
         reply.add_text( text.ToUTF8() );
     }
 
@@ -1020,14 +1315,13 @@ HANDLER_RESULT<FlipItemsResponse> API_HANDLER_BOARD::handleFlipItems(
             PCB_TEXT_T,
             PCB_TEXTBOX_T,
             PCB_TABLE_T,
-            PCB_TABLECELL_T,
             PCB_TRACE_T,
             PCB_VIA_T,
             PCB_ARC_T,
             PCB_ZONE_T,
             PCB_GROUP_T,
             PCB_BARCODE_T,
-            PCB_GRIDITEM_T,
+            PCB_GRID_ITEM_T,
             PCB_MARKER_T,
             PCB_POINT_T,
             PCB_TARGET_T,
@@ -1093,7 +1387,7 @@ HANDLER_RESULT<SavedDocumentResponse> API_HANDLER_BOARD::handleSaveDocumentToStr
             response.set_contents( aData.ToUTF8() );
         } );
 
-    io.SaveBoard( wxEmptyString, board(), nullptr );
+    io.SaveBoard( wxEmptyString, *board(), nullptr );
 
     return response;
 }
@@ -1119,7 +1413,7 @@ HANDLER_RESULT<SavedSelectionResponse> API_HANDLER_BOARD::handleSaveSelectionToS
         } );
 
     io.SetBoard( board() );
-    io.SaveSelection( selection, false );
+    io.SaveSelection( selection, thisDocumentType() == kiapi::common::types::DOCTYPE_FOOTPRINT );
 
     return response;
 }

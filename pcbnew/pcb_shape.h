@@ -60,7 +60,7 @@ public:
 
     bool IsConnected() const override;
 
-    wxString GetFriendlyName() const override { return getFriendlyName(); }
+    wxString GetFriendlyName() const override { return getFriendlyName( FRAME_PCB_EDITOR ); }
 
     bool IsType( const std::vector<KICAD_T>& aScanTypes ) const override;
 
@@ -110,6 +110,12 @@ public:
         syncLibCoords();
     }
 
+    void SetArcAngle( const EDA_ANGLE& aAngle ) override
+    {
+        EDA_SHAPE::SetArcAngle( aAngle );
+        syncLibCoords();
+    }
+
     /**
      * @return a list of connection points (may be empty): points where this shape can form
      * electrical connections to other shapes that are natural "start/end" points.
@@ -149,7 +155,7 @@ public:
 
     void GetMsgPanelInfo( EDA_DRAW_FRAME* aFrame, std::vector<MSG_PANEL_ITEM>& aList ) override;
 
-    const BOX2I GetBoundingBox() const override { return getBoundingBox(); }
+    const BOX2I GetBoundingBox() const override;
 
     bool HitTest( const VECTOR2I& aPosition, int aAccuracy = 0 ) const override
     {
@@ -204,7 +210,7 @@ public:
         m_libShape = aShape;
     }
 
-    void SetArcGeometry( const VECTOR2I& aStart, const VECTOR2I& aMid, const VECTOR2I& aEnd );
+    void SetArcGeometry( const VECTOR2I& aStart, const VECTOR2I& aMid, const VECTOR2I& aEnd ) override;
 
     void SetBezierC1( const VECTOR2I& aPt ) override;
     void SetBezierC2( const VECTOR2I& aPt ) override;

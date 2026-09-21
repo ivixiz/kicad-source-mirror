@@ -38,7 +38,7 @@
 #include <collectors.h>
 #include <project/net_settings.h>
 #include <pcb_generator.h>
-#include <pcb_griditem.h>
+#include <pcb_grid_item.h>
 #include <footprint.h>
 #include <pad.h>
 #include <pcb_target.h>
@@ -754,7 +754,7 @@ int BOARD_EDITOR_CONTROL::ExportNetlist( const TOOL_EVENT& aEvent )
         {
             wxCHECK2( field, continue );
 
-            fields[field->GetCanonicalName()] = field->GetText();
+            fields[field->GetUntranslatedName()] = field->GetText();
         }
 
         component->SetFields( fields );
@@ -1207,6 +1207,8 @@ int BOARD_EDITOR_CONTROL::ViaSizeInc( const TOOL_EVENT& aEvent )
     if( m_frame->ToolStackIsEmpty()
         && SELECTION_CONDITIONS::OnlyTypes( { PCB_TRACE_T, PCB_ARC_T, PCB_VIA_T } )( selection ) )
     {
+        int          complexPadstacks = 0;
+        int          incremented = 0;
         BOARD_COMMIT commit( this );
 
         for( EDA_ITEM* item : selection )
@@ -1214,6 +1216,12 @@ int BOARD_EDITOR_CONTROL::ViaSizeInc( const TOOL_EVENT& aEvent )
             if( item->Type() == PCB_VIA_T )
             {
                 PCB_VIA* via = static_cast<PCB_VIA*>( item );
+
+                if( via->Padstack().Mode() != PADSTACK::MODE::NORMAL )
+                {
+                    complexPadstacks++;
+                    continue;
+                }
 
                 for( int i = 0; i < (int) bds.m_ViasDimensionsList.size(); ++i )
                 {
@@ -1223,19 +1231,25 @@ int BOARD_EDITOR_CONTROL::ViaSizeInc( const TOOL_EVENT& aEvent )
                     if( i> 0 )
                         dims = bds.m_ViasDimensionsList[ i ];
 
-                    // TODO(JE) padstacks
                     if( dims.m_Diameter > via->GetWidth( PADSTACK::ALL_LAYERS ) )
                     {
                         commit.Modify( via );
                         via->SetWidth( PADSTACK::ALL_LAYERS, dims.m_Diameter );
                         via->SetDrill( dims.m_Drill );
+                        incremented++;
                         break;
                     }
                 }
             }
         }
 
-        commit.Push( _( "Increase Via Size" ) );
+        if( incremented == 0 && complexPadstacks > 0 )
+        {
+            m_frame->ShowInfoBarError( wxString::Format( _( "%s not supported on complex padstacks." ),
+                                                         PCB_ACTIONS::viaSizeInc.GetFriendlyName() ) );
+        }
+
+        commit.Push( PCB_ACTIONS::viaSizeInc.GetFriendlyName() );
     }
     else
     {
@@ -1259,6 +1273,8 @@ int BOARD_EDITOR_CONTROL::ViaSizeDec( const TOOL_EVENT& aEvent )
     if( m_frame->ToolStackIsEmpty()
         && SELECTION_CONDITIONS::OnlyTypes( { PCB_TRACE_T, PCB_ARC_T, PCB_VIA_T } )( selection ) )
     {
+        int          complexPadstacks = 0;
+        int          decremented = 0;
         BOARD_COMMIT commit( this );
 
         for( EDA_ITEM* item : selection )
@@ -1266,6 +1282,12 @@ int BOARD_EDITOR_CONTROL::ViaSizeDec( const TOOL_EVENT& aEvent )
             if( item->Type() == PCB_VIA_T )
             {
                 PCB_VIA* via = static_cast<PCB_VIA*>( item );
+
+                if( via->Padstack().Mode() != PADSTACK::MODE::NORMAL )
+                {
+                    complexPadstacks++;
+                    continue;
+                }
 
                 for( int i = (int) bds.m_ViasDimensionsList.size() - 1; i >= 0; --i )
                 {
@@ -1275,19 +1297,25 @@ int BOARD_EDITOR_CONTROL::ViaSizeDec( const TOOL_EVENT& aEvent )
                     if( i > 0 )
                         dims = bds.m_ViasDimensionsList[ i ];
 
-                    // TODO(JE) padstacks
                     if( dims.m_Diameter < via->GetWidth( PADSTACK::ALL_LAYERS ) )
                     {
                         commit.Modify( via );
                         via->SetWidth( PADSTACK::ALL_LAYERS, dims.m_Diameter );
                         via->SetDrill( dims.m_Drill );
+                        decremented++;
                         break;
                     }
                 }
             }
         }
 
-        commit.Push( "Decrease Via Size" );
+        if( decremented == 0 && complexPadstacks > 0 )
+        {
+            m_frame->ShowInfoBarError( wxString::Format( _( "%s not supported on complex padstacks." ),
+                                                         PCB_ACTIONS::viaSizeDec.GetFriendlyName() ) );
+        }
+
+        commit.Push( PCB_ACTIONS::viaSizeDec.GetFriendlyName() );
     }
     else
     {
@@ -1341,8 +1369,8 @@ int BOARD_EDITOR_CONTROL::PlaceFootprint( const TOOL_EVENT& aEvent )
 
     m_toolMgr->RunAction( ACTIONS::selectionClear );
 
-    TOOL_EVENT pushedEvent = aEvent;
-    m_frame->PushTool( aEvent );
+    TOOL_EVENT         originalEvent = aEvent;          // This can change out from under us when the event loop runs
+    SCOPED_TOOL_PUSHER raii( m_frame, originalEvent );
 
     // Frame angle already applied to fp; recaptured whenever fp is (re)acquired, so
     // stale state can never leak into the next placement.
@@ -1386,19 +1414,20 @@ int BOARD_EDITOR_CONTROL::PlaceFootprint( const TOOL_EVENT& aEvent )
     bool     ignorePrimePosition = false;
     bool     reselect = false;
 
-    auto applyPlacementFrameOrientation = [&]()
-    {
-        if( !fp )
-            return;
+    auto applyPlacementFrameOrientation =
+            [&]()
+            {
+                if( !fp )
+                    return;
 
-        EDA_ANGLE newAngle = GridFrameAngleAt( *board, fp->GetPosition(), PCB_GRIDITEM_ROLE::PLACEMENT );
-        EDA_ANGLE delta = GridFrameRotationDelta( prevFrameAngle, newAngle, m_frame->GetRotationAngle() );
+                EDA_ANGLE newAngle = GridFrameAngleAt( *board, fp->GetPosition(), PCB_GRID_ROLE::PLACEMENT );
+                EDA_ANGLE delta = GridFrameRotationDelta( prevFrameAngle, newAngle, m_frame->GetRotationAngle() );
 
-        prevFrameAngle = newAngle;
+                prevFrameAngle = newAngle;
 
-        if( !delta.IsZero() )
-            fp->Rotate( fp->GetPosition(), delta );
-    };
+                if( !delta.IsZero() )
+                    fp->Rotate( fp->GetPosition(), delta );
+            };
 
     // Prime the pump
     if( fp )
@@ -1407,7 +1436,7 @@ int BOARD_EDITOR_CONTROL::PlaceFootprint( const TOOL_EVENT& aEvent )
 
         // A footprint handed over from another command may already carry the frame
         // rotation of the grid it sits in; count that as applied, like a move pick-up.
-        prevFrameAngle = GridFrameAngleAt( *board, fp->GetPosition(), PCB_GRIDITEM_ROLE::PLACEMENT );
+        prevFrameAngle = GridFrameAngleAt( *board, fp->GetPosition(), PCB_GRID_ROLE::PLACEMENT );
         fp->SetPosition( cursorPos );
         applyPlacementFrameOrientation();
         m_toolMgr->RunAction<EDA_ITEM*>( ACTIONS::selectItem, fp );
@@ -1435,14 +1464,9 @@ int BOARD_EDITOR_CONTROL::PlaceFootprint( const TOOL_EVENT& aEvent )
         if( evt->IsCancelInteractive() || ( fp && evt->IsAction( &ACTIONS::undo ) ) )
         {
             if( fp )
-            {
                 cleanup();
-            }
             else
-            {
-                m_frame->PopTool( pushedEvent );
                 break;
-            }
         }
         else if( evt->IsActivate() )
         {
@@ -1451,14 +1475,11 @@ int BOARD_EDITOR_CONTROL::PlaceFootprint( const TOOL_EVENT& aEvent )
 
             if( evt->IsMoveTool() )
             {
-                // leave ourselves on the stack so we come back after the move
-                break;
+                // Make sure we come back after the move tool is done
+                m_frame->PushTool( originalEvent );
             }
-            else
-            {
-                frame()->PopTool( pushedEvent );
-                break;
-            }
+
+            break;
         }
         else if( evt->IsClick( BUT_LEFT ) )
         {
@@ -2128,6 +2149,7 @@ int BOARD_EDITOR_CONTROL::ZonePriorityMoveToBottom( const TOOL_EVENT& aEvent )
 
 int BOARD_EDITOR_CONTROL::CrossProbeToSch( const TOOL_EVENT& aEvent )
 {
+    m_frame->GetBoard()->OnBoardSelectionChanged();
     doCrossProbePcbToSch( aEvent, false );
     return 0;
 }

@@ -23,7 +23,8 @@
 #include <io/io_base.h>
 #include <pcb_io/pcb_io_mgr.h>
 
-#include <cstdint>
+#include <memory>
+
 #include <config.h>
 #include <vector>
 #include <wx/arrstr.h>
@@ -109,15 +110,10 @@ public:
 
     /**
      * Load information from some input file format that this PCB_IO implementation
-     * knows about into either a new #BOARD or an existing one.
-     *
-     * This may be used to load an entire new #BOARD, or to augment an existing one if
-     * @a aAppendToMe is not NULL.
+     * knows about into new #BOARD.
      *
      * @param aFileName is the name of the file to use as input and may be foreign in
      *                  nature or native in nature.
-     * @param aAppendToMe is an existing BOARD to append to, but if NULL then this means
-     *                    "do not append, rather load anew".
      * @param aProperties is an associative array that can be used to tell the loader how to
      *                    load the file, because it can take any number of additional named
      *                    arguments that the plugin is known to support. These are tuning
@@ -126,16 +122,26 @@ public:
      *                    it to be optionally NULL.
      * @param aProject is the optional #PROJECT object primarily used by third party
      *                 importers.
-     * @return the successfully loaded board, or the same one as \a aAppendToMe if aAppendToMe
-     *         was not NULL, and caller owns it.
+     * @return the successfully loaded board. Caller owns it.
      *
      * @throw IO_ERROR if there is a problem loading, and its contents should say what went
      *                 wrong, using line number and character offsets of the input file if
      *                 possible.
+     * @throw IO_CANCELLED if the user cancelled the load.
      */
-    virtual BOARD* LoadBoard( const wxString& aFileName, BOARD* aAppendToMe,
-                              const std::map<std::string, UTF8>* aProperties = nullptr,
-                              PROJECT* aProject = nullptr );
+    std::unique_ptr<BOARD> LoadBoard( const wxString&                    aFileName,
+                                      const std::map<std::string, UTF8>* aProperties = nullptr,
+                                      PROJECT*                           aProject = nullptr );
+
+
+    /**
+     * Same as \ref LoadBoard(), but appends the loaded board to an existing board, which must
+     * already exist.
+     *
+     * @param aAppendToMe is the existing board to append to. The caller always owns it.
+     */
+    void LoadAndAppendBoard( const wxString& aFileName, BOARD& aAppendToMe,
+                             const std::map<std::string, UTF8>* aProperties = nullptr, PROJECT* aProject = nullptr );
 
     /**
      * Return a container with the cached library footprints generated in the last call to
@@ -165,7 +171,7 @@ public:
      *
      * @throw IO_ERROR if there is a problem saving or exporting.
      */
-    virtual void SaveBoard( const wxString& aFileName, BOARD* aBoard,
+    virtual void SaveBoard( const wxString& aFileName, BOARD& aBoard,
                             const std::map<std::string, UTF8>* aProperties = nullptr );
 
     /**
@@ -211,8 +217,8 @@ public:
      *
      * @throw   IO_ERROR if the footprint cannot be found or read.
      */
-    virtual FOOTPRINT* ImportFootprint( const wxString& aFootprintPath, wxString& aFootprintNameOut,
-                                        const std::map<std::string, UTF8>* aProperties = nullptr );
+    virtual std::unique_ptr<FOOTPRINT> ImportFootprint( const wxString& aFootprintPath, wxString& aFootprintNameOut,
+                                                        const std::map<std::string, UTF8>* aProperties = nullptr );
 
     /**
      * Load a footprint having @a aFootprintName from the @a aLibraryPath containing a library
@@ -235,22 +241,25 @@ public:
      * @throw   IO_ERROR if the library cannot be found or read.  No exception is thrown in
      *                   the case where \a aFootprintName cannot be found.
      */
-    virtual FOOTPRINT* FootprintLoad( const wxString& aLibraryPath, const wxString& aFootprintName,
-                                      bool  aKeepUUID = false,
-                                      const std::map<std::string, UTF8>* aProperties = nullptr );
+    virtual std::unique_ptr<FOOTPRINT> FootprintLoad( const wxString& aLibraryPath, const wxString& aFootprintName,
+                                                      bool                               aKeepUUID = false,
+                                                      const std::map<std::string, UTF8>* aProperties = nullptr );
 
     /**
-     * A version of FootprintLoad() for use after FootprintEnumerate() for more efficient
-     * cache management.
+     * A version of \ref FootprintLoad() for use after \ref FootprintEnumerate() for more efficient
+     * cache management in plugins that support it.
+     *
+     * Whether the returned pointer is borrowed or owned by the caller depends on the plugin.
+     * Use \ref CachesEnumeratedFootprints() to determine.
      */
     virtual const FOOTPRINT* GetEnumeratedFootprint( const wxString& aLibraryPath, const wxString& aFootprintName,
                                                      const std::map<std::string, UTF8>* aProperties = nullptr );
 
     /**
-     * Return true if GetEnumeratedFootprint() returns a borrowed pointer from an internal cache.
+     * Return true if \ref GetEnumeratedFootprint() returns a borrowed pointer from an internal cache.
      *
      * When true, the caller must NOT delete the returned pointer. When false (the default),
-     * GetEnumeratedFootprint() allocates a new FOOTPRINT and the caller owns the memory.
+     * \ref GetEnumeratedFootprint() allocates a new \ref FOOTPRINT and the caller owns the memory.
      */
     virtual bool CachesEnumeratedFootprints() const { return false; }
 
@@ -344,6 +353,16 @@ protected:
             m_board( nullptr ),
             m_props( nullptr )
     {}
+
+    /**
+     * Parse @a aFileName into @a aBoard.  The caller owns @a aBoard in both cases.
+     *
+     * @param aIsNewLoad is true for a fresh load (adopt the file's setup, keep the
+     *                   file's UUIDs) and false when merging into an existing board
+     *                   (preserve its setup, regenerate UUIDs that would clash).
+     */
+    virtual void loadBoard( const wxString& aFileName, BOARD& aBoard, bool aIsNewLoad,
+                            const std::map<std::string, UTF8>* aProperties, PROJECT* aProject );
 
     /// The board BOARD being worked on, no ownership here
     BOARD* m_board;

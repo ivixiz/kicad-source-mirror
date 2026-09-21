@@ -373,10 +373,13 @@ bool JSON_SETTINGS::LoadFromFile( const wxString& aDirectory )
     if( success )
         m_fileSynced = true;
 
+    // Skip writeback when running QA tests
+    bool doWrite = m_writeFile && !wxGetEnv( wxT( "KICAD_INHIBIT_SETTINGS_WRITES" ), nullptr );
+
     // If we migrated, clean up the legacy file (with no extension). Save the migrated
     // contents FIRST so that if the save fails we still have the legacy file on disk to
     // fall back to -- otherwise a crash mid-migration leaves the user with neither copy.
-    if( m_writeFile && ( legacy_migrated || migrated ) )
+    if( doWrite && ( legacy_migrated || migrated ) )
     {
         if( m_deleteLegacyAfterMigration )
         {
@@ -487,16 +490,7 @@ bool JSON_SETTINGS::SaveToFile( const wxString& aDirectory, bool aForce )
         return false;
     }
 
-    bool modified = false;
-
-    for( NESTED_SETTINGS* settings : m_nested_settings )
-    {
-        wxCHECK2( settings, continue );
-
-        modified |= settings->SaveToFile();
-    }
-
-    modified |= Store();
+    bool modified = flushToStore();
 
     if( !modified && !aForce && path.FileExists() )
     {
@@ -514,30 +508,11 @@ bool JSON_SETTINGS::SaveToFile( const wxString& aDirectory, bool aForce )
 
     wxLogTrace( traceSettings, wxT( "Saving %s" ), GetFullFilename() );
 
-    LOCALE_IO dummy;
     bool success = true;
-
-    nlohmann::json toSave = m_internals->m_original;
-
-
-    for( PARAM_BASE* param : m_params )
-    {
-        if( param->ClearUnknownKeys() )
-        {
-            nlohmann::json_pointer p = JSON_SETTINGS_INTERNALS::PointerFromString( param->GetJsonPath() );
-
-            toSave[p] = nlohmann::json( {} );
-        }
-    }
-
-    toSave.update( m_internals->begin(), m_internals->end(), /* merge_objects = */ true );
 
     try
     {
-        std::stringstream buffer;
-        buffer << std::setw( 2 ) << toSave << std::endl;
-
-        std::string  payload = buffer.str();
+        std::string  payload = formatFileContents();
         wxString     writeError;
 
         // Last-chance skip for the case where the dirty heuristic fired but the serialized payload
@@ -595,6 +570,45 @@ bool JSON_SETTINGS::SaveToFile( const wxString& aDirectory, bool aForce )
     }
 
     return success;
+}
+
+
+bool JSON_SETTINGS::flushToStore()
+{
+    bool modified = false;
+
+    for( NESTED_SETTINGS* settings : m_nested_settings )
+    {
+        wxCHECK2( settings, continue );
+
+        modified |= settings->SaveToFile();
+    }
+
+    modified |= Store();
+
+    return modified;
+}
+
+
+std::string JSON_SETTINGS::formatFileContents()
+{
+    LOCALE_IO dummy;
+
+    nlohmann::json toSave = m_internals->m_original;
+
+    for( PARAM_BASE* param : m_params )
+    {
+        if( param->ClearUnknownKeys() )
+        {
+            nlohmann::json_pointer p = JSON_SETTINGS_INTERNALS::PointerFromString( param->GetJsonPath() );
+
+            toSave[p] = nlohmann::json::object();
+        }
+    }
+
+    toSave.update( m_internals->begin(), m_internals->end(), /* merge_objects = */ true );
+
+    return toSave.dump( 2 ) + '\n';
 }
 
 
