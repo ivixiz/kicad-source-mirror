@@ -22,6 +22,7 @@
 #ifndef CLASS_NETCLASS_H
 #define CLASS_NETCLASS_H
 
+#include <memory>
 #include <optional>
 
 #include <gal/color4d.h>
@@ -94,8 +95,14 @@ public:
     // all constituent netclasses, in order of priority.
     const std::vector<NETCLASS*>& GetConstituentNetclasses() const;
 
-    /// @brief Sets the netclasses which make up this netclass
-    void SetConstituentNetclasses( std::vector<NETCLASS*>&& constituents );
+    /// Owning references for aggregate recomputation; empty for a root class to avoid a self-cycle.
+    const std::vector<std::shared_ptr<NETCLASS>>& GetConstituentNetclassOwners() const
+    {
+        return m_constituentOwners;
+    }
+
+    /// Keep aggregate constituents alive across settings replacement. An empty list resets a root.
+    void SetConstituentNetclasses( std::vector<std::shared_ptr<NETCLASS>>&& constituents );
 
     /// @brief Determines if the given netclass name is a constituent of this (maybe aggregate)
     /// netclass
@@ -265,6 +272,10 @@ protected:
     bool m_isDefault; ///< Mark if this instance is the default netclass
 
     std::vector<NETCLASS*> m_constituents; ///< NETCLASSes contributing to an aggregate
+
+    // Board nets can retain an aggregate after NET_SETTINGS clears its definitions. Keep the
+    // constituent and parameter-parent pointers valid without shared_ptr copies on hot read paths.
+    std::vector<std::shared_ptr<NETCLASS>> m_constituentOwners;
 
     wxString m_Name;                        ///< Name of the net class
     int      m_Priority;                    ///< The priority for multiple netclass resolution

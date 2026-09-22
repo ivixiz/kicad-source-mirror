@@ -23,6 +23,8 @@
 #include <board_design_settings.h>
 #include <drc/drc_engine.h>
 #include <drc/drc_rule.h>
+#include <netinfo.h>
+#include <project/net_settings.h>
 #include <settings/json_settings.h>
 #include <settings/json_settings_internals.h>
 #include <settings/settings_manager.h>
@@ -57,6 +59,43 @@ public:
 
 
 BOOST_FIXTURE_TEST_SUITE( BoardDesignSettings, BDS_TEST_FIXTURE )
+
+
+BOOST_AUTO_TEST_CASE( DirectiveNetclassReplacementKeepsBoardNetsValid )
+{
+    KI_TEST::LoadBoard( m_settingsManager, "multinetclasses_drc", m_board );
+    auto& settings = *m_board->GetDesignSettings().m_NetSettings;
+    auto* net = new NETINFO_ITEM( m_board.get(), wxS( "DirectiveLifetimeTest" ) );
+    m_board->Add( net );
+
+    auto power = std::make_shared<NETCLASS>( wxS( "DirectivePower" ), false );
+    power->SetClearance( pcbIUScale.mmToIU( 0.35 ) );
+    settings.SetNetclass( power->GetName(), power );
+    settings.SetNetclassLabelAssignment( net->GetNetname(),
+                                        { wxS( "DirectivePower" ), wxS( "UnconfiguredDirective" ) } );
+    m_board->SynchronizeNetsAndNetClasses( true );
+    const wxString originalName = net->GetNetClass()->GetName();
+    std::weak_ptr<NETCLASS> oldPower = power;
+    power.reset();
+
+    // Match Board Setup: discard definitions, build replacements, then refresh board nets.
+    // Redraws while the dialog closes can still inspect the previous effective class.
+    settings.ClearNetclasses();
+    BOOST_REQUIRE( !oldPower.expired() );
+    BOOST_CHECK_EQUAL( net->GetNetClass()->GetName(), originalName );
+    BOOST_CHECK( net->GetNetClass()->ContainsNetclassWithName( wxS( "UnconfiguredDirective" ) ) );
+
+    power = std::make_shared<NETCLASS>( wxS( "DirectivePower" ), false );
+    power->SetClearance( pcbIUScale.mmToIU( 0.5 ) );
+    settings.SetNetclass( power->GetName(), power );
+    m_board->SynchronizeTuningProfileProperties();
+    m_board->SynchronizeNetsAndNetClasses( true );
+
+    BOOST_CHECK_EQUAL( net->GetNetClass()->GetName(), originalName );
+    BOOST_CHECK_EQUAL( net->GetNetClass()->GetClearance(), pcbIUScale.mmToIU( 0.5 ) );
+    BOOST_CHECK( net->GetNetClass()->GetClearanceParent() == power.get() );
+    BOOST_CHECK( oldPower.expired() );
+}
 
 
 /**

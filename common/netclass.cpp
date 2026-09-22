@@ -249,7 +249,7 @@ bool NETCLASS::Deserialize( const kiapi::common::project::NetClass& nc )
     if( nc.type() == project::NCT_IMPLICIT )
         return false;
 
-    SetConstituentNetclasses( { this } );
+    SetConstituentNetclasses( {} );
 
     if( nc.board().has_clearance() )
         m_Clearance = nc.board().clearance().value_nm();
@@ -315,9 +315,24 @@ const std::vector<NETCLASS*>& NETCLASS::GetConstituentNetclasses() const
 }
 
 
-void NETCLASS::SetConstituentNetclasses( std::vector<NETCLASS*>&& constituents )
+void NETCLASS::SetConstituentNetclasses( std::vector<std::shared_ptr<NETCLASS>>&& constituents )
 {
-    m_constituents = std::move( constituents );
+    m_constituents.clear();
+
+    if( constituents.empty() )
+    {
+        m_constituents.push_back( this );
+        ResetParents();
+    }
+    else
+    {
+        m_constituents.reserve( constituents.size() );
+
+        for( const std::shared_ptr<NETCLASS>& nc : constituents )
+            m_constituents.push_back( nc.get() );
+    }
+
+    m_constituentOwners = std::move( constituents );
 }
 
 

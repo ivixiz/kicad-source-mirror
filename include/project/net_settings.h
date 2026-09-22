@@ -343,7 +343,7 @@ private:
      * name alphabetically
      */
     void makeEffectiveNetclass( std::shared_ptr<NETCLASS>& effectiveNetclass,
-                                std::vector<NETCLASS*>&    netclasses ) const;
+                                std::vector<std::shared_ptr<NETCLASS>>& netclasses ) const;
 
     /// @brief Adds any missing fields to the given netclass from the default netclass
     /// @returns true if any fields were added from the default netclass

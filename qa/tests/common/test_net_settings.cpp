@@ -34,6 +34,103 @@
 BOOST_AUTO_TEST_SUITE( NetSettingsTests )
 
 
+// Board Setup replaces the definitions before board nets and UI listeners are refreshed.
+// Keeping an effective class alive must also keep its parameter parents alive during that gap.
+BOOST_AUTO_TEST_CASE( EffectiveNetclassRetainsReplacedDefinitions )
+{
+    NET_SETTINGS settings( nullptr, "" );
+    auto named = std::make_shared<NETCLASS>( wxS( "Power" ), false );
+    named->SetClearance( 350000 );
+    settings.SetNetclass( named->GetName(), named );
+    settings.SetNetclassLabelAssignment( wxS( "VCC" ), { wxS( "Power" ) } );
+
+    std::shared_ptr<NETCLASS> effective = settings.GetEffectiveNetClass( wxS( "VCC" ) );
+    std::weak_ptr<NETCLASS> oldDefinition = named;
+    const wxString oldName = effective->GetName();
+    named.reset();
+
+    settings.ClearNetclasses();
+
+    // Check ownership before dereferencing the parent, so a regression fails without UB.
+    BOOST_REQUIRE( !oldDefinition.expired() );
+    BOOST_CHECK_EQUAL( effective->GetName(), oldName );
+    BOOST_CHECK( effective->GetClearanceParent()->GetName() == wxS( "Power" ) );
+    BOOST_CHECK_EQUAL( effective->GetClearance(), 350000 );
+
+    named = std::make_shared<NETCLASS>( wxS( "Power" ), false );
+    named->SetClearance( 500000 );
+    settings.SetNetclass( named->GetName(), named );
+    auto updated = settings.GetEffectiveNetClass( wxS( "VCC" ) );
+    BOOST_CHECK_EQUAL( updated->GetClearance(), 500000 );
+    BOOST_CHECK( updated->GetClearanceParent() == named.get() );
+
+    effective.reset();
+    BOOST_CHECK( oldDefinition.expired() );
+}
+
+
+BOOST_AUTO_TEST_CASE( EffectiveNetclassRetainsImplicitDirectiveClass )
+{
+    NET_SETTINGS settings( nullptr, "" );
+    settings.SetNetclassLabelAssignment( wxS( "VCC" ), { wxS( "DirectiveOnly" ) } );
+    auto effective = settings.GetEffectiveNetClass( wxS( "VCC" ) );
+    const wxString oldName = effective->GetName();
+
+    // An unconfigured directive class has no owner in the setup panel's explicit-class snapshot.
+    settings.ClearNetclasses();
+
+    BOOST_CHECK_EQUAL( effective->GetName(), oldName );
+    BOOST_CHECK( effective->ContainsNetclassWithName( wxS( "DirectiveOnly" ) ) );
+    BOOST_CHECK_EQUAL( settings.GetEffectiveNetClass( wxS( "VCC" ) )->GetName(), oldName );
+}
+
+
+BOOST_AUTO_TEST_CASE( EffectiveNetclassRetainsReplacedDefault )
+{
+    NET_SETTINGS settings( nullptr, "" );
+    settings.SetNetclassLabelAssignment( wxS( "VCC" ), { wxS( "DirectiveOnly" ) } );
+    auto effective = settings.GetEffectiveNetClass( wxS( "VCC" ) );
+    std::weak_ptr<NETCLASS> oldDefault = settings.GetDefaultNetclass();
+
+    auto replacement = std::make_shared<NETCLASS>( NETCLASS::Default );
+    replacement->SetClearance( 500000 );
+    settings.SetDefaultNetclass( replacement );
+    settings.ClearAllCaches();
+
+    BOOST_REQUIRE( !oldDefault.expired() );
+    BOOST_CHECK_EQUAL( effective->GetClearanceParent()->GetName(), NETCLASS::Default );
+    BOOST_CHECK_EQUAL( settings.GetEffectiveNetClass( wxS( "VCC" ) )->GetClearance(), 500000 );
+
+    effective.reset();
+    BOOST_CHECK( oldDefault.expired() );
+}
+
+
+BOOST_AUTO_TEST_CASE( RecomputedEffectiveNetclassKeepsParentsAlive )
+{
+    NET_SETTINGS settings( nullptr, "" );
+    auto named = std::make_shared<NETCLASS>( wxS( "Power" ), false );
+    named->SetClearance( 350000 );
+    settings.SetNetclass( named->GetName(), named );
+    settings.SetNetclassLabelAssignment( wxS( "VCC" ), { wxS( "Power" ) } );
+    auto effective = settings.GetEffectiveNetClass( wxS( "VCC" ) );
+    std::weak_ptr<NETCLASS> oldDefinition = named;
+
+    named->SetClearance( 500000 );
+    settings.RecomputeEffectiveNetclasses();
+    BOOST_CHECK( settings.GetEffectiveNetClass( wxS( "VCC" ) ) == effective );
+    BOOST_CHECK_EQUAL( effective->GetClearance(), 500000 );
+
+    named.reset();
+    settings.ClearNetclasses();
+    BOOST_REQUIRE( !oldDefinition.expired() );
+    BOOST_CHECK( effective->GetClearanceParent()->GetName() == wxS( "Power" ) );
+
+    effective.reset();
+    BOOST_CHECK( oldDefinition.expired() );
+}
+
+
 // Regression guard for the dirty-check used by the project save framework.
 // Without m_netChainClasses included in operator==, edits to chain-class
 // assignments returned "no change" and were silently dropped on close.
