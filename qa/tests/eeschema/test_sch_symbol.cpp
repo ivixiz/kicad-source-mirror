@@ -1021,6 +1021,58 @@ BOOST_AUTO_TEST_CASE( VariantFieldUnicodeAndSpecialChars )
 }
 
 
+BOOST_AUTO_TEST_CASE( CrossReferenceLookupDoesNotResolveUnrelatedFields )
+{
+    wxFileName fn;
+    fn.SetPath( KI_TEST::GetEeschemaTestDataDir() );
+    fn.AppendDir( wxS( "variant_test" ) );
+    fn.SetName( wxS( "variant_test" ) );
+    fn.SetExt( FILEEXT::KiCadSchematicFileExtension );
+    LoadSchematic( fn.GetFullPath() );
+    SCH_SYMBOL* symbol = GetFirstSymbol();
+    BOOST_REQUIRE( symbol );
+    const SCH_SHEET_PATH& path = m_schematic->Hierarchy()[0];
+    const wxString ref = symbol->GetRef( &path, false );
+
+    // Resolving either of these fields must not evaluate all fields while finding the symbol.
+    const wxString expression = wxS( "${" ) + ref + wxS( ":REFERENCE}" );
+    symbol->GetField( FIELD_T::VALUE )->SetText( expression );
+    symbol->GetField( FIELD_T::FOOTPRINT )->SetText( expression );
+
+    for( const wxString& field : { wxS( "VALUE" ), wxS( "FOOTPRINT" ) } )
+    {
+        wxString token = ref + wxS( ":" ) + field;
+        BOOST_REQUIRE( m_schematic->ResolveCrossReference( &token, 0 ) );
+        BOOST_CHECK_EQUAL( token, ref );
+    }
+
+    wxString missing = wxS( "MissingReference:VALUE" );
+    BOOST_CHECK( m_schematic->ResolveCrossReference( &missing, 0 ) );
+    BOOST_CHECK_EQUAL( missing, wxS( "<Unresolved: MissingReference>" ) );
+}
+
+
+BOOST_AUTO_TEST_CASE( CrossReferenceInValueExpression )
+{
+    wxFileName fn;
+    fn.SetPath( KI_TEST::GetEeschemaTestDataDir() );
+    fn.AppendDir( wxS( "variant_test" ) );
+    fn.SetName( wxS( "variant_test" ) );
+    fn.SetExt( FILEEXT::KiCadSchematicFileExtension );
+    LoadSchematic( fn.GetFullPath() );
+    SCH_SYMBOL* symbol = GetFirstSymbol();
+    BOOST_REQUIRE( symbol );
+    const SCH_SHEET_PATH& path = m_schematic->Hierarchy()[0];
+    const wxString ref = symbol->GetRef( &path, false );
+
+    symbol->GetField( FIELD_T::DESCRIPTION )->SetText( wxS( "12" ) );
+    symbol->GetField( FIELD_T::VALUE )->SetText(
+            wxS( "@{${" ) + ref + wxS( ":DESCRIPTION} /(5/1.25 - 1)}" ) );
+
+    BOOST_CHECK_EQUAL( symbol->GetValue( &path, RESOLVED ), wxS( "4" ) );
+}
+
+
 /**
  * Test variant-specific field dereferencing via ${REF:FIELD:VARIANT} syntax.
  */

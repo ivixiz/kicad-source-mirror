@@ -1439,36 +1439,47 @@ bool SCHEMATIC::resolveCrossReference( wxString* token, int aDepth ) const
     // This handles both exact matches (J601A) and parent references for multi-unit symbols (J601)
     if( !refItem )
     {
-        SCH_REFERENCE_LIST refs;
-        Hierarchy().GetSymbols( refs, SYMBOL_FILTER_ALL );
-
         SCH_SYMBOL*    foundSymbol = nullptr;
         SCH_SHEET_PATH foundPath;
+        bool           exactMatch = false;
 
-        for( int ii = 0; ii < (int) refs.GetCount(); ii++ )
+        // SCH_REFERENCE construction resolves Value and Footprint. Building a reference list
+        // here would re-enter this lookup for fields containing ${REF:FIELD}, resetting the
+        // expansion depth and eventually overflowing the stack. Only inspect references.
+        for( const SCH_SHEET_PATH& candidatePath : Hierarchy() )
         {
-            SCH_REFERENCE& reference = refs[ii];
-            wxString       symbolRef = reference.GetSymbol()->GetRef( &reference.GetSheetPath(), false );
-
-            // Try exact match first
-            if( symbolRef == ref )
+            for( SCH_ITEM* item : candidatePath.LastScreen()->Items().OfType( SCH_SYMBOL_T ) )
             {
-                foundSymbol = reference.GetSymbol();
-                foundPath = reference.GetSheetPath();
-                break;
-            }
+                SCH_SYMBOL* symbol = static_cast<SCH_SYMBOL*>( item );
 
-            // For multi-unit symbols, try matching parent reference (e.g., J601 matches J601A)
-            if( symbolRef.StartsWith( ref ) && symbolRef.Length() == ref.Length() + 1 )
-            {
-                wxChar lastChar = symbolRef.Last();
-                if( lastChar >= 'A' && lastChar <= 'Z' )
+                if( !symbol->GetLibSymbolRef() )
+                    continue;
+
+                wxString symbolRef = symbol->GetRef( &candidatePath, false );
+
+                if( symbolRef == ref )
                 {
-                    foundSymbol = reference.GetSymbol();
-                    foundPath = reference.GetSheetPath();
-                    // Don't break - continue looking for exact match
+                    foundSymbol = symbol;
+                    foundPath = candidatePath;
+                    exactMatch = true;
+                    break;
+                }
+
+                // Keep a parent-reference fallback, but prefer an exact match on any sheet.
+                if( symbolRef.StartsWith( ref ) && symbolRef.Length() == ref.Length() + 1 )
+                {
+                    wxChar lastChar = symbolRef.Last();
+
+                    if( lastChar >= 'A' && lastChar <= 'Z' )
+                    {
+                        foundSymbol = symbol;
+                        foundPath = candidatePath;
+                    }
                 }
             }
+
+            if( exactMatch )
+                break;
         }
 
         if( foundSymbol )
