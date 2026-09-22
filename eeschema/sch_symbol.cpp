@@ -222,12 +222,11 @@ public:
 
     bool Writeable( INSPECTABLE* aObject ) const override
     {
-        if( m_name == GetCanonicalFieldName( FIELD_T::FOOTPRINT ) )
-        {
-            SCH_SYMBOL* symbol = dynamic_cast<SCH_SYMBOL*>( aObject );
+        SCH_SYMBOL*      symbol = dynamic_cast<SCH_SYMBOL*>( aObject );
+        const SCH_FIELD* field = symbol ? symbol->GetField( m_name ) : nullptr;
 
-            return symbol && !symbol->IsPower() && PROPERTY_BASE::Writeable( aObject );
-        }
+        if( field && field->GetId() == FIELD_T::FOOTPRINT && symbol->IsPower() )
+            return false;
 
         return PROPERTY_BASE::Writeable( aObject );
     }

@@ -781,7 +781,8 @@ int SCH_EDITOR_CONTROL::SimProbe( const TOOL_EVENT& aEvent )
             {
                 SCH_SELECTION_TOOL* selTool = m_toolMgr->GetTool<SCH_SELECTION_TOOL>();
                 EDA_ITEM*           item = selTool->GetNode( aPosition );
-                SCH_CONNECTION*     conn = nullptr;
+                SCH_ITEM*           connectedItem = nullptr;
+                SCH_SHEET_PATH&     sheet = m_frame->GetCurrentSheet();
 
                 if( !item )
                     return false;
@@ -796,20 +797,25 @@ int SCH_EDITOR_CONTROL::SimProbe( const TOOL_EVENT& aEvent )
 
                 if( symbol && symbol->GetLibSymbolRef() && symbol->GetLibSymbolRef()->IsPower() )
                 {
-                    std::vector<SCH_PIN*> pins = symbol->GetPins();
+                    std::vector<SCH_PIN*> pins = symbol->GetPins( &sheet );
 
                     if( pins.size() == 1 )
-                        conn = pins[0]->Connection();
+                        connectedItem = pins[0];
                 }
                 else if( SCH_ITEM* schItem = dynamic_cast<SCH_ITEM*>( item ) )
                 {
-                    conn = schItem->Connection();
+                    connectedItem = schItem;
                 }
 
-                if( !conn || conn->IsBus() || conn->Name().IsEmpty() )
+                if( !connectedItem || connectedItem->HasBusConnection( &sheet ) )
                     return false;
 
-                aSpiceNet = conn->Name();
+                const auto connectionName = connectedItem->GetConnectionName( &sheet );
+
+                if( !connectionName || connectionName->IsEmpty() )
+                    return false;
+
+                aSpiceNet = *connectionName;
                 NETLIST_EXPORTER_SPICE::ConvertToSpiceMarkup( &aSpiceNet );
 
                 return !aSpiceNet.IsEmpty();

@@ -2545,7 +2545,7 @@ bool SCH_EDIT_TOOL::editFootprintFields( const SCH_SELECTION& aSelection )
     if( !firstField )
         return false;
 
-    wxString fieldName = GetDefaultFieldName( FIELD_T::FOOTPRINT, DO_TRANSLATE );
+    wxString fieldName = GetDefaultFieldName( FIELD_T::FOOTPRINT, TRANSLATED );
     wxString caption;
     caption.Printf( _( "Edit %s Field" ), TitleCaps( fieldName ) );
 

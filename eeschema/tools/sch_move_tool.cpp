@@ -122,12 +122,12 @@ static bool makeScopeMeasurementSignal( SCH_EDIT_FRAME* aFrame, SCH_SYMBOL* aSym
 
         for( SCH_PIN* pin : aSymbol->GetPins( &sheet ) )
         {
-            SCH_CONNECTION* connection = pin->Connection( &sheet );
+            const auto connectionName = pin->GetConnectionName( &sheet );
 
-            if( !connection || connection->IsBus() || connection->Name().IsEmpty() )
+            if( !connectionName || connectionName->IsEmpty() || pin->HasBusConnection( &sheet ) )
                 continue;
 
-            wxString net = connection->Name();
+            wxString net = *connectionName;
             NETLIST_EXPORTER_SPICE::ConvertToSpiceMarkup( &net );
 
             // ngspice treats both names as its reference node.  A voltage relative to either

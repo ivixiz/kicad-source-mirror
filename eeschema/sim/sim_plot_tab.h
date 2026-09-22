@@ -419,23 +419,6 @@ public:
     ///< Get the Y-axis scale object for a given slot (1, 2 or 3), or nullptr if not created yet.
     mpScaleY* GetAxisBySlot( int aSlot ) const;
 
-    bool GetStoredTraceColour( const wxString& aVecName, int aType, wxColour& aColour ) const
-    {
-        if( TRACE* trace = GetTrace( aVecName, aType ) )
-        {
-            aColour = trace->GetTraceColour();
-            return true;
-        }
-
-        auto stored = m_sessionTraceColors.find( aVecName );
-
-        if( stored == m_sessionTraceColors.end() )
-            return false;
-
-        aColour = stored->second;
-        return true;
-    }
-
     void ShowGrid( bool aEnable )
     {
         if( m_axis_x )
@@ -704,6 +687,23 @@ public:
     void DeleteTrace( TRACE* aTrace );
 
     const std::map<wxString, TRACE*>& GetTraces() const { return m_traces; }
+
+    bool GetStoredTraceColour( const wxString& aVecName, int aType, wxColour& aColour ) const
+    {
+        if( TRACE* trace = GetTrace( aVecName, aType ) )
+        {
+            aColour = trace->GetTraceColour();
+            return true;
+        }
+
+        auto stored = m_sessionTraceColors.find( aVecName );
+
+        if( stored == m_sessionTraceColors.end() )
+            return false;
+
+        aColour = stored->second;
+        return true;
+    }
 
     TRACE* GetTrace( const wxString& aVecName, int aType ) const
     {

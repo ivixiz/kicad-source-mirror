@@ -1678,7 +1678,7 @@ void SCH_SCOPE::SetSettings( SCH_SYMBOL* aSymbol, const SETTINGS& aSettings )
     if( !field )
     {
         SCH_FIELD newField( aSymbol, FIELD_T::USER, SCOPE_WAVEFORMS_FIELD );
-        newField.SetOrdinal( aSymbol->GetNextFieldOrdinal() );
+        newField.SetOrdinal( aSymbol->GetNextFieldOrdinal(), FIELD_T::USER );
         newField.SetVisible( false );
         field = aSymbol->AddField( newField );
     }
