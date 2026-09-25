@@ -523,14 +523,17 @@ OPENGL_GAL::~OPENGL_GAL()
         if( m_instanceCounter == 0 )
         {
             if( gl_mgr->LockCtx( m_glMainContext, this ) && m_isBitmapFontLoaded )
-            {
                 glDeleteTextures( 1, &g_fontTexture );
-                m_isBitmapFontLoaded = false;
-            }
 
             gl_mgr->UnlockCtx( m_glMainContext );
             gl_mgr->DestroyCtx( m_glMainContext );
             m_glMainContext = nullptr;
+
+            // Destroying the last shared context invalidates the font atlas even if its
+            // canvas was already gone and we could not make the context current to delete it.
+            // A later editor must upload a new atlas, not reuse a name from the old share group.
+            g_fontTexture = 0;
+            m_isBitmapFontLoaded = false;
         }
     }
 }
