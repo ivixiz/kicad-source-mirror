@@ -2081,8 +2081,13 @@ void SCH_EDIT_FRAME::RefreshConnectivity( bool aForce, const SCH_CONNECTIVITY::C
                 if( item )
                 {
                     item->RunOnChildren(
-                            [&invalidateTextVars]( SCH_ITEM* aChild )
+                            [&]( SCH_ITEM* aChild )
                             {
+                                // Pins and sheet pins are drawn by their parent item.  Connectivity
+                                // reports the changed child UUID, so repaint the cached parent too.
+                                if( repaintItems.contains( aChild->m_Uuid ) )
+                                    flags |= KIGFX::REPAINT;
+
                                 if( EDA_TEXT* text = dynamic_cast<EDA_TEXT*>( aChild ) )
                                     invalidateTextVars( text );
                             },
