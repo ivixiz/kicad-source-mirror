@@ -37,6 +37,7 @@ class PG_UNIT_EDITOR;
 class PG_CHECKBOX_EDITOR;
 class PG_COLOR_EDITOR;
 class PG_FPID_EDITOR;
+class PG_SYMBOL_LIB_ID_EDITOR;
 class PG_URL_EDITOR;
 
 class SCH_PROPERTIES_PANEL : public PROPERTIES_PANEL
@@ -76,6 +77,8 @@ protected:
     bool handleSheetFilenameChange( SCH_EDIT_FRAME* aFrame, SCH_SHEET* aSheet,
                                     SCH_COMMIT& aChanges, const wxString& aNewFilename );
 
+    bool changeSymbolLibraryLink( const SELECTION& aSelection, const wxString& aNewLink );
+
     void OnLanguageChanged( wxCommandEvent& aEvent ) override;
 
     /**
@@ -111,6 +114,7 @@ protected:
     PG_CHECKBOX_EDITOR* m_checkboxEditorInstance;
     PG_COLOR_EDITOR*    m_colorEditorInstance;
     PG_FPID_EDITOR*     m_fpEditorInstance;
+    PG_SYMBOL_LIB_ID_EDITOR* m_symbolLibIdEditorInstance;
     PG_URL_EDITOR*      m_urlEditorInstance;
 
     static bool               m_selContainsJunctions;

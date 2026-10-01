@@ -45,6 +45,7 @@ const wxString PG_CHECKBOX_EDITOR::EDITOR_NAME = wxS( "KiCadCheckboxEditor" );
 const wxString PG_COLOR_EDITOR::EDITOR_NAME = wxS( "KiCadColorEditor" );
 const wxString PG_RATIO_EDITOR::EDITOR_NAME = wxS( "KiCadRatioEditor" );
 const wxString PG_FPID_EDITOR::EDITOR_NAME = wxS( "KiCadFpidEditor" );
+const wxString PG_SYMBOL_LIB_ID_EDITOR::EDITOR_NAME = wxS( "KiCadSymbolLibIdEditor" );
 const wxString PG_URL_EDITOR::EDITOR_NAME = wxS( "KiCadUrlEditor" );
 
 
@@ -595,6 +596,80 @@ bool PG_FPID_EDITOR::OnEvent( wxPropertyGrid* aGrid, wxPGProperty* aProperty, wx
         // ChangePropertyValue() has already submitted the value and sent the property-grid event.
         // Returning true would make wxPropertyGrid read the unchanged text control afterwards and
         // overwrite the footprint selected in the chooser.
+        return false;
+    }
+
+    return wxPGTextCtrlEditor::OnEvent( aGrid, aProperty, aCtrl, aEvent );
+}
+
+
+PG_SYMBOL_LIB_ID_EDITOR::PG_SYMBOL_LIB_ID_EDITOR( EDA_DRAW_FRAME* aFrame ) :
+        m_frame( aFrame )
+{
+    m_editorName = BuildEditorName( aFrame );
+}
+
+
+void PG_SYMBOL_LIB_ID_EDITOR::UpdateFrame( EDA_DRAW_FRAME* aFrame )
+{
+    m_frame = aFrame;
+    m_editorName = BuildEditorName( aFrame );
+}
+
+
+wxString PG_SYMBOL_LIB_ID_EDITOR::BuildEditorName( EDA_DRAW_FRAME* aFrame )
+{
+    if( !aFrame )
+        return EDITOR_NAME + "NoFrame";
+
+    return EDITOR_NAME + aFrame->GetName();
+}
+
+
+wxPGWindowList PG_SYMBOL_LIB_ID_EDITOR::CreateControls( wxPropertyGrid* aGrid,
+                                                        wxPGProperty* aProperty,
+                                                        const wxPoint& aPos,
+                                                        const wxSize& aSize ) const
+{
+    wxPGMultiButton* buttons = new wxPGMultiButton( aGrid, aSize );
+    buttons->Add( KiBitmap( BITMAPS::small_library ) );
+
+    wxPGWindowList controls = wxPGTextCtrlEditor::CreateControls( aGrid, aProperty, aPos,
+                                                                  buttons->GetPrimarySize() );
+    buttons->Finalize( aGrid, aPos );
+    controls.SetSecondary( buttons );
+
+    return controls;
+}
+
+
+bool PG_SYMBOL_LIB_ID_EDITOR::OnEvent( wxPropertyGrid* aGrid, wxPGProperty* aProperty,
+                                       wxWindow* aCtrl, wxEvent& aEvent ) const
+{
+    if( aEvent.GetEventType() == wxEVT_BUTTON )
+    {
+        if( !m_frame )
+            return false;
+
+        const wxString propertyName = aProperty->GetName();
+        wxString       libId;
+
+        if( !aProperty->GetValue().IsNull() )
+            libId = aProperty->GetValue().GetString();
+
+        if( KIWAY_PLAYER* frame = m_frame->Kiway().Player( FRAME_SYMBOL_CHOOSER, true, m_frame ) )
+        {
+            if( frame->ShowModal( &libId, m_frame ) )
+            {
+                if( wxPGProperty* property = aGrid->GetPropertyByName( propertyName ) )
+                    aGrid->ChangePropertyValue( property, libId );
+            }
+
+            frame->Destroy();
+        }
+
+        // ChangePropertyValue() submits the edit itself.  Do not ask wxPropertyGrid to read the
+        // unchanged primary text control after the chooser closes.
         return false;
     }
 

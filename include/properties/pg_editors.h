@@ -155,6 +155,33 @@ private:
 };
 
 
+class PG_SYMBOL_LIB_ID_EDITOR : public wxPGTextCtrlEditor
+{
+public:
+    static const wxString EDITOR_NAME;
+
+    PG_SYMBOL_LIB_ID_EDITOR( EDA_DRAW_FRAME* aFrame );
+
+    virtual ~PG_SYMBOL_LIB_ID_EDITOR() {}
+
+    wxString GetName() const override { return m_editorName; }
+
+    void UpdateFrame( EDA_DRAW_FRAME* aFrame );
+
+    static wxString BuildEditorName( EDA_DRAW_FRAME* aFrame );
+
+    wxPGWindowList CreateControls( wxPropertyGrid* aGrid, wxPGProperty* aProperty,
+                                   const wxPoint& aPos, const wxSize& aSize ) const override;
+
+    bool OnEvent( wxPropertyGrid* aGrid, wxPGProperty* aProperty, wxWindow* aCtrl,
+                  wxEvent& aEvent ) const override;
+
+private:
+    EDA_DRAW_FRAME* m_frame;
+    wxString        m_editorName;
+};
+
+
 class PG_URL_EDITOR : public wxPGTextCtrlEditor
 {
 public:

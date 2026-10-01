@@ -27,6 +27,7 @@
 #include <common.h>
 #include <confirm.h>
 #include <connection_graph.h>
+#include <lib_id.h>
 #include <properties/pg_editors.h>
 #include <properties/pg_properties.h>
 #include <properties/property_mgr.h>
@@ -56,6 +57,8 @@
 bool SCH_PROPERTIES_PANEL::m_selContainsJunctions;
 bool SCH_PROPERTIES_PANEL::m_selContainsWiresOrBuses;
 
+static const wxString LIBRARY_LINK_PROPERTY = wxS( "Library Link" );
+
 SCH_PROPERTIES_PANEL::SCH_PROPERTIES_PANEL( wxWindow* aParent, SCH_BASE_FRAME* aFrame ) :
         PROPERTIES_PANEL( aParent, aFrame ),
         m_frame( aFrame ),
@@ -64,6 +67,7 @@ SCH_PROPERTIES_PANEL::SCH_PROPERTIES_PANEL( wxWindow* aParent, SCH_BASE_FRAME* a
         m_checkboxEditorInstance( nullptr ),
         m_colorEditorInstance( nullptr ),
         m_fpEditorInstance( nullptr ),
+        m_symbolLibIdEditorInstance( nullptr ),
         m_urlEditorInstance( nullptr )
 {
     addCategoryButton( _HKI( "Fields" ), _( "Add Field" ), BITMAPS::small_plus,
@@ -193,6 +197,20 @@ SCH_PROPERTIES_PANEL::SCH_PROPERTIES_PANEL( wxWindow* aParent, SCH_BASE_FRAME* a
         m_fpEditorInstance = static_cast<PG_FPID_EDITOR*>( wxPropertyGrid::RegisterEditorClass( fpEditor ) );
     }
 
+    it = wxPGGlobalVars->m_mapEditorClasses.find( PG_SYMBOL_LIB_ID_EDITOR::BuildEditorName( m_frame ) );
+
+    if( it != wxPGGlobalVars->m_mapEditorClasses.end() )
+    {
+        m_symbolLibIdEditorInstance = static_cast<PG_SYMBOL_LIB_ID_EDITOR*>( it->second );
+        m_symbolLibIdEditorInstance->UpdateFrame( m_frame );
+    }
+    else
+    {
+        PG_SYMBOL_LIB_ID_EDITOR* symbolEditor = new PG_SYMBOL_LIB_ID_EDITOR( m_frame );
+        m_symbolLibIdEditorInstance = static_cast<PG_SYMBOL_LIB_ID_EDITOR*>(
+                wxPropertyGrid::RegisterEditorClass( symbolEditor ) );
+    }
+
     it = wxPGGlobalVars->m_mapEditorClasses.find( PG_URL_EDITOR::BuildEditorName( m_frame ) );
 
     if( it != wxPGGlobalVars->m_mapEditorClasses.end() )
@@ -217,6 +235,7 @@ SCH_PROPERTIES_PANEL::~SCH_PROPERTIES_PANEL()
 {
     m_unitEditorInstance->UpdateFrame( nullptr );
     m_fpEditorInstance->UpdateFrame( nullptr );
+    m_symbolLibIdEditorInstance->UpdateFrame( nullptr );
     m_urlEditorInstance->UpdateFrame( nullptr );
 }
 
@@ -312,6 +331,25 @@ void SCH_PROPERTIES_PANEL::rebuildProperties( const SELECTION& aSelection )
     }
 
     PROPERTIES_PANEL::rebuildProperties( aSelection );
+
+    // Library Link has no general-purpose PROPERTY setter because changing only SCH_SYMBOL::m_lib_id
+    // would leave the old graphics and pins attached.  In the schematic editor this panel handles
+    // the complete replacement transaction, so the otherwise read-only property can be edited here.
+    if( m_frame->IsType( FRAME_SCH ) )
+    {
+        SCH_EDIT_FRAME* editFrame = static_cast<SCH_EDIT_FRAME*>( m_frame );
+
+        if( wxPGProperty* property = m_grid->GetPropertyByName( LIBRARY_LINK_PROPERTY ) )
+        {
+            bool editable = !aSelection.Empty()
+                            && editFrame->Schematic().GetCurrentVariant().IsEmpty();
+
+            for( EDA_ITEM* item : aSelection )
+                editable = editable && item->Type() == SCH_SYMBOL_T;
+
+            property->ChangeFlag( wxPG_PROP_READONLY, !editable );
+        }
+    }
 }
 
 
@@ -373,6 +411,8 @@ wxPGProperty* SCH_PROPERTIES_PANEL::createPGProperty( const PROPERTY_BASE* aProp
 
     if( aProperty->Name() == GetDefaultFieldName( FIELD_T::FOOTPRINT, UNTRANSLATED ) )
         prop->SetEditor( PG_FPID_EDITOR::BuildEditorName( m_frame ) );
+    else if( aProperty->Name() == LIBRARY_LINK_PROPERTY )
+        prop->SetEditor( PG_SYMBOL_LIB_ID_EDITOR::BuildEditorName( m_frame ) );
     else if( aProperty->Name() == GetDefaultFieldName( FIELD_T::DATASHEET, UNTRANSLATED ) )
         prop->SetEditor( PG_URL_EDITOR::BuildEditorName( m_frame ) );
 
@@ -426,6 +466,119 @@ void SCH_PROPERTIES_PANEL::valueChanging( wxPropertyGridEvent& aEvent )
 }
 
 
+bool SCH_PROPERTIES_PANEL::changeSymbolLibraryLink( const SELECTION& aSelection,
+                                                    const wxString& aNewLink )
+{
+    SCH_EDIT_FRAME* editFrame = dynamic_cast<SCH_EDIT_FRAME*>( m_frame );
+
+    if( !editFrame )
+        return false;
+
+    if( !editFrame->Schematic().GetCurrentVariant().IsEmpty() )
+    {
+        editFrame->ShowInfoBarError(
+                _( "Change Symbol is not available when a design variant is active." ) );
+        return false;
+    }
+
+    LIB_ID newId;
+
+    if( newId.Parse( UTF8( aNewLink ) ) >= 0 || !newId.IsValid() )
+    {
+        editFrame->ShowInfoBarError(
+                wxString::Format( _( "'%s' is not a valid symbol library identifier." ), aNewLink ) );
+        return false;
+    }
+
+    LIB_SYMBOL* librarySymbol = editFrame->GetLibSymbol( newId, false, true );
+
+    if( !librarySymbol )
+        return false;
+
+    std::unique_ptr<LIB_SYMBOL> flattenedSymbol = librarySymbol->Flatten();
+
+    struct CHANGE_TARGET
+    {
+        SCH_SYMBOL* symbol;
+        SCH_SCREEN* screen;
+    };
+
+    std::vector<CHANGE_TARGET> targets;
+
+    // Validate the whole selection before touching the schematic so an incompatible symbol cannot
+    // leave a partially changed multi-selection.
+    for( EDA_ITEM* item : aSelection )
+    {
+        SCH_SYMBOL* symbol = dynamic_cast<SCH_SYMBOL*>( item );
+
+        if( !symbol || symbol->GetLibId() == newId )
+            continue;
+
+        if( symbol->GetUnit() > flattenedSymbol->GetUnitCount() )
+        {
+            editFrame->ShowInfoBarError(
+                    wxString::Format( _( "Symbol '%s' does not contain unit %d." ),
+                                      newId.GetUniStringLibId(), symbol->GetUnit() ) );
+            return false;
+        }
+
+        if( symbol->GetBodyStyle() > flattenedSymbol->GetBodyStyleCount() )
+        {
+            editFrame->ShowInfoBarError(
+                    wxString::Format( _( "Symbol '%s' does not contain body style %d." ),
+                                      newId.GetUniStringLibId(), symbol->GetBodyStyle() ) );
+            return false;
+        }
+
+        SCH_SCREEN* screen = symbol->GetParentScreen();
+
+        if( !screen )
+            return false;
+
+        targets.push_back( { symbol, screen } );
+    }
+
+    if( targets.empty() )
+        return true;
+
+    SCH_COMMIT changes( editFrame );
+
+    // Match Change Symbols' remove/replace/append sequence.  Removing first prevents the screen's
+    // embedded-library bookkeeping from retaining the old library symbol in the saved schematic.
+    for( const CHANGE_TARGET& target : targets )
+    {
+        target.screen->Remove( target.symbol );
+        SCH_SYMBOL* original = static_cast<SCH_SYMBOL*>( target.symbol->Clone() );
+        changes.Modified( target.symbol, original, target.screen );
+    }
+
+    for( const CHANGE_TARGET& target : targets )
+    {
+        SCH_SYMBOL* symbol = target.symbol;
+
+        symbol->SetLibId( newId );
+        symbol->SetLibSymbol( librarySymbol->Flatten().release() );
+        symbol->SetSchSymbolLibraryName( wxEmptyString );
+
+        // Pin-map overrides describe the previous symbol's pins and must not leak into the new one.
+        for( SCH_SHEET_PATH& sheetPath : editFrame->Schematic().Hierarchy() )
+        {
+            if( sheetPath.LastScreen() == target.screen )
+                symbol->SetPinMapOverride( PIN_MAP_INSTANCE_OVERRIDE(), &sheetPath );
+        }
+
+        target.screen->Append( symbol );
+
+        if( target.screen == editFrame->GetScreen() )
+            editFrame->GetCanvas()->GetView()->Update( symbol );
+    }
+
+    editFrame->GetCurrentSheet().UpdateAllScreenReferences();
+    changes.Push( _( "Change Symbols" ) );
+    return true;
+}
+
+
 void SCH_PROPERTIES_PANEL::valueChanged( wxPropertyGridEvent& aEvent )
 {
     if( m_SuppressGridChangeEvents )
@@ -437,6 +590,18 @@ void SCH_PROPERTIES_PANEL::valueChanged( wxPropertyGridEvent& aEvent )
     wxCHECK( getPropertyFromEvent( aEvent ), /* void */ );
 
     wxVariant   newValue = aEvent.GetPropertyValue();
+
+    if( aEvent.GetPropertyName() == LIBRARY_LINK_PROPERTY )
+    {
+        if( changeSymbolLibraryLink( selection, newValue.GetString() ) )
+            AfterCommit();
+        else
+            UpdateData();
+
+        aEvent.Skip();
+        return;
+    }
+
     SCH_COMMIT  changes( m_frame );
     SCH_SCREEN* screen = m_frame->GetScreen();
 
