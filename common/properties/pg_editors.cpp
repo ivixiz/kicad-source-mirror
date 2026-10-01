@@ -543,13 +543,16 @@ wxPGWindowList PG_FPID_EDITOR::CreateControls( wxPropertyGrid* aGrid, wxPGProper
 {
     wxPGMultiButton* buttons = new wxPGMultiButton( aGrid, aSize );
     buttons->Add( KiBitmap( BITMAPS::small_library ) );
+
+    // Let the base editor create the text control so mixed values remain editable when several
+    // symbols are selected.  wxPGMultiButton must only be finalized after the primary control has
+    // been created because Finalize() positions the secondary control within the editor cell.
+    wxPGWindowList controls = wxPGTextCtrlEditor::CreateControls( aGrid, aProperty, aPos,
+                                                                  buttons->GetPrimarySize() );
     buttons->Finalize( aGrid, aPos );
-    wxSize textSize = buttons->GetPrimarySize();
-    wxWindow* textCtrl = aGrid->GenerateEditorTextCtrl( aPos, textSize,
-                                                       aProperty->GetValueAsString(), nullptr, 0,
-                                                       aProperty->GetMaxLength() );
-    wxPGWindowList ret( textCtrl, buttons );
-    return ret;
+    controls.SetSecondary( buttons );
+
+    return controls;
 }
 
 
@@ -559,8 +562,11 @@ bool PG_FPID_EDITOR::OnEvent( wxPropertyGrid* aGrid, wxPGProperty* aProperty, wx
     if( aEvent.GetEventType() == wxEVT_BUTTON )
     {
         if( !m_frame )
-            return true;
+            return false;
 
+        // The properties panel may be rebuilt while the modal chooser is open.  Keep the stable
+        // property name and look up the live wxPGProperty before applying the selected footprint.
+        const wxString propertyName = aProperty->GetName();
         wxString fpid;
 
         if( !aProperty->GetValue().IsNull() )
@@ -578,12 +584,18 @@ bool PG_FPID_EDITOR::OnEvent( wxPropertyGrid* aGrid, wxPGProperty* aProperty, wx
             }
 
             if( frame->ShowModal( &fpid, m_frame ) )
-                aGrid->ChangePropertyValue( aProperty, fpid );
+            {
+                if( wxPGProperty* property = aGrid->GetPropertyByName( propertyName ) )
+                    aGrid->ChangePropertyValue( property, fpid );
+            }
 
             frame->Destroy();
         }
 
-        return true;
+        // ChangePropertyValue() has already submitted the value and sent the property-grid event.
+        // Returning true would make wxPropertyGrid read the unchanged text control afterwards and
+        // overwrite the footprint selected in the chooser.
+        return false;
     }
 
     return wxPGTextCtrlEditor::OnEvent( aGrid, aProperty, aCtrl, aEvent );

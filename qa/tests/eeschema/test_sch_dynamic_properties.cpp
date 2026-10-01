@@ -290,6 +290,33 @@ BOOST_AUTO_TEST_CASE( DynamicFieldSetterCreatesField )
 }
 
 
+BOOST_AUTO_TEST_CASE( DynamicFootprintPropertyUpdatesMultipleSymbols )
+{
+    SCH_SYMBOL* symA = makeSymbol( std::nullopt );
+    SCH_SYMBOL* symB = makeSymbol( std::nullopt );
+
+    symA->SetFootprintFieldText( wxS( "Package_SO:SOIC-8" ) );
+    symB->SetFootprintFieldText( wxS( "Package_DIP:DIP-8_W7.62mm" ) );
+
+    const wxString footprintName = GetDefaultFieldName( FIELD_T::FOOTPRINT, UNTRANSLATED );
+    const wxString newFootprint = wxS( "Package_DFN_QFN:QFN-16-1EP_3x3mm_P0.5mm_EP1.8x1.8mm" );
+    wxVariant      value( newFootprint );
+
+    for( SCH_SYMBOL* symbol : { symA, symB } )
+    {
+        PROPERTY_BASE* property = PROPERTY_MANAGER::Instance().GetProperty( symbol, footprintName );
+
+        BOOST_REQUIRE( property );
+        BOOST_CHECK( symbol->Set( property, value ) );
+    }
+
+    BOOST_CHECK_EQUAL( symA->GetFootprintFieldText( &m_schematic->CurrentSheet(), RAW_VALUE ),
+                       newFootprint );
+    BOOST_CHECK_EQUAL( symB->GetFootprintFieldText( &m_schematic->CurrentSheet(), RAW_VALUE ),
+                       newFootprint );
+}
+
+
 BOOST_AUTO_TEST_CASE( AddedFieldSurfacesAsDelta )
 {
     SCH_SYMBOL* symA = makeSymbol( std::nullopt );           // no Manufacturer
