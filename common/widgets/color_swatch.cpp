@@ -306,9 +306,10 @@ void COLOR_SWATCH::GetNewSwatchColor()
 
     DIALOG_COLOR_PICKER dialog( ::wxGetTopLevelParent( this ), m_color, m_supportsOpacity, m_userColors, m_default );
 
-    // ShowModal()'s event pump can let our owning panel rebuild or destroy us; guard `this`.
+    // The quasi-modal picker disables only its owning frame, leaving other KiCad windows usable.
+    // Its nested event pump can let our owning panel rebuild or destroy us; guard `this`.
     wxWeakRef<COLOR_SWATCH> self( this );
-    int                     result = dialog.ShowModal();
+    int                     result = dialog.ShowQuasiModal();
 
     if( !self )
         return;

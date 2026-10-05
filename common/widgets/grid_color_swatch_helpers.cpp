@@ -160,7 +160,7 @@ void GRID_CELL_COLOR_SELECTOR::BeginEdit( int row, int col, wxGrid* grid )
             {
                 DIALOG_COLOR_PICKER dialog( m_parent, m_value, false );
 
-                if( dialog.ShowModal() == wxID_OK )
+                if( dialog.ShowQuasiModal() == wxID_OK )
                     m_value = dialog.GetColor();
 
                 m_grid->GetTable()->SetValue( row, col, GetValue() );
@@ -196,5 +196,4 @@ void GRID_CELL_COLOR_SELECTOR::ApplyEdit( int aRow, int aCol, wxGrid* aGrid )
 void GRID_CELL_COLOR_SELECTOR::Reset()
 {
 }
-
 

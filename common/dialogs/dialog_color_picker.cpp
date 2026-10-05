@@ -21,6 +21,7 @@
 
 #include <wx/button.h>
 #include <wx/dcbuffer.h>
+#include <wx/dcscreen.h>
 #include <wx/display.h>
 #include <wx/image.h>
 #include <wx/panel.h>
@@ -28,6 +29,8 @@
 #include <wx/sizer.h>
 #include <wx/stattext.h>
 #include <wx/textctrl.h>
+#include <wx/timer.h>
+#include <wx/utils.h>
 
 #include <algorithm>
 #include <array>
@@ -620,6 +623,13 @@ struct DIALOG_COLOR_PICKER::IMPL
         HSL
     };
 
+    enum class SCREEN_PICKER_AVAILABILITY
+    {
+        UNKNOWN,
+        AVAILABLE,
+        UNAVAILABLE
+    };
+
     explicit IMPL( DIALOG_COLOR_PICKER* aDialog, const COLOR4D& aCurrentColor,
                    bool aAllowOpacity, std::vector<CUSTOM_COLOR_ITEM>* aUserColors,
                    const COLOR4D& aDefaultColor ) :
@@ -635,7 +645,13 @@ struct DIALOG_COLOR_PICKER::IMPL
             modeButton( nullptr ),
             hexInput( nullptr ),
             resetButton( nullptr ),
-            okButton( nullptr )
+            okButton( nullptr ),
+            eyedropperTimer( aDialog ),
+            previousLeftDown( false ),
+            previousRightDown( false ),
+            eyedropperCursorSet( false ),
+            screenPickerAvailability( SCREEN_PICKER_AVAILABILITY::UNKNOWN ),
+            finishing( false )
     {
         if( !allowOpacity && isConcreteColor( color ) )
             color.a = 1.0;
@@ -815,6 +831,44 @@ struct DIALOG_COLOR_PICKER::IMPL
 
         for( wxTextCtrl* input : channelInputs )
             bindEditor( input );
+
+        std::function<void( wxWindow* )> bindRightClick =
+                [&]( wxWindow* aWindow )
+                {
+                    aWindow->Bind( wxEVT_RIGHT_DOWN,
+                                   [this]( wxMouseEvent& )
+                                   {
+                                       cancelPicker();
+                                   } );
+
+                    for( wxWindow* child : aWindow->GetChildren() )
+                        bindRightClick( child );
+                };
+
+        bindRightClick( dialog );
+
+        dialog->Bind( wxEVT_TIMER,
+                      [this]( wxTimerEvent& )
+                      {
+                          pollOutsideClick();
+                      }, eyedropperTimer.GetId() );
+
+        // wxEVT_ACTIVATE catches clicks which are shorter than the polling interval.  It also
+        // keeps external KiCad frames usable: no global mouse capture is needed.
+        dialog->Bind( wxEVT_ACTIVATE,
+                      [this]( wxActivateEvent& aEvent )
+                      {
+                          if( !aEvent.GetActive() && !finishing
+                                  && !pointInsideDialog( wxGetMousePosition() ) )
+                          {
+                              if( wxGetMouseState().RightIsDown() )
+                                  cancelPicker();
+                              else
+                                  acceptOutsideColor();
+                          }
+
+                          aEvent.Skip();
+                      } );
 
     }
 
@@ -1122,6 +1176,134 @@ struct DIALOG_COLOR_PICKER::IMPL
         dialog->SetPosition( position );
     }
 
+    void startOutsideMonitor()
+    {
+        wxMouseState state = wxGetMouseState();
+        previousLeftDown = state.LeftIsDown();
+        previousRightDown = state.RightIsDown();
+        eyedropperCursorSet = false;
+        screenPickerAvailability = SCREEN_PICKER_AVAILABILITY::UNKNOWN;
+        finishing = false;
+        eyedropperTimer.Start( 25 );
+    }
+
+    void stopOutsideMonitor()
+    {
+        finishing = true;
+        eyedropperTimer.Stop();
+        setEyedropperCursor( false );
+    }
+
+    bool pointInsideDialog( const wxPoint& aScreenPoint ) const
+    {
+        wxRect bounds = dialog->GetScreenRect();
+
+        // Include native decorations and resize shadows, which are not consistently reported by
+        // GetScreenRect() on all wxWidgets ports.
+        int side = dialog->FromDIP( 12 );
+        int title = dialog->FromDIP( 32 );
+        int shadow = dialog->FromDIP( 8 );
+        bounds.x -= side;
+        bounds.width += 2 * side;
+        bounds.y -= title;
+        bounds.height += title + shadow;
+        return bounds.Contains( aScreenPoint );
+    }
+
+    void pollOutsideClick()
+    {
+        if( finishing )
+            return;
+
+        wxMouseState state = wxGetMouseState();
+        bool leftDown = state.LeftIsDown();
+        bool rightDown = state.RightIsDown();
+        bool outside = !pointInsideDialog( wxGetMousePosition() );
+
+        if( outside && screenPickerAvailability == SCREEN_PICKER_AVAILABILITY::UNKNOWN )
+        {
+            wxColour ignored;
+            screenPickerAvailability = sampleScreenColor( ignored )
+                                               ? SCREEN_PICKER_AVAILABILITY::AVAILABLE
+                                               : SCREEN_PICKER_AVAILABILITY::UNAVAILABLE;
+        }
+
+        setEyedropperCursor( outside
+                            && screenPickerAvailability == SCREEN_PICKER_AVAILABILITY::AVAILABLE );
+
+        if( rightDown && !previousRightDown )
+        {
+            cancelPicker();
+            return;
+        }
+
+        if( leftDown && !previousLeftDown
+                && outside )
+        {
+            wxWindow* capture = wxWindow::GetCapture();
+            bool dialogOwnsCapture = capture
+                                     && ( capture == dialog || dialog->IsDescendant( capture ) );
+
+            if( !dialogOwnsCapture )
+                acceptOutsideColor();
+        }
+
+        previousLeftDown = leftDown;
+        previousRightDown = rightDown;
+    }
+
+    bool sampleScreenColor( wxColour& aColor )
+    {
+        wxScreenDC screen;
+        return screen.GetPixel( wxGetMousePosition(), &aColor ) && aColor.IsOk();
+    }
+
+    void setEyedropperCursor( bool aEnabled )
+    {
+        if( aEnabled )
+        {
+            // Re-apply while outside because the window under the pointer may replace the cursor
+            // after an enter event.  This does not capture the mouse or consume its click.
+            wxSetCursor( wxCursor( wxCURSOR_CROSS ) );
+            eyedropperCursorSet = true;
+        }
+        else if( eyedropperCursorSet )
+        {
+            wxSetCursor( wxNullCursor );
+            eyedropperCursorSet = false;
+        }
+    }
+
+    void acceptOutsideColor()
+    {
+        if( finishing )
+            return;
+
+        finishing = true;
+        eyedropperTimer.Stop();
+
+        wxColour sampledColor;
+
+        // wxScreenDC is backed by native screen capture on X11, Windows and macOS.  Restricted
+        // compositors (notably Wayland without a capture portal) simply return false; in that
+        // case the already selected gradient color is accepted unchanged.
+        if( sampleScreenColor( sampledColor ) )
+            setColor( COLOR4D( sampledColor ), true );
+
+        dialog->EndDialogShim( wxID_OK );
+    }
+
+    void cancelPicker()
+    {
+        if( finishing )
+            return;
+
+        finishing = true;
+        eyedropperTimer.Stop();
+        setEyedropperCursor( false );
+        dialog->EndDialogShim( wxID_CANCEL );
+    }
+
     DIALOG_COLOR_PICKER*          dialog;
     bool                          allowOpacity;
     COLOR4D                       color;
@@ -1140,6 +1322,12 @@ struct DIALOG_COLOR_PICKER::IMPL
     std::array<int, 4>            channelMaximum{};
     wxButton*                     resetButton;
     wxButton*                     okButton;
+    wxTimer                       eyedropperTimer;
+    bool                          previousLeftDown;
+    bool                          previousRightDown;
+    bool                          eyedropperCursorSet;
+    SCREEN_PICKER_AVAILABILITY    screenPickerAvailability;
+    bool                          finishing;
 };
 
 
@@ -1171,11 +1359,16 @@ COLOR4D DIALOG_COLOR_PICKER::GetColor() const
 
 bool DIALOG_COLOR_PICKER::Show( bool aShow )
 {
+    if( !aShow )
+        m_impl->stopOutsideMonitor();
+
     bool shown = DIALOG_SHIM::Show( aShow );
 
     if( aShow )
+    {
         m_impl->positionNearCursor();
-
+        m_impl->startOutsideMonitor();
+    }
     return shown;
 }
 

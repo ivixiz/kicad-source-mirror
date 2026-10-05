@@ -72,7 +72,7 @@ void PANEL_IMAGE_EDITOR::OnRemoveBackground( wxCommandEvent& event )
 
     DIALOG_COLOR_PICKER dialog( this, s_defaultColor, false );
 
-    if( dialog.ShowModal() == wxID_OK )
+    if( dialog.ShowQuasiModal() == wxID_OK )
     {
         m_workingImage->ConvertColourToAlpha( dialog.GetColor().ToColour() );
         m_panelDraw->Refresh();
