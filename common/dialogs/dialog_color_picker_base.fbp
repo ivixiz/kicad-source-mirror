@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Deprecated legacy layout.  The active color picker is implemented directly in wxWidgets. -->
 <wxFormBuilder_Project>
   <FileVersion major="1" minor="18"/>
   <object class="Project" expanded="true">

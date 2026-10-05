@@ -554,7 +554,6 @@ set( COMMON_DLG_SRCS
     dialogs/dialog_kicad_merge_3way.cpp
     dialogs/dialog_kicad_merge_3way_base.cpp
     dialogs/dialog_color_picker.cpp
-    dialogs/dialog_color_picker_base.cpp
     dialogs/dialog_configure_paths.cpp
     dialogs/dialog_configure_paths_base.cpp
     dialogs/dialog_design_block_properties.cpp

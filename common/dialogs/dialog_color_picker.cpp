@@ -17,872 +17,1188 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-
-#include <kiplatform/ui.h>
 #include <dialogs/dialog_color_picker.h>
-#include <cmath>
-#include <algorithm>
-#include <kiface_base.h>
-#include <settings/app_settings.h>
-#include <widgets/color_swatch.h>
-#include <wx/bitmap.h>
-#include <wx/dcmemory.h>
 
-#define ALPHA_MAX 100   // the max value returned by the alpha (opacity) slider
-#define SLOPE_AXIS ( bmsize.y / 5.28 ) // was 50 at 264 size
+#include <wx/button.h>
+#include <wx/dcbuffer.h>
+#include <wx/display.h>
+#include <wx/image.h>
+#include <wx/panel.h>
+#include <wx/settings.h>
+#include <wx/sizer.h>
+#include <wx/stattext.h>
+#include <wx/textctrl.h>
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <functional>
+#include <utility>
+
 
 using KIGFX::COLOR4D;
 
-// Configure the spin controls contained inside the dialog
-void configureSpinCtrl( wxSpinCtrl* aCtrl )
-{
-    wxSize textLength = aCtrl->GetTextExtent( "999" );
-    wxSize ctrlSize   = aCtrl->GetSizeFromTextSize( textLength );
 
-    aCtrl->SetMinSize( ctrlSize );
-    aCtrl->SetSize( ctrlSize );
+namespace
+{
+
+constexpr size_t MAX_RECENT_COLORS = 20;
+
+
+int toByte( double aValue )
+{
+    return std::lround( std::clamp( aValue, 0.0, 1.0 ) * 255.0 );
 }
 
 
-DIALOG_COLOR_PICKER::DIALOG_COLOR_PICKER( wxWindow* aParent, const COLOR4D& aCurrentColor, bool aAllowOpacityControl,
-                                          std::vector<CUSTOM_COLOR_ITEM>* aUserColors, const COLOR4D& aDefaultColor ) :
-	DIALOG_COLOR_PICKER_BASE( aParent )
+COLOR4D fromHSV( double aHue, double aSaturation, double aValue, double aAlpha = 1.0 )
 {
-    m_allowMouseEvents = false;
-    m_allowOpacityCtrl = aAllowOpacityControl;
-    m_previousColor4D = aCurrentColor;
-    m_newColor4D = aCurrentColor;
-    m_newColor4D.ToHSV( m_hue, m_sat, m_val, true );
-    m_bitmapRGB = nullptr;
-    m_bitmapHSV = nullptr;
-    m_selectedCursor = nullptr;
-    m_defaultColor = aDefaultColor;
+    COLOR4D color;
+    color.FromHSV( aHue, aSaturation, aValue );
+    color.a = std::clamp( aAlpha, 0.0, 1.0 );
+    return color;
+}
 
-    updateHandleSize();
 
-    m_OldColorRect->SetMinSize( FromDIP( wxSize( 20, 20 ) ) );
-    m_NewColorRect->SetMinSize( FromDIP( wxSize( 20, 20 ) ) );
+bool isConcreteColor( const COLOR4D& aColor )
+{
+    return !aColor.m_text && aColor != COLOR4D::UNSPECIFIED;
+}
 
-    m_colorValue->SetMinSize( wxSize( GetTextExtent( wxS( "@{color(DEVICE_BACKGROUND)}" ) ).x + FromDIP( 8 ), -1 ) );
 
-    if( !m_allowOpacityCtrl )
+bool sameConcreteColor( const COLOR4D& aLeft, const COLOR4D& aRight )
+{
+    return isConcreteColor( aLeft ) && isConcreteColor( aRight )
+           && toByte( aLeft.r ) == toByte( aRight.r )
+           && toByte( aLeft.g ) == toByte( aRight.g )
+           && toByte( aLeft.b ) == toByte( aRight.b )
+           && toByte( aLeft.a ) == toByte( aRight.a );
+}
+
+
+COLOR4D editableColor( const COLOR4D& aColor, const COLOR4D& aDefault, bool aAllowOpacity )
+{
+    COLOR4D result = COLOR4D::WHITE;
+
+    if( isConcreteColor( aColor ) )
+        result = aColor;
+    else if( isConcreteColor( aDefault ) )
+        result = aDefault;
+
+    if( !aAllowOpacity )
+        result.a = 1.0;
+
+    return result;
+}
+
+
+wxColour compositeOn( const COLOR4D& aColor, const wxColour& aBackground )
+{
+    double alpha = std::clamp( aColor.a, 0.0, 1.0 );
+    int red = std::lround( alpha * toByte( aColor.r ) + ( 1.0 - alpha ) * aBackground.Red() );
+    int green = std::lround( alpha * toByte( aColor.g ) + ( 1.0 - alpha ) * aBackground.Green() );
+    int blue = std::lround( alpha * toByte( aColor.b ) + ( 1.0 - alpha ) * aBackground.Blue() );
+    return wxColour( red, green, blue );
+}
+
+
+void setPixel( unsigned char* aData, int aWidth, int aX, int aY, const COLOR4D& aColor )
+{
+    unsigned char* pixel = aData + ( aY * aWidth + aX ) * 3;
+    pixel[0] = static_cast<unsigned char>( toByte( aColor.r ) );
+    pixel[1] = static_cast<unsigned char>( toByte( aColor.g ) );
+    pixel[2] = static_cast<unsigned char>( toByte( aColor.b ) );
+}
+
+
+struct NAMED_COLOR
+{
+    COLOR4D color;
+    wxString name;
+};
+
+
+std::vector<NAMED_COLOR>& recentColors()
+{
+    // Recent colors intentionally live for the process lifetime, matching the lightweight Qt
+    // prototype without adding a settings migration or disk write to every color change.
+    static std::vector<NAMED_COLOR> colors;
+    return colors;
+}
+
+
+class RECENT_COLORS_PANEL : public wxPanel
+{
+public:
+    using SELECT_CALLBACK = std::function<void( const COLOR4D& )>;
+
+    RECENT_COLORS_PANEL( wxWindow* aParent, SELECT_CALLBACK aCallback ) :
+            wxPanel( aParent, wxID_ANY ),
+            m_callback( std::move( aCallback ) ),
+            m_hoverIndex( -1 )
     {
-        m_SizerTransparency->Show( false );
+        SetBackgroundStyle( wxBG_STYLE_PAINT );
+        SetMinSize( FromDIP( wxSize( 360, 18 ) ) );
 
-        if( aCurrentColor != COLOR4D::UNSPECIFIED )
+        Bind( wxEVT_PAINT, &RECENT_COLORS_PANEL::onPaint, this );
+        Bind( wxEVT_LEFT_UP, &RECENT_COLORS_PANEL::onLeftUp, this );
+        Bind( wxEVT_MOTION, &RECENT_COLORS_PANEL::onMotion, this );
+        Bind( wxEVT_LEAVE_WINDOW, &RECENT_COLORS_PANEL::onLeave, this );
+    }
+
+    void SetColors( const std::vector<NAMED_COLOR>& aColors )
+    {
+        m_colors.assign( aColors.begin(),
+                         aColors.begin() + std::min( aColors.size(), MAX_RECENT_COLORS ) );
+        Refresh( false );
+    }
+
+private:
+    wxRect swatchRect( size_t aIndex ) const
+    {
+        int swatch = FromDIP( 16 );
+        int gap = FromDIP( 2 );
+        return wxRect( FromDIP( 1 ) + static_cast<int>( aIndex ) * ( swatch + gap ),
+                       FromDIP( 1 ), swatch, swatch );
+    }
+
+    int hitTest( const wxPoint& aPosition ) const
+    {
+        for( size_t i = 0; i < m_colors.size(); ++i )
         {
-            m_previousColor4D.a = 1.0;
-            m_newColor4D.a      = 1.0;
+            if( swatchRect( i ).Contains( aPosition ) )
+                return static_cast<int>( i );
         }
+
+        return -1;
     }
 
-    // UNSPECIFIED is ( 0, 0, 0, 0 ) but that is unfriendly for editing because you have to notice
-    // first that the value slider is all the way down before you get any color
-    if( aCurrentColor == COLOR4D::UNSPECIFIED )
-        m_val = 1.0;
-
-    APP_SETTINGS_BASE* cfg = Kiface().KifaceSettings();
-    wxASSERT( cfg );
-
-    m_notebook->SetSelection( cfg->m_ColorPicker.default_tab );
-
-    // Build the defined colors panel:
-    initDefinedColors( aUserColors );
-
-    /**
-     * There are two types of color settings: theme colors and local overrides.
-     * Theme colors have a default value, and the Reset to Default button reverts to it.
-     * Local override colors have a default of UNSPECIFIED, which means "use the theme color".
-     * The underlying action is the same, but we change the label here because the action from
-     * the point of view of the user is slightly different.
-     */
-    if( aDefaultColor == COLOR4D::UNSPECIFIED )
-        m_resetToDefault->SetLabel( _( "Clear Color" ) );
-
-    SetupStandardButtons();
-}
-
-
-DIALOG_COLOR_PICKER::~DIALOG_COLOR_PICKER()
-{
-    APP_SETTINGS_BASE* cfg = Kiface().KifaceSettings();
-    wxASSERT( cfg );
-
-    if( cfg )
-        cfg->m_ColorPicker.default_tab = m_notebook->GetSelection();
-
-    delete m_bitmapRGB;
-    delete m_bitmapHSV;
-
-    for( wxStaticBitmap* swatch : m_colorSwatches )
+    void onPaint( wxPaintEvent& )
     {
-        swatch->Disconnect( wxEVT_COMMAND_BUTTON_CLICKED,
-                            wxMouseEventHandler( DIALOG_COLOR_PICKER::buttColorClick ),
-                            nullptr, this );
-    }
-}
+        wxAutoBufferedPaintDC dc( this );
+        dc.SetBackground( wxBrush( GetBackgroundColour() ) );
+        dc.Clear();
 
+        int checker = std::max( FromDIP( 3 ), 1 );
 
-void DIALOG_COLOR_PICKER::updatePreview( wxStaticBitmap* aStaticBitmap, COLOR4D& aColor4D )
-{
-    wxSize  swatchSize = aStaticBitmap->GetSize();
-    wxSize  checkerboardSize = ConvertDialogToPixels( CHECKERBOARD_SIZE_DU );
-
-    wxBitmap newBm = COLOR_SWATCH::MakeBitmap( aColor4D, COLOR4D::WHITE,
-                                               ToPhys( swatchSize ),
-                                               ToPhys( checkerboardSize ),
-                                               aStaticBitmap->GetParent()->GetBackgroundColour() );
-
-    newBm.SetScaleFactor( GetDPIScaleFactor() );
-    aStaticBitmap->SetBitmap( newBm );
-}
-
-
-bool DIALOG_COLOR_PICKER::TransferDataToWindow()
-{
-    SetEditVals( INIT, false );
-
-    // Configure the spin control sizes
-    configureSpinCtrl( m_spinCtrlGreen );
-    configureSpinCtrl( m_spinCtrlBlue );
-    configureSpinCtrl( m_spinCtrlRed );
-    configureSpinCtrl( m_spinCtrlHue );
-    configureSpinCtrl( m_spinCtrlSaturation );
-
-    m_notebook->GetPage( 0 )->Layout();
-    m_notebook->GetPage( 1 )->Layout();
-
-    finishDialogSettings();
-
-    // Draw all bitmaps, with colors according to the color 4D
-    updatePreview( m_OldColorRect, m_previousColor4D );
-    drawAll();
-
-    return true;
-}
-
-
-void DIALOG_COLOR_PICKER::initDefinedColors( std::vector<CUSTOM_COLOR_ITEM>* aPredefinedColors )
-{
-    #define ID_COLOR_BLACK 2000 // colors_id = ID_COLOR_BLACK a ID_COLOR_BLACK + NBCOLORS-1
-
-    // Colors are built from the colorRefs() table (size NBCOLORS).
-    // The look is better when colorRefs() order is displayed in a grid matrix
-    // of 7 row and 5 columns, first filling a row, and after the next column.
-    // But the wxFlexGrid used here must be filled by columns, then next row
-    // the best interval colorRefs() from a matrix row to the next row is 6
-    // So when have to reorder the index used to explore colorRefs()
-    int grid_col = 0;
-    int grid_row = 0;
-    int table_row_count = 7;
-
-    wxSize  swatchSize = ConvertDialogToPixels( SWATCH_SIZE_LARGE_DU );
-    wxSize  checkerboardSize = ConvertDialogToPixels( CHECKERBOARD_SIZE_DU );
-    COLOR4D checkboardBackground = m_OldColorRect->GetParent()->GetBackgroundColour();
-
-    auto addSwatch =
-            [&]( int aId, COLOR4D aColor, const wxString& aColorName )
-            {
-                wxBitmap bm = COLOR_SWATCH::MakeBitmap( aColor, COLOR4D::WHITE,
-                                                        ToPhys( swatchSize ),
-                                                        ToPhys( checkerboardSize ),
-                                                        checkboardBackground );
-
-                bm.SetScaleFactor( GetDPIScaleFactor() );
-                wxStaticBitmap* swatch = new wxStaticBitmap( m_panelDefinedColors, aId, bm );
-
-                m_fgridColor->Add( swatch, 0, wxALIGN_CENTER_VERTICAL, 5 );
-
-                wxStaticText* label = new wxStaticText( m_panelDefinedColors, wxID_ANY, aColorName,
-                                                        wxDefaultPosition, wxDefaultSize, 0 );
-                m_fgridColor->Add( label, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, 15 );
-
-                m_colorSwatches.push_back( swatch );
-
-                swatch->Connect( wxEVT_LEFT_DOWN,
-                                 wxMouseEventHandler( DIALOG_COLOR_PICKER::buttColorClick ),
-                                 nullptr, this );
-                swatch->Connect( wxEVT_LEFT_DCLICK,
-                                 wxMouseEventHandler( DIALOG_COLOR_PICKER::colorDClick ),
-                                 nullptr, this );
-            };
-
-    // If no predefined list is given, build the default predefined colors:
-    if( aPredefinedColors )
-    {
-        for( unsigned jj = 0; jj < aPredefinedColors->size() && jj < NBCOLORS; ++jj )
+        for( size_t i = 0; i < m_colors.size(); ++i )
         {
-            CUSTOM_COLOR_ITEM* item = & *aPredefinedColors->begin() + jj;
-            int                butt_ID = ID_COLOR_BLACK + jj;
+            wxRect rect = swatchRect( i );
+            const COLOR4D& color = m_colors[i].color;
 
-            addSwatch( butt_ID, item->m_Color, item->m_ColorName );
-            m_Color4DList.push_back( item->m_Color );
-        }
-    }
-    else
-    {
-        m_Color4DList.assign( NBCOLORS, COLOR4D( 0.0, 0.0, 0.0, 1.0 ) );
-
-        for( int jj = 0; jj < NBCOLORS; ++jj, grid_col++ )
-        {
-            if( grid_col * table_row_count >= NBCOLORS )
+            for( int y = rect.y; y < rect.GetBottom(); y += checker )
             {
-                // the current grid row is filled, and we must fill the next grid row
-                grid_col = 0;
-                grid_row++;
+                for( int x = rect.x; x < rect.GetRight(); x += checker )
+                {
+                    bool light = ( ( x - rect.x ) / checker + ( y - rect.y ) / checker ) % 2 == 0;
+                    wxColour background = light ? wxColour( 235, 235, 235 )
+                                                : wxColour( 185, 185, 185 );
+                    wxRect tile( x, y, std::min( checker, rect.GetRight() - x ),
+                                std::min( checker, rect.GetBottom() - y ) );
+                    dc.SetPen( *wxTRANSPARENT_PEN );
+                    dc.SetBrush( wxBrush( compositeOn( color, background ) ) );
+                    dc.DrawRectangle( tile );
+                }
             }
 
-            int     ii = grid_row + ( grid_col * table_row_count ); // The index in colorRefs()
-            int     butt_ID = ID_COLOR_BLACK + ii;
-            COLOR4D buttcolor = COLOR4D( colorRefs()[ii].m_Numcolor );
-
-            addSwatch( butt_ID, buttcolor, wxGetTranslation( colorRefs()[ii].m_ColorName ) );
-            m_Color4DList[ butt_ID - ID_COLOR_BLACK ] = buttcolor;
+            dc.SetBrush( *wxTRANSPARENT_BRUSH );
+            dc.SetPen( wxPen( i == static_cast<size_t>( m_hoverIndex )
+                                      ? wxSystemSettings::GetColour( wxSYS_COLOUR_HIGHLIGHT )
+                                      : wxColour( 70, 70, 70 ) ) );
+            dc.DrawRectangle( rect );
         }
     }
-}
+
+    void onLeftUp( wxMouseEvent& aEvent )
+    {
+        int index = hitTest( aEvent.GetPosition() );
+
+        if( index >= 0 && m_callback )
+            m_callback( m_colors[index].color );
+    }
+
+    void onMotion( wxMouseEvent& aEvent )
+    {
+        int index = hitTest( aEvent.GetPosition() );
+
+        if( index == m_hoverIndex )
+            return;
+
+        m_hoverIndex = index;
+
+        if( index >= 0 )
+        {
+            wxString tooltip = m_colors[index].name;
+
+            if( tooltip.IsEmpty() )
+                tooltip = m_colors[index].color.ToHexString();
+
+            SetToolTip( tooltip );
+        }
+        else
+        {
+            UnsetToolTip();
+        }
+
+        Refresh( false );
+    }
+
+    void onLeave( wxMouseEvent& )
+    {
+        m_hoverIndex = -1;
+        UnsetToolTip();
+        Refresh( false );
+    }
+
+private:
+    std::vector<NAMED_COLOR> m_colors;
+    SELECT_CALLBACK          m_callback;
+    int                      m_hoverIndex;
+};
 
 
-void DIALOG_COLOR_PICKER::createRGBBitmap()
+class COLOR_PICKER_CANVAS : public wxPanel
 {
-    wxSize bmsize = ToPhys( m_RgbBitmap->GetSize() );
-    int half_size = std::min( bmsize.x, bmsize.y )/2;
+public:
+    using CHANGE_CALLBACK = std::function<void( const COLOR4D&, bool )>;
 
-    // We use here a Y axis from bottom to top and origin to center, So we need to map
-    // coordinated to write pixel in a wxImage.  MAPX and MAPY are defined above so they
-    // must be undefined here to prevent compiler warnings.
-#undef MAPX
-#undef MAPY
-#define MAPX( xx ) bmsize.x / 2 + ( xx )
-#define MAPY( yy ) bmsize.y / 2 - ( yy )
-
-    // Reserve room to draw cursors inside the bitmap
-    half_size -= m_cursorsSize/2;
-
-    COLOR4D color;
-
-    // Red blue area in X Z 3d axis
-    double inc = 255.0 / half_size;
-    double slope = SLOPE_AXIS/half_size;
-    color.g = 0.0;
-
-    wxImage img( bmsize );  // a temporary buffer to build the color map
-
-    // clear background (set the window bg color)
-    wxColor bg = GetBackgroundColour();
-
-    // Don't do standard-color lookups on OSX each time through the loop
-    wxColourBase::ChannelType bgR = bg.Red();
-    wxColourBase::ChannelType bgG = bg.Green();
-    wxColourBase::ChannelType bgB = bg.Blue();
-
-    for( int xx = 0; xx < bmsize.x; xx++ ) // blue axis
+    COLOR_PICKER_CANVAS( wxWindow* aParent, bool aAllowOpacity, CHANGE_CALLBACK aCallback ) :
+            wxPanel( aParent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE ),
+            m_allowOpacity( aAllowOpacity ),
+            m_callback( std::move( aCallback ) ),
+            m_dragArea( DRAG_AREA::NONE ),
+            m_hue( 0.0 ),
+            m_saturation( 1.0 ),
+            m_value( 1.0 ),
+            m_alpha( 1.0 ),
+            m_svHue( -1.0 )
     {
-        for( int yy = 0; yy < bmsize.y; yy++ )  // Red axis
-            img.SetRGB( xx, yy, bgR, bgG, bgB );
+        SetBackgroundStyle( wxBG_STYLE_PAINT );
+        SetMinSize( FromDIP( wxSize( 420, 205 ) ) );
+
+        Bind( wxEVT_PAINT, &COLOR_PICKER_CANVAS::onPaint, this );
+        Bind( wxEVT_SIZE, &COLOR_PICKER_CANVAS::onSize, this );
+        Bind( wxEVT_LEFT_DOWN, &COLOR_PICKER_CANVAS::onLeftDown, this );
+        Bind( wxEVT_LEFT_UP, &COLOR_PICKER_CANVAS::onLeftUp, this );
+        Bind( wxEVT_MOTION, &COLOR_PICKER_CANVAS::onMotion, this );
+        Bind( wxEVT_MOUSE_CAPTURE_LOST, &COLOR_PICKER_CANVAS::onCaptureLost, this );
+        Bind( wxEVT_MOUSEWHEEL, &COLOR_PICKER_CANVAS::onMouseWheel, this );
     }
 
-    // Build the palette
-    for( int xx = 0; xx < half_size; xx++ ) // blue axis
+    void SetColor( const COLOR4D& aColor )
     {
-        color.b = inc * xx;
+        double hue = 0.0;
+        double saturation = 0.0;
+        double value = 0.0;
+        aColor.ToHSV( hue, saturation, value, true );
 
-        for( int yy = 0; yy < half_size; yy++ )  // Red axis
+        if( saturation > 0.000001 && std::abs( hue - m_hue ) > 0.000001 )
         {
-            color.r = inc * yy;
-            img.SetRGB( MAPX( xx ), MAPY( yy - (slope*xx) ), color.r, color.g, color.b );
+            m_hue = hue;
+            m_svBitmap = wxBitmap();
+        }
+
+        m_saturation = std::clamp( saturation, 0.0, 1.0 );
+        m_value = std::clamp( value, 0.0, 1.0 );
+        m_alpha = m_allowOpacity ? std::clamp( aColor.a, 0.0, 1.0 ) : 1.0;
+        m_alphaBitmap = wxBitmap();
+        Refresh( false );
+    }
+
+    COLOR4D GetColor() const
+    {
+        return fromHSV( m_hue, m_saturation, m_value, m_alpha );
+    }
+
+private:
+    enum class DRAG_AREA
+    {
+        NONE,
+        SATURATION_VALUE,
+        ALPHA,
+        HUE
+    };
+
+    wxRect colorRect() const
+    {
+        wxSize size = GetClientSize();
+        int margin = FromDIP( 8 );
+        int gap = FromDIP( 10 );
+        int barWidth = FromDIP( 18 );
+        int bars = m_allowOpacity ? 2 : 1;
+        int width = size.x - 2 * margin - bars * barWidth - bars * gap;
+        return wxRect( margin, margin, std::max( width, 1 ), std::max( size.y - 2 * margin, 1 ) );
+    }
+
+    wxRect alphaRect() const
+    {
+        if( !m_allowOpacity )
+            return wxRect();
+
+        wxRect color = colorRect();
+        return wxRect( color.GetRight() + 1 + FromDIP( 10 ), color.y, FromDIP( 18 ), color.height );
+    }
+
+    wxRect hueRect() const
+    {
+        wxRect color = colorRect();
+        int x = color.GetRight() + 1 + FromDIP( 10 );
+
+        if( m_allowOpacity )
+            x += FromDIP( 18 ) + FromDIP( 10 );
+
+        return wxRect( x, color.y, FromDIP( 18 ), color.height );
+    }
+
+    static double normalizedX( const wxRect& aRect, int aX )
+    {
+        int x = std::clamp( aX, aRect.x, aRect.GetRight() );
+        return aRect.width > 1 ? static_cast<double>( x - aRect.x ) / ( aRect.width - 1 ) : 0.0;
+    }
+
+    static double normalizedY( const wxRect& aRect, int aY )
+    {
+        int y = std::clamp( aY, aRect.y, aRect.GetBottom() );
+        return aRect.height > 1 ? static_cast<double>( y - aRect.y ) / ( aRect.height - 1 ) : 0.0;
+    }
+
+    void ensureBitmaps()
+    {
+        wxRect color = colorRect();
+        wxRect hue = hueRect();
+        wxRect alpha = alphaRect();
+
+        if( !m_svBitmap.IsOk() || m_svBitmap.GetSize() != color.GetSize()
+                || std::abs( m_svHue - m_hue ) > 0.000001 )
+        {
+            wxImage image( color.width, color.height );
+            unsigned char* data = image.GetData();
+
+            for( int y = 0; y < color.height; ++y )
+            {
+                double value = color.height > 1
+                                       ? 1.0 - static_cast<double>( y ) / ( color.height - 1 )
+                                       : 1.0;
+
+                for( int x = 0; x < color.width; ++x )
+                {
+                    double saturation = color.width > 1
+                                                ? static_cast<double>( x ) / ( color.width - 1 )
+                                                : 0.0;
+                    setPixel( data, color.width, x, y,
+                              fromHSV( m_hue, saturation, value ) );
+                }
+            }
+
+            m_svBitmap = wxBitmap( image );
+            m_svHue = m_hue;
+        }
+
+        if( !m_hueBitmap.IsOk() || m_hueBitmap.GetSize() != hue.GetSize() )
+        {
+            wxImage image( hue.width, hue.height );
+            unsigned char* data = image.GetData();
+
+            for( int y = 0; y < hue.height; ++y )
+            {
+                double value = hue.height > 1
+                                       ? 1.0 - static_cast<double>( y ) / ( hue.height - 1 )
+                                       : 1.0;
+                COLOR4D colorAtY = fromHSV( value * 360.0, 1.0, 1.0 );
+
+                for( int x = 0; x < hue.width; ++x )
+                    setPixel( data, hue.width, x, y, colorAtY );
+            }
+
+            m_hueBitmap = wxBitmap( image );
+        }
+
+        if( m_allowOpacity
+                && ( !m_alphaBitmap.IsOk() || m_alphaBitmap.GetSize() != alpha.GetSize() ) )
+        {
+            wxImage image( alpha.width, alpha.height );
+            unsigned char* data = image.GetData();
+            COLOR4D base = fromHSV( m_hue, m_saturation, m_value );
+            int checker = std::max( FromDIP( 4 ), 1 );
+
+            for( int y = 0; y < alpha.height; ++y )
+            {
+                double opacity = alpha.height > 1
+                                         ? 1.0 - static_cast<double>( y ) / ( alpha.height - 1 )
+                                         : 1.0;
+
+                for( int x = 0; x < alpha.width; ++x )
+                {
+                    bool light = ( x / checker + y / checker ) % 2 == 0;
+                    double background = light ? 0.92 : 0.68;
+                    COLOR4D mixed( opacity * base.r + ( 1.0 - opacity ) * background,
+                                   opacity * base.g + ( 1.0 - opacity ) * background,
+                                   opacity * base.b + ( 1.0 - opacity ) * background, 1.0 );
+                    setPixel( data, alpha.width, x, y, mixed );
+                }
+            }
+
+            m_alphaBitmap = wxBitmap( image );
         }
     }
 
-    // Red green area in y Z 3d axis
-    color.b = 0.0;
-
-    for( int xx = 0; xx < half_size; xx++ )     // green axis
+    void updateFromPosition( const wxPoint& aPosition, bool aFinal )
     {
-        color.g = inc * xx;
-
-        for( int yy = 0; yy < half_size; yy++ ) // Red axis
+        switch( m_dragArea )
         {
-            color.r = inc * yy;
-            img.SetRGB( MAPX( -xx ), MAPY( yy - (slope*xx) ), color.r, color.g, color.b );
+        case DRAG_AREA::SATURATION_VALUE:
+            m_saturation = normalizedX( colorRect(), aPosition.x );
+            m_value = 1.0 - normalizedY( colorRect(), aPosition.y );
+            m_alphaBitmap = wxBitmap();
+            break;
+
+        case DRAG_AREA::ALPHA:
+            m_alpha = 1.0 - normalizedY( alphaRect(), aPosition.y );
+            break;
+
+        case DRAG_AREA::HUE:
+            m_hue = ( 1.0 - normalizedY( hueRect(), aPosition.y ) ) * 360.0;
+            m_svBitmap = wxBitmap();
+            m_alphaBitmap = wxBitmap();
+            break;
+
+        case DRAG_AREA::NONE:
+            return;
         }
+
+        Refresh( false );
+
+        if( m_callback )
+            m_callback( GetColor(), aFinal );
     }
 
-    // Blue green area in x y 3d axis
-    color.r = 0.0;
-
-    for( int xx = 0; xx < half_size; xx++ )     // green axis
+    void onPaint( wxPaintEvent& )
     {
-        color.g = inc * xx;
+        wxAutoBufferedPaintDC dc( this );
+        dc.SetBackground( wxBrush( GetBackgroundColour() ) );
+        dc.Clear();
+        ensureBitmaps();
 
-        for( int yy = 0; yy < half_size; yy++ ) // blue axis
+        wxRect color = colorRect();
+        wxRect alpha = alphaRect();
+        wxRect hue = hueRect();
+        dc.DrawBitmap( m_svBitmap, color.GetPosition() );
+
+        if( m_allowOpacity )
+            dc.DrawBitmap( m_alphaBitmap, alpha.GetPosition() );
+
+        dc.DrawBitmap( m_hueBitmap, hue.GetPosition() );
+
+        int sx = color.x + std::lround( m_saturation * ( color.width - 1 ) );
+        int sy = color.y + std::lround( ( 1.0 - m_value ) * ( color.height - 1 ) );
+        int radius = FromDIP( 5 );
+        dc.SetBrush( *wxTRANSPARENT_BRUSH );
+        dc.SetPen( wxPen( *wxWHITE, std::max( FromDIP( 2 ), 1 ) ) );
+        dc.DrawCircle( sx, sy, radius + FromDIP( 1 ) );
+        dc.SetPen( wxPen( *wxBLACK, std::max( FromDIP( 1 ), 1 ) ) );
+        dc.DrawCircle( sx, sy, radius );
+
+        auto drawBarMarker = [&]( const wxRect& aRect, double aNormalized )
         {
-            color.b = inc * yy;
+            int y = aRect.y + std::lround( ( 1.0 - aNormalized ) * ( aRect.height - 1 ) );
+            wxRect marker( aRect.x - FromDIP( 3 ), y - FromDIP( 2 ),
+                           aRect.width + FromDIP( 6 ), FromDIP( 5 ) );
+            dc.SetBrush( *wxTRANSPARENT_BRUSH );
+            dc.SetPen( wxPen( *wxWHITE, std::max( FromDIP( 2 ), 1 ) ) );
+            dc.DrawRectangle( marker );
+            marker.Deflate( FromDIP( 1 ) );
+            dc.SetPen( wxPen( *wxBLACK, std::max( FromDIP( 1 ), 1 ) ) );
+            dc.DrawRectangle( marker );
+        };
 
-            // Mapping the xx, yy color axis to draw coordinates is more tricky than previously
-            // in DC coordinates:
-            // the blue axis is the (0, 0) to half_size, (-yy - SLOPE_AXIS)
-            // the green axis is the (0, 0) to - half_size, (-yy - SLOPE_AXIS)
-            int drawX = -xx + yy;
-            int drawY = - std::min( xx,yy ) * 0.9;
-            img.SetRGB( MAPX( drawX ),  MAPY( drawY - std::abs( slope*drawX ) ),
-                        color.r,  color.g,  color.b );
-        }
+        if( m_allowOpacity )
+            drawBarMarker( alpha, m_alpha );
+
+        drawBarMarker( hue, m_hue / 360.0 );
     }
 
-    delete m_bitmapRGB;
-    m_bitmapRGB = new wxBitmap( img, 24 );
+    void onSize( wxSizeEvent& aEvent )
+    {
+        m_svBitmap = wxBitmap();
+        m_hueBitmap = wxBitmap();
+        m_alphaBitmap = wxBitmap();
+        Refresh( false );
+        aEvent.Skip();
+    }
 
-    m_bitmapRGB->SetScaleFactor( GetDPIScaleFactor() );
-}
+    void onLeftDown( wxMouseEvent& aEvent )
+    {
+        wxPoint position = aEvent.GetPosition();
+
+        if( colorRect().Contains( position ) )
+            m_dragArea = DRAG_AREA::SATURATION_VALUE;
+        else if( m_allowOpacity && alphaRect().Contains( position ) )
+            m_dragArea = DRAG_AREA::ALPHA;
+        else if( hueRect().Contains( position ) )
+            m_dragArea = DRAG_AREA::HUE;
+        else
+            return;
+
+        SetFocus();
+        CaptureMouse();
+        updateFromPosition( position, false );
+    }
+
+    void onLeftUp( wxMouseEvent& aEvent )
+    {
+        if( m_dragArea == DRAG_AREA::NONE )
+            return;
+
+        updateFromPosition( aEvent.GetPosition(), true );
+        m_dragArea = DRAG_AREA::NONE;
+
+        if( HasCapture() )
+            ReleaseMouse();
+    }
+
+    void onMotion( wxMouseEvent& aEvent )
+    {
+        if( m_dragArea != DRAG_AREA::NONE && aEvent.Dragging() && aEvent.LeftIsDown() )
+            updateFromPosition( aEvent.GetPosition(), false );
+    }
+
+    void onCaptureLost( wxMouseCaptureLostEvent& )
+    {
+        m_dragArea = DRAG_AREA::NONE;
+    }
+
+    void onMouseWheel( wxMouseEvent& aEvent )
+    {
+        int direction = aEvent.GetWheelRotation() > 0 ? 1 : -1;
+
+        if( hueRect().Contains( aEvent.GetPosition() ) )
+        {
+            m_hue = std::fmod( m_hue + direction + 360.0, 360.0 );
+            m_svBitmap = wxBitmap();
+            m_alphaBitmap = wxBitmap();
+        }
+        else if( m_allowOpacity && alphaRect().Contains( aEvent.GetPosition() ) )
+        {
+            m_alpha = std::clamp( m_alpha + direction * 0.01, 0.0, 1.0 );
+        }
+        else
+        {
+            aEvent.Skip();
+            return;
+        }
+
+        Refresh( false );
+
+        if( m_callback )
+            m_callback( GetColor(), true );
+    }
+
+private:
+    bool             m_allowOpacity;
+    CHANGE_CALLBACK  m_callback;
+    DRAG_AREA        m_dragArea;
+    double           m_hue;
+    double           m_saturation;
+    double           m_value;
+    double           m_alpha;
+    wxBitmap         m_svBitmap;
+    wxBitmap         m_hueBitmap;
+    wxBitmap         m_alphaBitmap;
+    double           m_svHue;
+};
+
+} // namespace
 
 
-void DIALOG_COLOR_PICKER::createHSVBitmap()
+struct DIALOG_COLOR_PICKER::IMPL
 {
-    wxSize bmsize = ToPhys( m_HsvBitmap->GetSize() );
-    int half_size = std::min( bmsize.x, bmsize.y )/2;
-
-    // We use here a Y axis from bottom to top and origin to center, So we need to map
-    // coordinated to write pixel in a wxImage
-    #define MAPX( xx ) bmsize.x / 2 + ( xx )
-    #define MAPY( yy ) bmsize.y / 2 - ( yy )
-
-    wxImage img( bmsize );  // a temporary buffer to build the color map
-
-    // clear background (set the window bg color)
-    wxColor bg = GetBackgroundColour();
-
-    // Don't do standard-color lookups on OSX each time through the loop
-    wxColourBase::ChannelType bgR = bg.Red();
-    wxColourBase::ChannelType bgG = bg.Green();
-    wxColourBase::ChannelType bgB = bg.Blue();
-
-    for( int xx = 0; xx < bmsize.x; xx++ ) // blue axis
+    enum class MODE
     {
-        for( int yy = 0; yy < bmsize.y; yy++ )  // Red axis
-            img.SetRGB( xx, yy, bgR, bgG, bgB );
+        ARGB,
+        CMYK,
+        HSV,
+        HSL
+    };
+
+    explicit IMPL( DIALOG_COLOR_PICKER* aDialog, const COLOR4D& aCurrentColor,
+                   bool aAllowOpacity, std::vector<CUSTOM_COLOR_ITEM>* aUserColors,
+                   const COLOR4D& aDefaultColor ) :
+            dialog( aDialog ),
+            allowOpacity( aAllowOpacity ),
+            color( aCurrentColor ),
+            defaultColor( aDefaultColor ),
+            displayColor( editableColor( aCurrentColor, aDefaultColor, aAllowOpacity ) ),
+            mode( MODE::ARGB ),
+            updatingControls( false ),
+            canvas( nullptr ),
+            recentPanel( nullptr ),
+            modeButton( nullptr ),
+            hexInput( nullptr ),
+            resetButton( nullptr ),
+            okButton( nullptr )
+    {
+        if( !allowOpacity && isConcreteColor( color ) )
+            color.a = 1.0;
+
+        if( aUserColors )
+        {
+            for( const CUSTOM_COLOR_ITEM& item : *aUserColors )
+            {
+                if( recent.size() == MAX_RECENT_COLORS )
+                    break;
+
+                if( isConcreteColor( item.m_Color ) )
+                    recent.push_back( { item.m_Color, item.m_ColorName } );
+            }
+        }
+        else
+        {
+            recent = recentColors();
+
+            if( isConcreteColor( color ) )
+                addRecent( color, false );
+        }
+
+        buildControls();
+        setColor( color, false );
     }
 
-    // Reserve room to draw cursors inside the bitmap
-    half_size -= m_cursorsSize/2;
-
-    double  hue, sat;
-    COLOR4D color;
-    int     sq_radius = half_size*half_size;
-
-    // Build the palette
-    for( int xx = -half_size; xx < half_size; xx++ )
+    void buildControls()
     {
-        for( int yy = -half_size; yy < half_size; yy++ )
-        {
-            sat = double(xx*xx + yy*yy) / sq_radius;
+        auto* mainSizer = new wxBoxSizer( wxVERTICAL );
+        dialog->SetSizer( mainSizer );
 
-            // sat is <= 1.0
-            // any value > 1.0 is not a valid HSB color:
-            if( sat > 1.0 )
+        recentPanel = new RECENT_COLORS_PANEL(
+                dialog,
+                [this]( const COLOR4D& aColor )
+                {
+                    setColor( aColor, true );
+                } );
+        recentPanel->SetColors( recent );
+        mainSizer->Add( recentPanel, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, dialog->FromDIP( 8 ) );
+
+        canvas = new COLOR_PICKER_CANVAS(
+                dialog, allowOpacity,
+                [this]( const COLOR4D& aColor, bool aFinal )
+                {
+                    color = aColor;
+                    displayColor = aColor;
+                    updateControls();
+
+                    if( aFinal )
+                        addRecent( aColor, true );
+                } );
+        mainSizer->Add( canvas, 1, wxEXPAND | wxALL, dialog->FromDIP( 8 ) );
+
+        auto* inputSizer = new wxBoxSizer( wxHORIZONTAL );
+        modeButton = new wxButton( dialog, wxID_ANY, wxS( "ARGB" ) );
+        modeButton->SetMinSize( dialog->FromDIP( wxSize( 54, -1 ) ) );
+        inputSizer->Add( modeButton, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, dialog->FromDIP( 5 ) );
+
+        hexInput = new wxTextCtrl( dialog, wxID_ANY, wxEmptyString, wxDefaultPosition,
+                                   dialog->FromDIP( wxSize( 92, -1 ) ), wxTE_PROCESS_ENTER );
+        hexInput->SetHint( wxS( "#AARRGGBB" ) );
+        hexInput->SetMaxLength( 64 );
+        inputSizer->Add( hexInput, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, dialog->FromDIP( 7 ) );
+
+        for( size_t i = 0; i < channelInputs.size(); ++i )
+        {
+            channelLabels[i] = new wxStaticText( dialog, wxID_ANY, wxEmptyString );
+            channelLabels[i]->SetMinSize( dialog->FromDIP( wxSize( 15, -1 ) ) );
+            channelLabels[i]->SetWindowStyleFlag( wxALIGN_RIGHT );
+            inputSizer->Add( channelLabels[i], 0, wxALIGN_CENTER_VERTICAL | wxLEFT,
+                             i == 0 ? 0 : dialog->FromDIP( 3 ) );
+
+            channelInputs[i] = new wxTextCtrl( dialog, wxID_ANY, wxEmptyString,
+                                               wxDefaultPosition,
+                                               dialog->FromDIP( wxSize( 38, -1 ) ),
+                                               wxTE_PROCESS_ENTER | wxTE_CENTRE );
+            channelInputs[i]->SetMaxLength( 3 );
+            inputSizer->Add( channelInputs[i], 0, wxALIGN_CENTER_VERTICAL );
+        }
+
+        mainSizer->Add( inputSizer, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM,
+                        dialog->FromDIP( 8 ) );
+
+        auto* bottomSizer = new wxBoxSizer( wxHORIZONTAL );
+        resetButton = new wxButton( dialog, wxID_RESET,
+                                    defaultColor == COLOR4D::UNSPECIFIED
+                                            ? _( "Clear Color" )
+                                            : _( "Reset to Default" ) );
+        bottomSizer->Add( resetButton, 0, wxALIGN_CENTER_VERTICAL );
+        bottomSizer->AddStretchSpacer( 1 );
+
+        auto* standardButtons = new wxStdDialogButtonSizer;
+        okButton = new wxButton( dialog, wxID_OK );
+        standardButtons->AddButton( okButton );
+        standardButtons->AddButton( new wxButton( dialog, wxID_CANCEL ) );
+        standardButtons->Realize();
+        bottomSizer->Add( standardButtons, 0, wxALIGN_CENTER_VERTICAL );
+        mainSizer->Add( bottomSizer, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM,
+                        dialog->FromDIP( 8 ) );
+
+        dialog->SetupStandardButtons();
+        okButton->SetDefault();
+        dialog->SetAffirmativeId( wxID_OK );
+        dialog->SetEscapeId( wxID_CANCEL );
+        dialog->SetInitialFocus( canvas );
+
+        modeButton->Bind( wxEVT_BUTTON,
+                          [this]( wxCommandEvent& )
+                          {
+                              commitFocusedEditor();
+                              mode = static_cast<MODE>( ( static_cast<int>( mode ) + 1 ) % 4 );
+                              updateControls();
+                          } );
+
+        resetButton->Bind( wxEVT_BUTTON,
+                           [this]( wxCommandEvent& )
+                           {
+                               setColor( defaultColor, true );
+                           } );
+
+        okButton->Bind( wxEVT_BUTTON,
+                        [this]( wxCommandEvent& aEvent )
+                        {
+                            if( commitFocusedEditor() )
+                            {
+                                addRecent( color, true );
+                                aEvent.Skip();
+                            }
+                        } );
+
+        auto bindEditor = [this]( wxTextCtrl* aControl )
+        {
+            aControl->Bind( wxEVT_KILL_FOCUS,
+                            [this]( wxFocusEvent& aEvent )
+                            {
+                                if( !updatingControls )
+                                    commitFocusedEditor();
+
+                                aEvent.Skip();
+                            } );
+
+            aControl->Bind( wxEVT_MOUSEWHEEL,
+                            [this, aControl]( wxMouseEvent& aEvent )
+                            {
+                                if( aControl == hexInput || !aControl->IsEnabled() )
+                                {
+                                    aEvent.Skip();
+                                    return;
+                                }
+
+                                size_t index = 0;
+
+                                while( index < channelInputs.size()
+                                       && channelInputs[index] != aControl )
+                                {
+                                    ++index;
+                                }
+
+                                if( index == channelInputs.size() )
+                                {
+                                    aEvent.Skip();
+                                    return;
+                                }
+
+                                long value = 0;
+                                aControl->GetValue().ToLong( &value );
+                                int direction = aEvent.GetWheelRotation() > 0 ? 1 : -1;
+                                value = std::clamp<long>( value + direction, channelMinimum[index],
+                                                         channelMaximum[index] );
+                                aControl->ChangeValue( wxString::Format( wxS( "%ld" ), value ) );
+                                commitChannels();
+                            } );
+        };
+
+        bindEditor( hexInput );
+
+        for( wxTextCtrl* input : channelInputs )
+            bindEditor( input );
+
+    }
+
+    void setColor( const COLOR4D& aColor, bool aAddRecent )
+    {
+        color = aColor;
+
+        if( !allowOpacity && isConcreteColor( color ) )
+            color.a = 1.0;
+
+        displayColor = editableColor( color, defaultColor, allowOpacity );
+        canvas->SetColor( displayColor );
+        updateControls();
+
+        if( aAddRecent )
+            addRecent( color, true );
+    }
+
+    void updateControls()
+    {
+        if( updatingControls )
+            return;
+
+        updatingControls = true;
+
+        if( color.m_text )
+        {
+            hexInput->ChangeValue( *color.m_text );
+        }
+        else if( color == COLOR4D::UNSPECIFIED )
+        {
+            hexInput->ChangeValue( wxEmptyString );
+        }
+        else
+        {
+            hexInput->ChangeValue( wxString::Format( wxS( "#%02X%02X%02X%02X" ),
+                                                     toByte( color.a ), toByte( color.r ),
+                                                     toByte( color.g ), toByte( color.b ) ) );
+        }
+
+        auto configure = [&]( size_t aIndex, const wxString& aLabel, int aValue,
+                              bool aEnabled, int aMaximum )
+        {
+            channelLabels[aIndex]->SetLabel( aLabel );
+            channelInputs[aIndex]->Enable( aEnabled );
+            channelInputs[aIndex]->SetHint( aEnabled ? wxString::Format( wxS( "0-%d" ), aMaximum )
+                                                      : wxS( "-" ) );
+            channelInputs[aIndex]->ChangeValue( aEnabled
+                                                        ? wxString::Format( wxS( "%d" ), aValue )
+                                                        : wxString() );
+            channelMinimum[aIndex] = 0;
+            channelMaximum[aIndex] = aMaximum;
+        };
+
+        switch( mode )
+        {
+        case MODE::ARGB:
+            modeButton->SetLabel( allowOpacity ? wxS( "ARGB" ) : wxS( "RGB" ) );
+            configure( 0, allowOpacity ? wxS( "A:" ) : wxEmptyString, toByte( displayColor.a ),
+                       allowOpacity, 255 );
+            configure( 1, wxS( "R:" ), toByte( displayColor.r ), true, 255 );
+            configure( 2, wxS( "G:" ), toByte( displayColor.g ), true, 255 );
+            configure( 3, wxS( "B:" ), toByte( displayColor.b ), true, 255 );
+            break;
+
+        case MODE::CMYK:
+        {
+            modeButton->SetLabel( wxS( "CMYK" ) );
+            double black = 1.0 - std::max( { displayColor.r, displayColor.g, displayColor.b } );
+            double denominator = 1.0 - black;
+            double cyan = denominator > 0.000001 ? ( 1.0 - displayColor.r - black ) / denominator : 0.0;
+            double magenta = denominator > 0.000001 ? ( 1.0 - displayColor.g - black ) / denominator : 0.0;
+            double yellow = denominator > 0.000001 ? ( 1.0 - displayColor.b - black ) / denominator : 0.0;
+            configure( 0, wxS( "K:" ), toByte( black ), true, 255 );
+            configure( 1, wxS( "C:" ), toByte( cyan ), true, 255 );
+            configure( 2, wxS( "M:" ), toByte( magenta ), true, 255 );
+            configure( 3, wxS( "Y:" ), toByte( yellow ), true, 255 );
+            break;
+        }
+
+        case MODE::HSV:
+        {
+            modeButton->SetLabel( wxS( "HSV" ) );
+            double hue = 0.0;
+            double saturation = 0.0;
+            double value = 0.0;
+            displayColor.ToHSV( hue, saturation, value, true );
+            configure( 0, wxEmptyString, 0, false, 100 );
+            configure( 1, wxS( "H:" ), std::lround( hue ), true, 360 );
+            configure( 2, wxS( "S:" ), std::lround( saturation * 100.0 ), true, 100 );
+            configure( 3, wxS( "V:" ), std::lround( value * 100.0 ), true, 100 );
+            break;
+        }
+
+        case MODE::HSL:
+        {
+            modeButton->SetLabel( wxS( "HSL" ) );
+            double hue = 0.0;
+            double saturation = 0.0;
+            double lightness = 0.0;
+            displayColor.ToHSL( hue, saturation, lightness );
+            configure( 0, wxEmptyString, 0, false, 100 );
+            configure( 1, wxS( "H:" ), std::lround( hue ), true, 360 );
+            configure( 2, wxS( "S:" ), std::lround( saturation * 100.0 ), true, 100 );
+            configure( 3, wxS( "L:" ), std::lround( lightness * 100.0 ), true, 100 );
+            break;
+        }
+        }
+
+        wxColour buttonColor = compositeOn( displayColor,
+                                             wxSystemSettings::GetColour( wxSYS_COLOUR_BTNFACE ) );
+        int luminance = ( 299 * buttonColor.Red() + 587 * buttonColor.Green()
+                          + 114 * buttonColor.Blue() ) / 1000;
+        okButton->SetBackgroundColour( buttonColor );
+        okButton->SetForegroundColour( luminance < 128 ? *wxWHITE : *wxBLACK );
+        okButton->Refresh();
+        updatingControls = false;
+    }
+
+    bool commitFocusedEditor()
+    {
+        wxWindow* focus = wxWindow::FindFocus();
+
+        if( focus == hexInput )
+            return commitHex();
+
+        for( wxTextCtrl* input : channelInputs )
+        {
+            if( focus == input )
+                return commitChannels();
+        }
+
+        return true;
+    }
+
+    bool commitHex()
+    {
+        if( updatingControls )
+            return true;
+
+        wxString text = hexInput->GetValue();
+        text.Trim( true ).Trim( false );
+
+        if( text.IsEmpty() )
+        {
+            setColor( COLOR4D::UNSPECIFIED, false );
+            return true;
+        }
+
+        wxString digits = text.StartsWith( wxS( "#" ) ) ? text.Mid( 1 ) : text;
+        bool validHex = digits.length() == 6 || digits.length() == 8;
+
+        validHex = validHex
+                   && digits.find_first_not_of( wxS( "0123456789abcdefABCDEF" ) ) == wxString::npos;
+
+        if( validHex )
+        {
+            auto byteAt = [&]( size_t aOffset )
+            {
+                unsigned long value = 0;
+                digits.Mid( aOffset, 2 ).ToULong( &value, 16 );
+                return static_cast<int>( value );
+            };
+
+            int alpha = allowOpacity ? toByte( displayColor.a ) : 255;
+            int red = 0;
+            int green = 0;
+            int blue = 0;
+
+            if( digits.length() == 8 )
+            {
+                alpha = allowOpacity ? byteAt( 0 ) : 255;
+                red = byteAt( 2 );
+                green = byteAt( 4 );
+                blue = byteAt( 6 );
+            }
+            else
+            {
+                red = byteAt( 0 );
+                green = byteAt( 2 );
+                blue = byteAt( 4 );
+            }
+
+            setColor( COLOR4D( red / 255.0, green / 255.0, blue / 255.0, alpha / 255.0 ),
+                      true );
+            return true;
+        }
+
+        COLOR4D parsed;
+
+        if( parsed.SetFromWxString( text ) )
+        {
+            if( !allowOpacity )
+                parsed.a = 1.0;
+
+            setColor( parsed, true );
+            return true;
+        }
+
+        // KiCad color settings may contain symbolic expressions such as
+        // @{color(DEVICE_BACKGROUND)}.  Keep those expressions intact while retaining the last
+        // concrete color as an editing preview.
+        color = displayColor;
+        color.m_text = std::make_shared<wxString>( text );
+        updateControls();
+        return true;
+    }
+
+    bool commitChannels()
+    {
+        if( updatingControls )
+            return true;
+
+        std::array<int, 4> values{};
+
+        for( size_t i = 0; i < channelInputs.size(); ++i )
+        {
+            if( !channelInputs[i]->IsEnabled() )
                 continue;
 
-            // sat is the distance from center
-            sat = sqrt( sat );
-            hue = atan2( (double)yy, (double)xx ) * 180 / M_PI;
+            long value = channelMaximum[i];
 
-            if( hue < 0.0 )
-                hue += 360.0;
+            if( !channelInputs[i]->GetValue().ToLong( &value ) )
+                value = channelMaximum[i];
 
-            color.FromHSV( hue, sat, 1.0 );
-
-            img.SetRGB( MAPX( xx ), MAPY( yy ), color.r * 255, color.g * 255, color.b * 255 );
+            values[i] = std::clamp<long>( value, channelMinimum[i], channelMaximum[i] );
         }
+
+        COLOR4D updated = displayColor;
+
+        switch( mode )
+        {
+        case MODE::ARGB:
+            updated = COLOR4D( values[1] / 255.0, values[2] / 255.0, values[3] / 255.0,
+                               allowOpacity ? values[0] / 255.0 : 1.0 );
+            break;
+
+        case MODE::CMYK:
+        {
+            double black = values[0] / 255.0;
+            double cyan = values[1] / 255.0;
+            double magenta = values[2] / 255.0;
+            double yellow = values[3] / 255.0;
+            updated = COLOR4D( ( 1.0 - cyan ) * ( 1.0 - black ),
+                               ( 1.0 - magenta ) * ( 1.0 - black ),
+                               ( 1.0 - yellow ) * ( 1.0 - black ), displayColor.a );
+            break;
+        }
+
+        case MODE::HSV:
+            updated = fromHSV( values[1], values[2] / 100.0, values[3] / 100.0,
+                               displayColor.a );
+            break;
+
+        case MODE::HSL:
+            updated.FromHSL( values[1], values[2] / 100.0, values[3] / 100.0 );
+            updated.a = displayColor.a;
+            break;
+        }
+
+        setColor( updated, true );
+        return true;
     }
 
-    delete m_bitmapHSV;
-    m_bitmapHSV = new wxBitmap( img, 24 );
-
-    m_bitmapHSV->SetScaleFactor( GetDPIScaleFactor() );
-}
-
-
-void DIALOG_COLOR_PICKER::drawRGBPalette()
-{
-    if( !m_bitmapRGB || m_bitmapRGB->GetSize() != ToPhys( m_RgbBitmap->GetSize() ) )
-        createRGBBitmap();
-
-    wxSize bmsize = m_bitmapRGB->GetSize();
-    int    half_size = std::min( bmsize.x, bmsize.y ) / 2;
-
-    wxBitmap newBm( *m_bitmapRGB );
-    newBm.SetScaleFactor( 1.0 );
-
+    void addRecent( const COLOR4D& aColor, bool aUpdatePanel )
     {
-        wxMemoryDC bitmapDC( newBm );
-
-        // Use Y axis from bottom to top and origin to center
-        bitmapDC.SetAxisOrientation( true, true );
-
-    #if defined( __WXMSW__ ) && !wxCHECK_VERSION( 3, 3, 0 )
-        // For some reason, SetDeviceOrigin has changed in wxWidgets 3.1.6 or 3.1.7
-        // It was fixed in wx >= 3.3
-        bitmapDC.SetDeviceOrigin( half_size, -half_size );
-    #else
-        bitmapDC.SetDeviceOrigin( half_size, half_size );
-    #endif
-
-        // Reserve room to draw cursors inside the bitmap
-        half_size -= m_cursorsSize / 2;
-
-        // Draw the 3 RGB cursors, using white color to make them always visible:
-        wxPen pen( wxColor( 255, 255, 255 ), 2 );       // use 2 pixels for pen size
-        wxBrush brush( wxColor( 0, 0, 0 ), wxBRUSHSTYLE_TRANSPARENT );
-        bitmapDC.SetPen( pen );
-        bitmapDC.SetBrush( brush );
-        int half_csize = m_cursorsSize / 2;
-
-        double slope = SLOPE_AXIS / half_size;
-
-        // Red axis cursor (Z 3Daxis):
-        m_cursorBitmapRed.x = 0;
-        m_cursorBitmapRed.y = m_newColor4D.r * half_size;
-        bitmapDC.DrawRectangle( m_cursorBitmapRed.x - half_csize,
-                                m_cursorBitmapRed.y - half_csize,
-                                m_cursorsSize, m_cursorsSize );
-
-        // Blue axis cursor (X 3Daxis):
-        m_cursorBitmapBlue.x = m_newColor4D.b * half_size;
-        m_cursorBitmapBlue.y = - slope*m_cursorBitmapBlue.x;
-        bitmapDC.DrawRectangle( m_cursorBitmapBlue.x - half_csize,
-                                m_cursorBitmapBlue.y - half_csize,
-                                m_cursorsSize, m_cursorsSize );
-
-        // Green axis cursor (Y 3Daxis):
-        m_cursorBitmapGreen.x = m_newColor4D.g * half_size;
-        m_cursorBitmapGreen.y = - slope * m_cursorBitmapGreen.x;
-        m_cursorBitmapGreen.x = -m_cursorBitmapGreen.x;
-
-        bitmapDC.DrawRectangle( m_cursorBitmapGreen.x - half_csize,
-                                m_cursorBitmapGreen.y - half_csize,
-                                m_cursorsSize, m_cursorsSize );
-
-        // Draw the 3 RGB axis:
-        half_size += half_size/5;
-        bitmapDC.DrawLine( 0, 0, 0, half_size );                    // Red axis (Z 3D axis)
-        bitmapDC.DrawLine( 0, 0, half_size, - half_size*slope );    // Blue axis (X 3D axis)
-        bitmapDC.DrawLine( 0, 0, -half_size, - half_size*slope );   // green axis (Y 3D axis)
-    }
-
-    newBm.SetScaleFactor( GetDPIScaleFactor() );
-    m_RgbBitmap->SetBitmap( newBm );
-}
-
-
-void DIALOG_COLOR_PICKER::drawHSVPalette()
-{
-    if( !m_bitmapHSV || m_bitmapHSV->GetSize() != ToPhys( m_HsvBitmap->GetSize() ) )
-        createHSVBitmap();
-
-    wxSize bmsize = m_bitmapHSV->GetSize();
-    int    half_size = std::min( bmsize.x, bmsize.y ) / 2;
-
-    wxBitmap newBm( *m_bitmapHSV );
-    newBm.SetScaleFactor( 1.0 );
-
-    {
-        wxMemoryDC bitmapDC( newBm );
-
-        // Use Y axis from bottom to top and origin to center
-        bitmapDC.SetAxisOrientation( true, true );
-    #if defined( __WXMSW__ ) && !wxCHECK_VERSION(3,3,0)
-        // For some reason, SetDeviceOrigin has changed in wxWidgets 3.1.6 or 3.1.7
-        // It was fixed in wx >= 3.3
-        bitmapDC.SetDeviceOrigin( half_size, -half_size );
-    #else
-        bitmapDC.SetDeviceOrigin( half_size, half_size );
-    #endif
-
-        // Reserve room to draw cursors inside the bitmap
-        half_size -= m_cursorsSize / 2;
-
-        // Draw the HSB cursor:
-        m_cursorBitmapHSV.x = cos( m_hue * M_PI / 180.0 ) * half_size * m_sat;
-        m_cursorBitmapHSV.y = sin( m_hue * M_PI / 180.0 ) * half_size * m_sat;
-
-        wxPen pen( wxColor( 0, 0, 0 ), 2 );     // Use 2 pixels as pensize
-        wxBrush brush( wxColor( 0, 0, 0 ), wxBRUSHSTYLE_TRANSPARENT );
-        bitmapDC.SetPen( pen );
-        bitmapDC.SetBrush( brush );
-
-        bitmapDC.DrawRectangle( m_cursorBitmapHSV.x - ( m_cursorsSize / 2 ),
-                                m_cursorBitmapHSV.y - ( m_cursorsSize / 2 ),
-                                m_cursorsSize, m_cursorsSize );
-    }
-
-    newBm.SetScaleFactor( GetDPIScaleFactor() );
-    m_HsvBitmap->SetBitmap( newBm );
-}
-
-
-void DIALOG_COLOR_PICKER::SetEditVals( CHANGED_COLOR aChanged, bool aCheckTransparency )
-{
-    if( aCheckTransparency )
-    {
-        // If they've changed the color, they probably don't want it to remain 100% transparent,
-        // and it looks like a bug when changing the color has no effect.
-        if( m_newColor4D.a == 0.0 )
-            m_newColor4D.a = 1.0;
-    }
-
-    m_sliderTransparency->SetValue( normalizeToInt( m_newColor4D.a, ALPHA_MAX ) );
-
-    if( aChanged == RED_CHANGED || aChanged == GREEN_CHANGED || aChanged == BLUE_CHANGED )
-        m_newColor4D.ToHSV( m_hue, m_sat, m_val, true );
-
-    if( aChanged != RED_CHANGED )
-        m_spinCtrlRed->SetValue( normalizeToInt( m_newColor4D.r ) );
-
-    if( aChanged != GREEN_CHANGED )
-        m_spinCtrlGreen->SetValue( normalizeToInt( m_newColor4D.g ) );
-
-    if( aChanged != BLUE_CHANGED )
-        m_spinCtrlBlue->SetValue( normalizeToInt( m_newColor4D.b  ) );
-
-    if( aChanged != HUE_CHANGED )
-        m_spinCtrlHue->SetValue( (int)m_hue );
-
-    if( aChanged != SAT_CHANGED )
-        m_spinCtrlSaturation->SetValue( m_sat * 255 );
-
-    if( aChanged != VAL_CHANGED )
-        m_sliderBrightness->SetValue(normalizeToInt( m_val ) );
-
-    if( aChanged == INIT )
-    {
-        if( m_newColor4D.m_text )
-            m_colorValue->ChangeValue( *m_newColor4D.m_text );
-        else
-            m_colorValue->ChangeValue( m_newColor4D.ToHexString() );
-    }
-    else if( aChanged != HEX_CHANGED )
-    {
-        m_newColor4D.m_text = nullptr;
-        m_colorValue->ChangeValue( m_newColor4D.ToHexString() );
-    }
-}
-
-
-void DIALOG_COLOR_PICKER::updateHandleSize()
-{
-    m_cursorsSize = ToPhys( FromDIP( 8 ) ); // Size of square cursors drawn on color bitmaps
-}
-
-
-void DIALOG_COLOR_PICKER::drawAll()
-{
-    updateHandleSize();
-    m_NewColorRect->Freeze();   // Avoid flicker
-    m_HsvBitmap->Freeze();
-    m_RgbBitmap->Freeze();
-    updatePreview( m_NewColorRect, m_newColor4D );
-    drawHSVPalette();
-    drawRGBPalette();
-    m_NewColorRect->Thaw();
-    m_HsvBitmap->Thaw();
-    m_RgbBitmap->Thaw();
-    m_NewColorRect->Refresh();
-    m_HsvBitmap->Refresh();
-    m_RgbBitmap->Refresh();
-}
-
-
-void DIALOG_COLOR_PICKER::colorDClick( wxMouseEvent& event )
-{
-    wxPostEvent( this, wxCommandEvent( wxEVT_COMMAND_BUTTON_CLICKED, wxID_OK ) );
-}
-
-
-void DIALOG_COLOR_PICKER::buttColorClick( wxMouseEvent& event )
-{
-    int id = event.GetId();
-    COLOR4D color( m_Color4DList[id - ID_COLOR_BLACK] );
-    m_newColor4D.r = color.r;
-    m_newColor4D.g = color.g;
-    m_newColor4D.b = color.b;
-    m_newColor4D.a = color.a;
-
-    m_newColor4D.ToHSV( m_hue, m_sat, m_val, true );
-    SetEditVals( ALL_CHANGED, false );
-
-    drawAll();
-
-    event.Skip();
-}
-
-
-void DIALOG_COLOR_PICKER::onRGBMouseClick( wxMouseEvent& event )
-{
-    m_allowMouseEvents = true;
-
-    // The cursor position is relative to the m_bitmapHSV wxBitmap center
-    wxPoint mousePos = ToPhys( event.GetPosition() );
-    wxSize  bmsize = m_bitmapRGB->GetSize();
-    int     half_size = std::min( bmsize.x, bmsize.y ) / 2;
-
-    mousePos.x -= half_size;
-    mousePos.y -= half_size;
-    mousePos.y = -mousePos.y;       // Use the bottom to top vertical axis
-
-    wxPoint dist = m_cursorBitmapRed - mousePos;
-
-    if( std::abs( dist.x ) <= m_cursorsSize/2 && std::abs( dist.y ) <= m_cursorsSize/2 )
-    {
-        m_selectedCursor = &m_cursorBitmapRed;
-        return;
-    }
-
-    dist = m_cursorBitmapGreen - mousePos;
-
-    if( std::abs( dist.x ) <= m_cursorsSize / 2 && std::abs( dist.y ) <= m_cursorsSize / 2 )
-    {
-        m_selectedCursor = &m_cursorBitmapGreen;
-        return;
-    }
-
-    dist = m_cursorBitmapBlue - mousePos;
-
-    if( std::abs( dist.x ) <= m_cursorsSize / 2 && std::abs( dist.y ) <= m_cursorsSize / 2 )
-    {
-        m_selectedCursor = &m_cursorBitmapBlue;
-        return;
-    }
-
-    m_selectedCursor = nullptr;
-}
-
-
-void DIALOG_COLOR_PICKER::onRGBMouseDrag( wxMouseEvent& event )
-{
-    if( !event.Dragging() || !m_allowMouseEvents )
-    {
-        m_selectedCursor = nullptr;
-        return;
-    }
-
-    if( m_selectedCursor != &m_cursorBitmapRed
-     && m_selectedCursor != &m_cursorBitmapGreen
-     && m_selectedCursor != &m_cursorBitmapBlue )
-    {
-        return;
-    }
-
-    // Adjust the HSV cursor position to follow the mouse cursor
-    // The cursor position is relative to the m_bitmapHSV wxBitmap center
-    wxPoint mousePos = ToPhys( event.GetPosition() );
-    wxSize  bmsize = m_bitmapRGB->GetSize();
-    int     half_size = std::min( bmsize.x, bmsize.y ) / 2;
-
-    mousePos.x -= half_size;
-    mousePos.y -= half_size;
-    mousePos.y = -mousePos.y;           // Use the bottom to top vertical axis
-
-    half_size -= m_cursorsSize / 2;     // the actual half_size of the palette area
-
-    // Change colors according to the selected cursor:
-    if( m_selectedCursor == &m_cursorBitmapRed )
-    {
-        if( mousePos.y >= 0 && mousePos.y <= half_size )
-            m_newColor4D.r = (double)mousePos.y / half_size;
-        else
+        if( !isConcreteColor( aColor ) )
             return;
+
+        auto addTo = [&]( std::vector<NAMED_COLOR>& aColors )
+        {
+            std::erase_if( aColors,
+                           [&]( const NAMED_COLOR& aItem )
+                           {
+                               return sameConcreteColor( aItem.color, aColor );
+                           } );
+            aColors.insert( aColors.begin(), { aColor, wxEmptyString } );
+
+            if( aColors.size() > MAX_RECENT_COLORS )
+                aColors.resize( MAX_RECENT_COLORS );
+        };
+
+        addTo( recent );
+        addTo( recentColors() );
+
+        if( aUpdatePanel && recentPanel )
+            recentPanel->SetColors( recent );
     }
 
-    if( m_selectedCursor == &m_cursorBitmapGreen )
+    void positionNearCursor()
     {
-        mousePos.x = -mousePos.x;
+        wxPoint cursor = wxGetMousePosition();
+        int displayIndex = wxDisplay::GetFromPoint( cursor );
 
-        if( mousePos.x >= 0 && mousePos.x <= half_size )
-            m_newColor4D.g = (double)mousePos.x / half_size;
-        else
-            return;
+        if( displayIndex == wxNOT_FOUND )
+            displayIndex = 0;
+
+        wxRect workArea = wxDisplay( static_cast<unsigned int>( displayIndex ) ).GetClientArea();
+        wxSize size = dialog->GetSize();
+        wxPoint position( cursor.x - size.x / 2, cursor.y - dialog->FromDIP( 22 ) );
+        position.x = std::clamp( position.x, workArea.x,
+                                 std::max( workArea.x, workArea.GetRight() - size.x + 1 ) );
+        position.y = std::clamp( position.y, workArea.y,
+                                 std::max( workArea.y, workArea.GetBottom() - size.y + 1 ) );
+        dialog->SetPosition( position );
     }
 
-    if( m_selectedCursor == &m_cursorBitmapBlue )
-    {
-        if( mousePos.x >= 0 && mousePos.x <= half_size )
-            m_newColor4D.b = (double)mousePos.x / half_size;
-        else
-            return;
-    }
+    DIALOG_COLOR_PICKER*          dialog;
+    bool                          allowOpacity;
+    COLOR4D                       color;
+    COLOR4D                       defaultColor;
+    COLOR4D                       displayColor;
+    MODE                          mode;
+    bool                          updatingControls;
+    std::vector<NAMED_COLOR>      recent;
+    COLOR_PICKER_CANVAS*          canvas;
+    RECENT_COLORS_PANEL*          recentPanel;
+    wxButton*                     modeButton;
+    wxTextCtrl*                   hexInput;
+    std::array<wxStaticText*, 4>  channelLabels{};
+    std::array<wxTextCtrl*, 4>    channelInputs{};
+    std::array<int, 4>            channelMinimum{};
+    std::array<int, 4>            channelMaximum{};
+    wxButton*                     resetButton;
+    wxButton*                     okButton;
+};
 
-    m_newColor4D.ToHSV( m_hue, m_sat, m_val, true );
-    SetEditVals( ALL_CHANGED, true );
 
-    drawAll();
+DIALOG_COLOR_PICKER::DIALOG_COLOR_PICKER( wxWindow* aParent, const COLOR4D& aCurrentColor,
+                                          bool aAllowOpacityControl,
+                                          std::vector<CUSTOM_COLOR_ITEM>* aUserColors,
+                                          const COLOR4D& aDefaultColor ) :
+        DIALOG_SHIM( aParent, wxID_ANY, _( "Color Picker" ), wxDefaultPosition, wxDefaultSize,
+                     wxDEFAULT_DIALOG_STYLE ),
+        m_impl( std::make_unique<IMPL>( this, aCurrentColor, aAllowOpacityControl, aUserColors,
+                                       aDefaultColor ) )
+{
+    // This transient dialog should always use its calculated compact size, not a size persisted
+    // by an older, resizable color picker implementation.
+    m_useCalculatedSize = true;
+    OptOut( this );
+    finishDialogSettings();
 }
 
 
-void DIALOG_COLOR_PICKER::onHSVMouseClick( wxMouseEvent& event )
-{
-    m_allowMouseEvents = true;
+DIALOG_COLOR_PICKER::~DIALOG_COLOR_PICKER() = default;
 
-    if( setHSvaluesFromCursor( event.GetPosition() ) )
-        drawAll();
+
+COLOR4D DIALOG_COLOR_PICKER::GetColor() const
+{
+    return m_impl->color;
 }
 
 
-void DIALOG_COLOR_PICKER::onHSVMouseDrag( wxMouseEvent& event )
+bool DIALOG_COLOR_PICKER::Show( bool aShow )
 {
-    if( !event.Dragging() || !m_allowMouseEvents )
+    bool shown = DIALOG_SHIM::Show( aShow );
+
+    if( aShow )
+        m_impl->positionNearCursor();
+
+    return shown;
+}
+
+
+void DIALOG_COLOR_PICKER::OnCharHook( wxKeyEvent& aEvent )
+{
+    if( aEvent.GetKeyCode() == WXK_ESCAPE )
+    {
+        EndDialogShim( wxID_CANCEL );
         return;
-
-    if( setHSvaluesFromCursor( event.GetPosition() ) )
-        drawAll();
-}
-
-
-void DIALOG_COLOR_PICKER::onSize( wxSizeEvent& event )
-{
-    drawAll();
-
-    event.Skip();
-}
-
-
-void DIALOG_COLOR_PICKER::OnColorValueText( wxCommandEvent& event )
-{
-    if( m_newColor4D.SetFromHexString( m_colorValue->GetValue() ) )
-        m_newColor4D.ToHSV( m_hue, m_sat, m_val, true );
-
-    SetEditVals( HEX_CHANGED, false );
-    drawAll();
-}
-
-
-bool DIALOG_COLOR_PICKER::setHSvaluesFromCursor( const wxPoint& aMouseCursor )
-{
-    wxPoint mousePos = ToPhys( aMouseCursor );
-    wxSize  bmsize = m_bitmapHSV->GetSize();
-    int     half_size = std::min( bmsize.x, bmsize.y ) / 2;
-
-    // Make the cursor position relative to the m_bitmapHSV wxBitmap center
-    mousePos.x -= half_size;
-    mousePos.y -= half_size;
-    mousePos.y = -mousePos.y;   // Use the bottom to top vertical axis
-
-    // The HS cursor position is restricted to a circle of radius half_size
-    double dist_from_centre = hypot( (double)mousePos.x, (double)mousePos.y );
-
-    if( dist_from_centre > half_size )
-    {
-        // Saturation cannot be calculated:
-        return false;
     }
 
-    m_cursorBitmapHSV = mousePos;
+    if( ( aEvent.GetKeyCode() == WXK_RETURN || aEvent.GetKeyCode() == WXK_NUMPAD_ENTER )
+            && !aEvent.ControlDown() && !aEvent.ShiftDown() && !aEvent.AltDown() )
+    {
+        if( m_impl->commitFocusedEditor() )
+        {
+            m_impl->addRecent( m_impl->color, true );
+            EndDialogShim( wxID_OK );
+        }
 
-    // Set saturation and hue from new cursor position:
-    half_size -= m_cursorsSize / 2;       // the actual half_size of the palette area
-    m_sat = dist_from_centre / half_size;
+        return;
+    }
 
-    if( m_sat > 1.0 )
-        m_sat = 1.0;
-
-    m_hue = atan2( mousePos.y, mousePos.x ) / M_PI * 180.0;
-
-    if( m_hue < 0 )
-        m_hue += 360.0;
-
-    m_newColor4D.FromHSV( m_hue, m_sat, m_val );
-    SetEditVals( ALL_CHANGED, true );
-
-    return true;
-}
-
-
-void DIALOG_COLOR_PICKER::OnChangeAlpha( wxScrollEvent& event )
-{
-    double alpha = (double)event.GetPosition() / ALPHA_MAX;
-    m_newColor4D.a = alpha;
-    m_NewColorRect->Freeze();   // Avoid flicker
-    updatePreview( m_NewColorRect, m_newColor4D );
-    m_NewColorRect->Thaw();
-    m_NewColorRect->Refresh();
-    SetEditVals( ALPHA_CHANGED, false );
-}
-
-
-void DIALOG_COLOR_PICKER::OnChangeEditRed( wxSpinEvent& event )
-{
-    double val = (double)event.GetPosition() / 255.0;
-    m_newColor4D.r = val;
-    SetEditVals( RED_CHANGED, true );
-
-    drawAll();
-}
-
-
-void DIALOG_COLOR_PICKER::OnChangeEditGreen( wxSpinEvent& event )
-{
-    double val = (double)event.GetPosition() / 255.0;
-    m_newColor4D.g = val;
-    SetEditVals( GREEN_CHANGED, true );
-
-    drawAll();
-}
-
-
-void DIALOG_COLOR_PICKER::OnChangeEditBlue( wxSpinEvent& event )
-{
-    double val = (double)event.GetPosition() / 255.0;
-    m_newColor4D.b = val;
-    SetEditVals( BLUE_CHANGED, true );
-
-    drawAll();
-}
-
-
-void DIALOG_COLOR_PICKER::OnChangeEditHue( wxSpinEvent& event )
-{
-    m_hue = (double)event.GetPosition();
-
-    m_newColor4D.FromHSV( m_hue, m_sat, m_val );
-
-    SetEditVals( HUE_CHANGED, true );
-
-    drawAll();
-}
-
-
-void DIALOG_COLOR_PICKER::OnChangeEditSat( wxSpinEvent& event )
-{
-    m_sat = (double)event.GetPosition() / 255.0;
-
-    m_newColor4D.FromHSV( m_hue, m_sat, m_val );
-
-    SetEditVals( SAT_CHANGED, true );
-
-    drawAll();
-}
-
-
-void DIALOG_COLOR_PICKER::OnChangeBrightness( wxScrollEvent& event )
-{
-    m_val = (double)event.GetPosition() / 255.0;
-
-    m_newColor4D.FromHSV( m_hue, m_sat, m_val );
-
-    SetEditVals( VAL_CHANGED, true );
-
-    drawAll();
-}
-
-
-void DIALOG_COLOR_PICKER::OnResetButton( wxCommandEvent& aEvent )
-{
-    m_newColor4D.r = m_defaultColor.r;
-    m_newColor4D.g = m_defaultColor.g;
-    m_newColor4D.b = m_defaultColor.b;
-    m_newColor4D.a = m_defaultColor.a;
-
-    m_newColor4D.ToHSV( m_hue, m_sat, m_val, true );
-    SetEditVals( ALL_CHANGED, false );
-
-    drawAll();
+    DIALOG_SHIM::OnCharHook( aEvent );
 }

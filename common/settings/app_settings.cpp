@@ -144,6 +144,7 @@ APP_SETTINGS_BASE::APP_SETTINGS_BASE( const std::string& aFilename, int aSchemaV
     m_params.emplace_back( new PARAM<float>( "graphics.select_factor",
             &m_Graphics.select_factor, 0.75f, 0.0, 1.0f ) );
 
+    // Deprecated legacy color-picker preference; keep the key for settings compatibility.
     m_params.emplace_back( new PARAM<int>( "color_picker.default_tab",
             &m_ColorPicker.default_tab, 0 ) );
 

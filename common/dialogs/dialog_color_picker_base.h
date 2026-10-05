@@ -34,7 +34,8 @@
 ///////////////////////////////////////////////////////////////////////////
 
 ///////////////////////////////////////////////////////////////////////////////
-/// Class DIALOG_COLOR_PICKER_BASE
+/// @deprecated Legacy wxFormBuilder color picker layout.  Kept as migration
+/// documentation; the compact native implementation no longer derives from it.
 ///////////////////////////////////////////////////////////////////////////////
 class DIALOG_COLOR_PICKER_BASE : public DIALOG_SHIM
 {
@@ -96,4 +97,3 @@ class DIALOG_COLOR_PICKER_BASE : public DIALOG_SHIM
 		~DIALOG_COLOR_PICKER_BASE();
 
 };
-

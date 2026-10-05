@@ -165,6 +165,7 @@ public:
 
     struct COLOR_PICKER
     {
+        // Deprecated legacy picker tab, retained so existing settings remain readable.
         int default_tab;
     };
 
