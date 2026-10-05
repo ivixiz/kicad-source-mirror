@@ -965,9 +965,9 @@ struct DIALOG_COLOR_PICKER::IMPL
             return;
 
         wxString text = hexInput->GetValue();
-        wxString filtered;
+        wxString filtered = wxS( "#" );
         long insertionPoint = hexInput->GetInsertionPoint();
-        long filteredInsertionPoint = 0;
+        long filteredInsertionPoint = 1;
         size_t digitCount = 0;
         size_t maximumDigits = allowOpacity ? 8 : 6;
 
@@ -976,11 +976,9 @@ struct DIALOG_COLOR_PICKER::IMPL
             wxUniChar character = text[i];
             bool keep = false;
 
-            if( character == '#' )
-            {
-                keep = i == 0 && filtered.IsEmpty();
-            }
-            else if( wxString( wxS( "0123456789abcdefABCDEF" ) ).Find( character ) != wxNOT_FOUND
+            if( character != '#'
+                    && wxString( wxS( "0123456789abcdefABCDEF" ) ).Find( character )
+                               != wxNOT_FOUND
                      && digitCount < maximumDigits )
             {
                 ++digitCount;
@@ -1072,7 +1070,7 @@ struct DIALOG_COLOR_PICKER::IMPL
         }
         else if( color == COLOR4D::UNSPECIFIED )
         {
-            hexInput->ChangeValue( wxEmptyString );
+            hexInput->ChangeValue( wxS( "#" ) );
         }
         else
         {
@@ -1193,7 +1191,7 @@ struct DIALOG_COLOR_PICKER::IMPL
         wxString text = hexInput->GetValue();
         text.Trim( true ).Trim( false );
 
-        if( text.IsEmpty() )
+        if( text.IsEmpty() || text == wxS( "#" ) )
         {
             setColor( COLOR4D::UNSPECIFIED, false );
             return true;
