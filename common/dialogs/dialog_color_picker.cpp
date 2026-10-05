@@ -819,8 +819,8 @@ struct DIALOG_COLOR_PICKER::IMPL
 
         hexInput = new wxTextCtrl( dialog, wxID_ANY, wxEmptyString, wxDefaultPosition,
                                    dialog->FromDIP( wxSize( 92, -1 ) ), wxTE_PROCESS_ENTER );
-        hexInput->SetHint( wxS( "#AARRGGBB" ) );
-        hexInput->SetMaxLength( 64 );
+        hexInput->SetHint( allowOpacity ? wxS( "#AARRGGBB" ) : wxS( "#RRGGBB" ) );
+        hexInput->SetMaxLength( allowOpacity ? 9 : 7 );
         inputSizer->Add( hexInput, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, dialog->FromDIP( 7 ) );
 
         for( size_t i = 0; i < channelInputs.size(); ++i )
@@ -876,6 +876,7 @@ struct DIALOG_COLOR_PICKER::IMPL
         };
 
         bindEditor( hexInput );
+        hexInput->Bind( wxEVT_TEXT, &IMPL::onHexText, this );
 
         for( wxTextCtrl* input : channelInputs )
             bindEditor( input );
@@ -958,6 +959,62 @@ struct DIALOG_COLOR_PICKER::IMPL
         commitChannels();
     }
 
+    void onHexText( wxCommandEvent& )
+    {
+        if( updatingControls )
+            return;
+
+        wxString text = hexInput->GetValue();
+        wxString filtered;
+        long insertionPoint = hexInput->GetInsertionPoint();
+        long filteredInsertionPoint = 0;
+        size_t digitCount = 0;
+        size_t maximumDigits = allowOpacity ? 8 : 6;
+
+        for( size_t i = 0; i < text.length(); ++i )
+        {
+            wxUniChar character = text[i];
+            bool keep = false;
+
+            if( character == '#' )
+            {
+                keep = i == 0 && filtered.IsEmpty();
+            }
+            else if( wxString( wxS( "0123456789abcdefABCDEF" ) ).Find( character ) != wxNOT_FOUND
+                     && digitCount < maximumDigits )
+            {
+                ++digitCount;
+                keep = true;
+            }
+
+            if( keep )
+            {
+                filtered += character;
+
+                if( static_cast<long>( i ) < insertionPoint )
+                    ++filteredInsertionPoint;
+            }
+        }
+
+        if( filtered != text )
+        {
+            updatingControls = true;
+            hexInput->ChangeValue( filtered );
+            hexInput->SetInsertionPoint( filteredInsertionPoint );
+            updatingControls = false;
+        }
+
+        wxString digits = filtered.StartsWith( wxS( "#" ) ) ? filtered.Mid( 1 ) : filtered;
+
+        if( digits.length() != maximumDigits )
+            return;
+
+        COLOR4D parsed;
+
+        if( parseHexColor( filtered, parsed ) )
+            setColor( parsed, false );
+    }
+
     void onRightClick( wxMouseEvent& )
     {
         if( interactionReady )
@@ -1019,9 +1076,18 @@ struct DIALOG_COLOR_PICKER::IMPL
         }
         else
         {
-            hexInput->ChangeValue( wxString::Format( wxS( "#%02X%02X%02X%02X" ),
-                                                     toByte( color.a ), toByte( color.r ),
-                                                     toByte( color.g ), toByte( color.b ) ) );
+            if( allowOpacity )
+            {
+                hexInput->ChangeValue( wxString::Format( wxS( "#%02X%02X%02X%02X" ),
+                                                         toByte( color.a ), toByte( color.r ),
+                                                         toByte( color.g ), toByte( color.b ) ) );
+            }
+            else
+            {
+                hexInput->ChangeValue( wxString::Format( wxS( "#%02X%02X%02X" ),
+                                                         toByte( color.r ), toByte( color.g ),
+                                                         toByte( color.b ) ) );
+            }
         }
 
         auto configure = [&]( size_t aIndex, const wxString& aLabel, int aValue,
@@ -1133,42 +1199,11 @@ struct DIALOG_COLOR_PICKER::IMPL
             return true;
         }
 
-        wxString digits = text.StartsWith( wxS( "#" ) ) ? text.Mid( 1 ) : text;
-        bool validHex = digits.length() == 6 || digits.length() == 8;
+        COLOR4D parsedHex;
 
-        validHex = validHex
-                   && digits.find_first_not_of( wxS( "0123456789abcdefABCDEF" ) ) == wxString::npos;
-
-        if( validHex )
+        if( parseHexColor( text, parsedHex ) )
         {
-            auto byteAt = [&]( size_t aOffset )
-            {
-                unsigned long value = 0;
-                digits.Mid( aOffset, 2 ).ToULong( &value, 16 );
-                return static_cast<int>( value );
-            };
-
-            int alpha = allowOpacity ? toByte( displayColor.a ) : 255;
-            int red = 0;
-            int green = 0;
-            int blue = 0;
-
-            if( digits.length() == 8 )
-            {
-                alpha = allowOpacity ? byteAt( 0 ) : 255;
-                red = byteAt( 2 );
-                green = byteAt( 4 );
-                blue = byteAt( 6 );
-            }
-            else
-            {
-                red = byteAt( 0 );
-                green = byteAt( 2 );
-                blue = byteAt( 4 );
-            }
-
-            setColor( COLOR4D( red / 255.0, green / 255.0, blue / 255.0, alpha / 255.0 ),
-                      true );
+            setColor( parsedHex, true );
             return true;
         }
 
@@ -1189,6 +1224,46 @@ struct DIALOG_COLOR_PICKER::IMPL
         color = displayColor;
         color.m_text = std::make_shared<wxString>( text );
         updateControls();
+        return true;
+    }
+
+    bool parseHexColor( const wxString& aText, COLOR4D& aColor ) const
+    {
+        wxString digits = aText.StartsWith( wxS( "#" ) ) ? aText.Mid( 1 ) : aText;
+
+        if( digits.length() != 6 && digits.length() != 8 )
+            return false;
+
+        if( digits.find_first_not_of( wxS( "0123456789abcdefABCDEF" ) ) != wxString::npos )
+            return false;
+
+        auto byteAt = [&]( size_t aOffset )
+        {
+            unsigned long value = 0;
+            digits.Mid( aOffset, 2 ).ToULong( &value, 16 );
+            return static_cast<int>( value );
+        };
+
+        int alpha = allowOpacity ? toByte( displayColor.a ) : 255;
+        int red = 0;
+        int green = 0;
+        int blue = 0;
+
+        if( digits.length() == 8 )
+        {
+            alpha = allowOpacity ? byteAt( 0 ) : 255;
+            red = byteAt( 2 );
+            green = byteAt( 4 );
+            blue = byteAt( 6 );
+        }
+        else
+        {
+            red = byteAt( 0 );
+            green = byteAt( 2 );
+            blue = byteAt( 4 );
+        }
+
+        aColor = COLOR4D( red / 255.0, green / 255.0, blue / 255.0, alpha / 255.0 );
         return true;
     }
 
@@ -1319,6 +1394,7 @@ struct DIALOG_COLOR_PICKER::IMPL
 
         if( hexInput )
         {
+            hexInput->Unbind( wxEVT_TEXT, &IMPL::onHexText, this );
             hexInput->Unbind( wxEVT_KILL_FOCUS, &IMPL::onEditorKillFocus, this );
             hexInput->Unbind( wxEVT_MOUSEWHEEL, &IMPL::onEditorMouseWheel, this );
         }
