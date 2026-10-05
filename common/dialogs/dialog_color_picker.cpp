@@ -165,47 +165,86 @@ std::vector<NAMED_COLOR> fixedPresetColors()
 }
 
 
-class COLOR_SWATCH_BAR : public wxPanel
+class COLOR_SWATCH_GRID : public wxPanel
 {
 public:
     using SELECT_CALLBACK = std::function<void( const COLOR4D& )>;
 
-    COLOR_SWATCH_BAR( wxWindow* aParent, SELECT_CALLBACK aCallback ) :
+    COLOR_SWATCH_GRID( wxWindow* aParent, SELECT_CALLBACK aCallback ) :
             wxPanel( aParent, wxID_ANY ),
             m_callback( std::move( aCallback ) ),
-            m_hoverIndex( -1 )
+            m_hoverSlot( -1 )
     {
         SetBackgroundStyle( wxBG_STYLE_PAINT );
-        SetMinSize( FromDIP( wxSize( 360, 18 ) ) );
+        wxSize gridSize = FromDIP( wxSize( 420, 42 ) );
+        SetMinSize( gridSize );
+        SetMaxSize( gridSize );
 
-        Bind( wxEVT_PAINT, &COLOR_SWATCH_BAR::onPaint, this );
-        Bind( wxEVT_LEFT_UP, &COLOR_SWATCH_BAR::onLeftUp, this );
-        Bind( wxEVT_MOTION, &COLOR_SWATCH_BAR::onMotion, this );
-        Bind( wxEVT_LEAVE_WINDOW, &COLOR_SWATCH_BAR::onLeave, this );
+        Bind( wxEVT_PAINT, &COLOR_SWATCH_GRID::onPaint, this );
+        Bind( wxEVT_LEFT_UP, &COLOR_SWATCH_GRID::onLeftUp, this );
+        Bind( wxEVT_MOTION, &COLOR_SWATCH_GRID::onMotion, this );
+        Bind( wxEVT_LEAVE_WINDOW, &COLOR_SWATCH_GRID::onLeave, this );
     }
 
-    void SetColors( const std::vector<NAMED_COLOR>& aColors )
+    void SetPresetColors( const std::vector<NAMED_COLOR>& aColors )
     {
-        m_colors.assign( aColors.begin(),
-                         aColors.begin() + std::min( aColors.size(), MAX_RECENT_COLORS ) );
+        assignRow( m_presets, aColors );
         Refresh( false );
     }
 
-private:
-    wxRect swatchRect( size_t aIndex ) const
+    void SetRecentColors( const std::vector<NAMED_COLOR>& aColors )
     {
-        int swatch = FromDIP( 16 );
+        assignRow( m_recent, aColors );
+        Refresh( false );
+    }
+
+    void ClearCallback()
+    {
+        m_callback = nullptr;
+    }
+
+private:
+    static void assignRow( std::vector<NAMED_COLOR>& aDestination,
+                           const std::vector<NAMED_COLOR>& aSource )
+    {
+        aDestination.assign(
+                aSource.begin(),
+                aSource.begin() + std::min( aSource.size(), MAX_RECENT_COLORS ) );
+    }
+
+    wxRect swatchRect( int aRow, int aColumn ) const
+    {
         int gap = FromDIP( 2 );
-        return wxRect( FromDIP( 1 ) + static_cast<int>( aIndex ) * ( swatch + gap ),
-                       FromDIP( 1 ), swatch, swatch );
+        wxSize size = GetClientSize();
+        int swatch = std::max( ( size.x - 19 * gap ) / 20, 1 );
+        int gridWidth = 20 * swatch + 19 * gap;
+        int gridHeight = 2 * swatch + gap;
+        int left = std::max( ( size.x - gridWidth ) / 2, 0 );
+        int top = std::max( ( size.y - gridHeight ) / 2, 0 );
+        return wxRect( left + aColumn * ( swatch + gap ),
+                       top + aRow * ( swatch + gap ), swatch, swatch );
+    }
+
+    const NAMED_COLOR* colorAt( int aSlot ) const
+    {
+        if( aSlot < 0 )
+            return nullptr;
+
+        int row = aSlot / static_cast<int>( MAX_RECENT_COLORS );
+        size_t column = static_cast<size_t>( aSlot ) % MAX_RECENT_COLORS;
+        const std::vector<NAMED_COLOR>& colors = row == 0 ? m_presets : m_recent;
+        return column < colors.size() ? &colors[column] : nullptr;
     }
 
     int hitTest( const wxPoint& aPosition ) const
     {
-        for( size_t i = 0; i < m_colors.size(); ++i )
+        for( int row = 0; row < 2; ++row )
         {
-            if( swatchRect( i ).Contains( aPosition ) )
-                return static_cast<int>( i );
+            for( int column = 0; column < static_cast<int>( MAX_RECENT_COLORS ); ++column )
+            {
+                if( swatchRect( row, column ).Contains( aPosition ) )
+                    return row * static_cast<int>( MAX_RECENT_COLORS ) + column;
+            }
         }
 
         return -1;
@@ -219,57 +258,74 @@ private:
 
         int checker = std::max( FromDIP( 3 ), 1 );
 
-        for( size_t i = 0; i < m_colors.size(); ++i )
+        for( int row = 0; row < 2; ++row )
         {
-            wxRect rect = swatchRect( i );
-            const COLOR4D& color = m_colors[i].color;
-
-            for( int y = rect.y; y < rect.GetBottom(); y += checker )
+            for( int column = 0; column < static_cast<int>( MAX_RECENT_COLORS ); ++column )
             {
-                for( int x = rect.x; x < rect.GetRight(); x += checker )
-                {
-                    bool light = ( ( x - rect.x ) / checker + ( y - rect.y ) / checker ) % 2 == 0;
-                    wxColour background = light ? wxColour( 235, 235, 235 )
-                                                : wxColour( 185, 185, 185 );
-                    wxRect tile( x, y, std::min( checker, rect.GetRight() - x ),
-                                std::min( checker, rect.GetBottom() - y ) );
-                    dc.SetPen( *wxTRANSPARENT_PEN );
-                    dc.SetBrush( wxBrush( compositeOn( color, background ) ) );
-                    dc.DrawRectangle( tile );
-                }
-            }
+                int slot = row * static_cast<int>( MAX_RECENT_COLORS ) + column;
+                wxRect rect = swatchRect( row, column );
+                const NAMED_COLOR* item = colorAt( slot );
 
-            dc.SetBrush( *wxTRANSPARENT_BRUSH );
-            dc.SetPen( wxPen( i == static_cast<size_t>( m_hoverIndex )
-                                      ? wxSystemSettings::GetColour( wxSYS_COLOUR_HIGHLIGHT )
-                                      : wxColour( 70, 70, 70 ) ) );
-            dc.DrawRectangle( rect );
+                if( item )
+                {
+                    for( int y = rect.y; y < rect.y + rect.height; y += checker )
+                    {
+                        for( int x = rect.x; x < rect.x + rect.width; x += checker )
+                        {
+                            bool light = ( ( x - rect.x ) / checker + ( y - rect.y ) / checker )
+                                         % 2 == 0;
+                            wxColour background = light ? wxColour( 235, 235, 235 )
+                                                        : wxColour( 185, 185, 185 );
+                            wxRect tile( x, y, std::min( checker, rect.x + rect.width - x ),
+                                        std::min( checker, rect.y + rect.height - y ) );
+                            dc.SetPen( *wxTRANSPARENT_PEN );
+                            dc.SetBrush( wxBrush( compositeOn( item->color, background ) ) );
+                            dc.DrawRectangle( tile );
+                        }
+                    }
+                }
+                else
+                {
+                    dc.SetPen( *wxTRANSPARENT_PEN );
+                    dc.SetBrush( wxBrush( wxSystemSettings::GetColour( wxSYS_COLOUR_BTNFACE ) ) );
+                    dc.DrawRectangle( rect );
+                }
+
+                dc.SetBrush( *wxTRANSPARENT_BRUSH );
+                dc.SetPen( wxPen( slot == m_hoverSlot && item
+                                          ? wxSystemSettings::GetColour( wxSYS_COLOUR_HIGHLIGHT )
+                                          : wxSystemSettings::GetColour(
+                                                    wxSYS_COLOUR_BTNSHADOW ) ) );
+                dc.DrawRectangle( rect );
+            }
         }
     }
 
     void onLeftUp( wxMouseEvent& aEvent )
     {
-        int index = hitTest( aEvent.GetPosition() );
+        int slot = hitTest( aEvent.GetPosition() );
+        const NAMED_COLOR* item = colorAt( slot );
 
-        if( index >= 0 && m_callback )
-            m_callback( m_colors[index].color );
+        if( item && m_callback )
+            m_callback( item->color );
     }
 
     void onMotion( wxMouseEvent& aEvent )
     {
-        int index = hitTest( aEvent.GetPosition() );
+        int slot = hitTest( aEvent.GetPosition() );
+        const NAMED_COLOR* item = colorAt( slot );
 
-        if( index == m_hoverIndex )
+        if( slot == m_hoverSlot )
             return;
 
-        m_hoverIndex = index;
+        m_hoverSlot = slot;
 
-        if( index >= 0 )
+        if( item )
         {
-            wxString tooltip = m_colors[index].name;
+            wxString tooltip = item->name;
 
             if( tooltip.IsEmpty() )
-                tooltip = m_colors[index].color.ToHexString();
+                tooltip = item->color.ToHexString();
 
             SetToolTip( tooltip );
         }
@@ -283,15 +339,16 @@ private:
 
     void onLeave( wxMouseEvent& )
     {
-        m_hoverIndex = -1;
+        m_hoverSlot = -1;
         UnsetToolTip();
         Refresh( false );
     }
 
 private:
-    std::vector<NAMED_COLOR> m_colors;
+    std::vector<NAMED_COLOR> m_presets;
+    std::vector<NAMED_COLOR> m_recent;
     SELECT_CALLBACK          m_callback;
-    int                      m_hoverIndex;
+    int                      m_hoverSlot;
 };
 
 
@@ -346,6 +403,11 @@ public:
     COLOR4D GetColor() const
     {
         return fromHSV( m_hue, m_saturation, m_value, m_alpha );
+    }
+
+    void ClearCallback()
+    {
+        m_callback = nullptr;
     }
 
 private:
@@ -676,7 +738,7 @@ struct DIALOG_COLOR_PICKER::IMPL
             mode( MODE::ARGB ),
             updatingControls( false ),
             canvas( nullptr ),
-            recentPanel( nullptr ),
+            swatchGrid( nullptr ),
             modeButton( nullptr ),
             hexInput( nullptr ),
             resetButton( nullptr ),
@@ -686,7 +748,9 @@ struct DIALOG_COLOR_PICKER::IMPL
             previousRightDown( false ),
             eyedropperCursorSet( false ),
             screenPickerAvailability( SCREEN_PICKER_AVAILABILITY::UNKNOWN ),
-            finishing( false )
+            finishing( false ),
+            interactionReady( false ),
+            shutdownComplete( false )
     {
         if( !allowOpacity && isConcreteColor( color ) )
             color.a = 1.0;
@@ -714,30 +778,26 @@ struct DIALOG_COLOR_PICKER::IMPL
         setColor( color, false );
     }
 
+    ~IMPL()
+    {
+        shutdown();
+    }
+
     void buildControls()
     {
         auto* mainSizer = new wxBoxSizer( wxVERTICAL );
         dialog->SetSizer( mainSizer );
 
-        auto* presetPanel = new COLOR_SWATCH_BAR(
+        swatchGrid = new COLOR_SWATCH_GRID(
                 dialog,
                 [this]( const COLOR4D& aColor )
                 {
                     acceptSwatchColor( aColor );
                 } );
-        presetPanel->SetColors( fixedPresetColors() );
-        mainSizer->Add( presetPanel, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP,
+        swatchGrid->SetPresetColors( fixedPresetColors() );
+        swatchGrid->SetRecentColors( recent );
+        mainSizer->Add( swatchGrid, 0, wxALIGN_CENTER_HORIZONTAL | wxTOP,
                         dialog->FromDIP( 8 ) );
-
-        recentPanel = new COLOR_SWATCH_BAR(
-                dialog,
-                [this]( const COLOR4D& aColor )
-                {
-                    acceptSwatchColor( aColor );
-                } );
-        recentPanel->SetColors( recent );
-        mainSizer->Add( recentPanel, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP,
-                        dialog->FromDIP( 3 ) );
 
         canvas = new COLOR_PICKER_CANVAS(
                 dialog, allowOpacity,
@@ -805,72 +865,14 @@ struct DIALOG_COLOR_PICKER::IMPL
         dialog->SetEscapeId( wxID_CANCEL );
         dialog->SetInitialFocus( canvas );
 
-        modeButton->Bind( wxEVT_BUTTON,
-                          [this]( wxCommandEvent& )
-                          {
-                              commitFocusedEditor();
-                              mode = static_cast<MODE>( ( static_cast<int>( mode ) + 1 ) % 4 );
-                              updateControls();
-                          } );
-
-        resetButton->Bind( wxEVT_BUTTON,
-                           [this]( wxCommandEvent& )
-                           {
-                               setColor( defaultColor, true );
-                           } );
-
-        okButton->Bind( wxEVT_BUTTON,
-                        [this]( wxCommandEvent& aEvent )
-                        {
-                            if( commitFocusedEditor() )
-                            {
-                                addRecent( color, true );
-                                aEvent.Skip();
-                            }
-                        } );
+        modeButton->Bind( wxEVT_BUTTON, &IMPL::onModeButton, this );
+        resetButton->Bind( wxEVT_BUTTON, &IMPL::onResetButton, this );
+        okButton->Bind( wxEVT_BUTTON, &IMPL::onOkButton, this );
 
         auto bindEditor = [this]( wxTextCtrl* aControl )
         {
-            aControl->Bind( wxEVT_KILL_FOCUS,
-                            [this]( wxFocusEvent& aEvent )
-                            {
-                                if( !updatingControls )
-                                    commitFocusedEditor();
-
-                                aEvent.Skip();
-                            } );
-
-            aControl->Bind( wxEVT_MOUSEWHEEL,
-                            [this, aControl]( wxMouseEvent& aEvent )
-                            {
-                                if( aControl == hexInput || !aControl->IsEnabled() )
-                                {
-                                    aEvent.Skip();
-                                    return;
-                                }
-
-                                size_t index = 0;
-
-                                while( index < channelInputs.size()
-                                       && channelInputs[index] != aControl )
-                                {
-                                    ++index;
-                                }
-
-                                if( index == channelInputs.size() )
-                                {
-                                    aEvent.Skip();
-                                    return;
-                                }
-
-                                long value = 0;
-                                aControl->GetValue().ToLong( &value );
-                                int direction = aEvent.GetWheelRotation() > 0 ? 1 : -1;
-                                value = std::clamp<long>( value + direction, channelMinimum[index],
-                                                         channelMaximum[index] );
-                                aControl->ChangeValue( wxString::Format( wxS( "%ld" ), value ) );
-                                commitChannels();
-                            } );
+            aControl->Bind( wxEVT_KILL_FOCUS, &IMPL::onEditorKillFocus, this );
+            aControl->Bind( wxEVT_MOUSEWHEEL, &IMPL::onEditorMouseWheel, this );
         };
 
         bindEditor( hexInput );
@@ -881,11 +883,8 @@ struct DIALOG_COLOR_PICKER::IMPL
         std::function<void( wxWindow* )> bindRightClick =
                 [&]( wxWindow* aWindow )
                 {
-                    aWindow->Bind( wxEVT_RIGHT_DOWN,
-                                   [this]( wxMouseEvent& )
-                                   {
-                                       cancelPicker();
-                                   } );
+                    aWindow->Bind( wxEVT_RIGHT_DOWN, &IMPL::onRightClick, this );
+                    rightClickWindows.push_back( aWindow );
 
                     for( wxWindow* child : aWindow->GetChildren() )
                         bindRightClick( child );
@@ -893,29 +892,99 @@ struct DIALOG_COLOR_PICKER::IMPL
 
         bindRightClick( dialog );
 
-        dialog->Bind( wxEVT_TIMER,
-                      [this]( wxTimerEvent& )
-                      {
-                          pollOutsideClick();
-                      }, eyedropperTimer.GetId() );
+        dialog->Bind( wxEVT_TIMER, &IMPL::onTimer, this, eyedropperTimer.GetId() );
 
         // wxEVT_ACTIVATE catches clicks which are shorter than the polling interval.  It also
         // keeps external KiCad frames usable: no global mouse capture is needed.
-        dialog->Bind( wxEVT_ACTIVATE,
-                      [this]( wxActivateEvent& aEvent )
-                      {
-                          if( !aEvent.GetActive() && !finishing
-                                  && !pointInsideDialog( wxGetMousePosition() ) )
-                          {
-                              if( wxGetMouseState().RightIsDown() )
-                                  cancelPicker();
-                              else
-                                  acceptOutsideColor();
-                          }
+        dialog->Bind( wxEVT_ACTIVATE, &IMPL::onActivate, this );
+    }
 
-                          aEvent.Skip();
-                      } );
+    void onModeButton( wxCommandEvent& )
+    {
+        commitFocusedEditor();
+        mode = static_cast<MODE>( ( static_cast<int>( mode ) + 1 ) % 4 );
+        updateControls();
+    }
 
+    void onResetButton( wxCommandEvent& )
+    {
+        setColor( defaultColor, true );
+    }
+
+    void onOkButton( wxCommandEvent& aEvent )
+    {
+        if( commitFocusedEditor() )
+        {
+            addRecent( color, true );
+            aEvent.Skip();
+        }
+    }
+
+    void onEditorKillFocus( wxFocusEvent& aEvent )
+    {
+        if( !updatingControls )
+            commitFocusedEditor();
+
+        aEvent.Skip();
+    }
+
+    void onEditorMouseWheel( wxMouseEvent& aEvent )
+    {
+        wxTextCtrl* control = dynamic_cast<wxTextCtrl*>( aEvent.GetEventObject() );
+
+        if( !control || control == hexInput || !control->IsEnabled() )
+        {
+            aEvent.Skip();
+            return;
+        }
+
+        size_t index = 0;
+
+        while( index < channelInputs.size() && channelInputs[index] != control )
+            ++index;
+
+        if( index == channelInputs.size() )
+        {
+            aEvent.Skip();
+            return;
+        }
+
+        long value = 0;
+        control->GetValue().ToLong( &value );
+        int direction = aEvent.GetWheelRotation() > 0 ? 1 : -1;
+        value = std::clamp<long>( value + direction, channelMinimum[index],
+                                 channelMaximum[index] );
+        control->ChangeValue( wxString::Format( wxS( "%ld" ), value ) );
+        commitChannels();
+    }
+
+    void onRightClick( wxMouseEvent& )
+    {
+        if( interactionReady )
+            cancelPicker();
+    }
+
+    void onTimer( wxTimerEvent& )
+    {
+        pollOutsideClick();
+    }
+
+    void onActivate( wxActivateEvent& aEvent )
+    {
+        if( interactionReady && !aEvent.GetActive() && !finishing
+                && !pointInsideDialog( wxGetMousePosition() ) )
+        {
+            wxMouseState state = wxGetMouseState();
+
+            // Activation can also be lost to a screenshot shortcut, a window-manager action, or
+            // another application.  Only a real mouse press is an outside-click confirmation.
+            if( state.RightIsDown() )
+                cancelPicker();
+            else if( state.LeftIsDown() )
+                acceptOutsideColor();
+        }
+
+        aEvent.Skip();
     }
 
     void setColor( const COLOR4D& aColor, bool aAddRecent )
@@ -1200,8 +1269,8 @@ struct DIALOG_COLOR_PICKER::IMPL
         addTo( recent );
         addTo( recentColors() );
 
-        if( aUpdatePanel && recentPanel )
-            recentPanel->SetColors( recent );
+        if( aUpdatePanel && swatchGrid )
+            swatchGrid->SetRecentColors( recent );
     }
 
     void positionNearCursor()
@@ -1222,6 +1291,55 @@ struct DIALOG_COLOR_PICKER::IMPL
         dialog->SetPosition( position );
     }
 
+    void shutdown()
+    {
+        if( shutdownComplete )
+            return;
+
+        shutdownComplete = true;
+        stopOutsideMonitor();
+
+        // DIALOG_COLOR_PICKER owns its wx children through the base class, so they outlive this
+        // implementation object.  Remove every handler and callback that refers back to IMPL
+        // before its storage is released.
+        if( swatchGrid )
+            swatchGrid->ClearCallback();
+
+        if( canvas )
+            canvas->ClearCallback();
+
+        if( modeButton )
+            modeButton->Unbind( wxEVT_BUTTON, &IMPL::onModeButton, this );
+
+        if( resetButton )
+            resetButton->Unbind( wxEVT_BUTTON, &IMPL::onResetButton, this );
+
+        if( okButton )
+            okButton->Unbind( wxEVT_BUTTON, &IMPL::onOkButton, this );
+
+        if( hexInput )
+        {
+            hexInput->Unbind( wxEVT_KILL_FOCUS, &IMPL::onEditorKillFocus, this );
+            hexInput->Unbind( wxEVT_MOUSEWHEEL, &IMPL::onEditorMouseWheel, this );
+        }
+
+        for( wxTextCtrl* input : channelInputs )
+        {
+            if( input )
+            {
+                input->Unbind( wxEVT_KILL_FOCUS, &IMPL::onEditorKillFocus, this );
+                input->Unbind( wxEVT_MOUSEWHEEL, &IMPL::onEditorMouseWheel, this );
+            }
+        }
+
+        for( wxWindow* window : rightClickWindows )
+            window->Unbind( wxEVT_RIGHT_DOWN, &IMPL::onRightClick, this );
+
+        rightClickWindows.clear();
+        dialog->Unbind( wxEVT_TIMER, &IMPL::onTimer, this, eyedropperTimer.GetId() );
+        dialog->Unbind( wxEVT_ACTIVATE, &IMPL::onActivate, this );
+    }
+
     void startOutsideMonitor()
     {
         wxMouseState state = wxGetMouseState();
@@ -1230,12 +1348,14 @@ struct DIALOG_COLOR_PICKER::IMPL
         eyedropperCursorSet = false;
         screenPickerAvailability = SCREEN_PICKER_AVAILABILITY::UNKNOWN;
         finishing = false;
+        interactionReady = false;
         eyedropperTimer.Start( 25 );
     }
 
     void stopOutsideMonitor()
     {
         finishing = true;
+        interactionReady = false;
         eyedropperTimer.Stop();
         setEyedropperCursor( false );
     }
@@ -1260,6 +1380,11 @@ struct DIALOG_COLOR_PICKER::IMPL
     {
         if( finishing )
             return;
+
+        // ShowQuasiModal disables the parent before it marks its nested event loop active.  A
+        // timer event can only arrive after that setup is complete, so it is the safe point from
+        // which mouse and activation handlers may close this dialog.
+        interactionReady = true;
 
         wxMouseState state = wxGetMouseState();
         bool leftDown = state.LeftIsDown();
@@ -1371,7 +1496,7 @@ struct DIALOG_COLOR_PICKER::IMPL
     bool                          updatingControls;
     std::vector<NAMED_COLOR>      recent;
     COLOR_PICKER_CANVAS*          canvas;
-    COLOR_SWATCH_BAR*             recentPanel;
+    COLOR_SWATCH_GRID*            swatchGrid;
     wxButton*                     modeButton;
     wxTextCtrl*                   hexInput;
     std::array<wxStaticText*, 4>  channelLabels{};
@@ -1381,11 +1506,14 @@ struct DIALOG_COLOR_PICKER::IMPL
     wxButton*                     resetButton;
     wxButton*                     okButton;
     wxTimer                       eyedropperTimer;
+    std::vector<wxWindow*>        rightClickWindows;
     bool                          previousLeftDown;
     bool                          previousRightDown;
     bool                          eyedropperCursorSet;
     SCREEN_PICKER_AVAILABILITY    screenPickerAvailability;
     bool                          finishing;
+    bool                          interactionReady;
+    bool                          shutdownComplete;
 };
 
 
