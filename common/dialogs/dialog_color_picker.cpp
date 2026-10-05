@@ -835,7 +835,9 @@ struct DIALOG_COLOR_PICKER::IMPL
                                                wxDefaultPosition,
                                                dialog->FromDIP( wxSize( 38, -1 ) ),
                                                wxTE_PROCESS_ENTER | wxTE_CENTRE );
-            channelInputs[i]->SetMaxLength( 3 );
+            // The text event below performs the effective three-digit limit after filtering,
+            // allowing pasted values with surrounding non-numeric characters to be cleaned.
+            channelInputs[i]->SetMaxLength( 32 );
             inputSizer->Add( channelInputs[i], 0, wxALIGN_CENTER_VERTICAL );
         }
 
@@ -879,7 +881,10 @@ struct DIALOG_COLOR_PICKER::IMPL
         hexInput->Bind( wxEVT_TEXT, &IMPL::onHexText, this );
 
         for( wxTextCtrl* input : channelInputs )
+        {
             bindEditor( input );
+            input->Bind( wxEVT_TEXT, &IMPL::onChannelText, this );
+        }
 
         std::function<void( wxWindow* )> bindRightClick =
                 [&]( wxWindow* aWindow )
@@ -956,7 +961,7 @@ struct DIALOG_COLOR_PICKER::IMPL
         value = std::clamp<long>( value + direction, channelMinimum[index],
                                  channelMaximum[index] );
         control->ChangeValue( wxString::Format( wxS( "%ld" ), value ) );
-        commitChannels();
+        commitChannels( false );
     }
 
     void onHexText( wxCommandEvent& )
@@ -1011,6 +1016,60 @@ struct DIALOG_COLOR_PICKER::IMPL
 
         if( parseHexColor( filtered, parsed ) )
             setColor( parsed, false );
+    }
+
+    void onChannelText( wxCommandEvent& aEvent )
+    {
+        if( updatingControls )
+            return;
+
+        wxTextCtrl* control = dynamic_cast<wxTextCtrl*>( aEvent.GetEventObject() );
+
+        if( !control || !control->IsEnabled() )
+            return;
+
+        size_t index = 0;
+
+        while( index < channelInputs.size() && channelInputs[index] != control )
+            ++index;
+
+        if( index == channelInputs.size() )
+            return;
+
+        wxString text = control->GetValue();
+        wxString filtered;
+        long insertionPoint = control->GetInsertionPoint();
+        long filteredInsertionPoint = 0;
+        size_t maximumDigits = wxString::Format( wxS( "%d" ), channelMaximum[index] ).length();
+
+        for( size_t i = 0; i < text.length(); ++i )
+        {
+            wxUniChar character = text[i];
+
+            if( wxString( wxS( "0123456789" ) ).Find( character ) == wxNOT_FOUND
+                    || filtered.length() == maximumDigits )
+            {
+                continue;
+            }
+
+            filtered += character;
+
+            if( static_cast<long>( i ) < insertionPoint )
+                ++filteredInsertionPoint;
+        }
+
+        if( filtered != text )
+        {
+            updatingControls = true;
+            control->ChangeValue( filtered );
+            control->SetInsertionPoint( filteredInsertionPoint );
+            updatingControls = false;
+        }
+
+        if( filtered.IsEmpty() )
+            return;
+
+        commitChannels( false );
     }
 
     void onRightClick( wxMouseEvent& )
@@ -1177,7 +1236,7 @@ struct DIALOG_COLOR_PICKER::IMPL
         for( wxTextCtrl* input : channelInputs )
         {
             if( focus == input )
-                return commitChannels();
+                return commitChannels( true );
         }
 
         return true;
@@ -1265,7 +1324,7 @@ struct DIALOG_COLOR_PICKER::IMPL
         return true;
     }
 
-    bool commitChannels()
+    bool commitChannels( bool aAddRecent )
     {
         if( updatingControls )
             return true;
@@ -1277,10 +1336,13 @@ struct DIALOG_COLOR_PICKER::IMPL
             if( !channelInputs[i]->IsEnabled() )
                 continue;
 
-            long value = channelMaximum[i];
+            long value = 0;
 
             if( !channelInputs[i]->GetValue().ToLong( &value ) )
-                value = channelMaximum[i];
+            {
+                updateControls();
+                return true;
+            }
 
             values[i] = std::clamp<long>( value, channelMinimum[i], channelMaximum[i] );
         }
@@ -1317,7 +1379,7 @@ struct DIALOG_COLOR_PICKER::IMPL
             break;
         }
 
-        setColor( updated, true );
+        setColor( updated, aAddRecent );
         return true;
     }
 
@@ -1401,6 +1463,7 @@ struct DIALOG_COLOR_PICKER::IMPL
         {
             if( input )
             {
+                input->Unbind( wxEVT_TEXT, &IMPL::onChannelText, this );
                 input->Unbind( wxEVT_KILL_FOCUS, &IMPL::onEditorKillFocus, this );
                 input->Unbind( wxEVT_MOUSEWHEEL, &IMPL::onEditorMouseWheel, this );
             }
