@@ -130,12 +130,47 @@ std::vector<NAMED_COLOR>& recentColors()
 }
 
 
-class RECENT_COLORS_PANEL : public wxPanel
+std::vector<NAMED_COLOR> fixedPresetColors()
+{
+    // A compact, high-contrast subset of the legacy Defined Colors palette.  Closely spaced
+    // intermediate shades are intentionally omitted so every preset remains useful at swatch
+    // size and the row exactly matches the twenty recent-color slots below it.
+    static constexpr std::array<EDA_COLOR_T, MAX_RECENT_COLORS> presets = {
+        BLACK,       DARKGRAY,   LIGHTGRAY,   WHITE,
+        DARKBLUE,    DARKGREEN,  DARKCYAN,    DARKRED,      DARKMAGENTA, DARKORANGE,
+        BLUE,        GREEN,      CYAN,        RED,          MAGENTA,     YELLOW,
+        PUREBLUE,    PUREGREEN,  PURERED,     PUREORANGE
+    };
+
+    std::vector<NAMED_COLOR> colors;
+    colors.reserve( presets.size() );
+
+    for( EDA_COLOR_T colorId : presets )
+    {
+        for( int index = 0; index < NBCOLORS; ++index )
+        {
+            const StructColors& preset = colorRefs()[index];
+
+            if( preset.m_Numcolor == colorId )
+            {
+                colors.push_back( { COLOR4D( colorId ),
+                                    wxGetTranslation(
+                                            wxString::FromUTF8( preset.m_ColorName ) ) } );
+                break;
+            }
+        }
+    }
+
+    return colors;
+}
+
+
+class COLOR_SWATCH_BAR : public wxPanel
 {
 public:
     using SELECT_CALLBACK = std::function<void( const COLOR4D& )>;
 
-    RECENT_COLORS_PANEL( wxWindow* aParent, SELECT_CALLBACK aCallback ) :
+    COLOR_SWATCH_BAR( wxWindow* aParent, SELECT_CALLBACK aCallback ) :
             wxPanel( aParent, wxID_ANY ),
             m_callback( std::move( aCallback ) ),
             m_hoverIndex( -1 )
@@ -143,10 +178,10 @@ public:
         SetBackgroundStyle( wxBG_STYLE_PAINT );
         SetMinSize( FromDIP( wxSize( 360, 18 ) ) );
 
-        Bind( wxEVT_PAINT, &RECENT_COLORS_PANEL::onPaint, this );
-        Bind( wxEVT_LEFT_UP, &RECENT_COLORS_PANEL::onLeftUp, this );
-        Bind( wxEVT_MOTION, &RECENT_COLORS_PANEL::onMotion, this );
-        Bind( wxEVT_LEAVE_WINDOW, &RECENT_COLORS_PANEL::onLeave, this );
+        Bind( wxEVT_PAINT, &COLOR_SWATCH_BAR::onPaint, this );
+        Bind( wxEVT_LEFT_UP, &COLOR_SWATCH_BAR::onLeftUp, this );
+        Bind( wxEVT_MOTION, &COLOR_SWATCH_BAR::onMotion, this );
+        Bind( wxEVT_LEAVE_WINDOW, &COLOR_SWATCH_BAR::onLeave, this );
     }
 
     void SetColors( const std::vector<NAMED_COLOR>& aColors )
@@ -684,14 +719,25 @@ struct DIALOG_COLOR_PICKER::IMPL
         auto* mainSizer = new wxBoxSizer( wxVERTICAL );
         dialog->SetSizer( mainSizer );
 
-        recentPanel = new RECENT_COLORS_PANEL(
+        auto* presetPanel = new COLOR_SWATCH_BAR(
                 dialog,
                 [this]( const COLOR4D& aColor )
                 {
-                    setColor( aColor, true );
+                    acceptSwatchColor( aColor );
+                } );
+        presetPanel->SetColors( fixedPresetColors() );
+        mainSizer->Add( presetPanel, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP,
+                        dialog->FromDIP( 8 ) );
+
+        recentPanel = new COLOR_SWATCH_BAR(
+                dialog,
+                [this]( const COLOR4D& aColor )
+                {
+                    acceptSwatchColor( aColor );
                 } );
         recentPanel->SetColors( recent );
-        mainSizer->Add( recentPanel, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, dialog->FromDIP( 8 ) );
+        mainSizer->Add( recentPanel, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP,
+                        dialog->FromDIP( 3 ) );
 
         canvas = new COLOR_PICKER_CANVAS(
                 dialog, allowOpacity,
@@ -1293,6 +1339,18 @@ struct DIALOG_COLOR_PICKER::IMPL
         dialog->EndDialogShim( wxID_OK );
     }
 
+    void acceptSwatchColor( const COLOR4D& aColor )
+    {
+        if( finishing )
+            return;
+
+        setColor( aColor, true );
+        finishing = true;
+        eyedropperTimer.Stop();
+        setEyedropperCursor( false );
+        dialog->EndDialogShim( wxID_OK );
+    }
+
     void cancelPicker()
     {
         if( finishing )
@@ -1313,7 +1371,7 @@ struct DIALOG_COLOR_PICKER::IMPL
     bool                          updatingControls;
     std::vector<NAMED_COLOR>      recent;
     COLOR_PICKER_CANVAS*          canvas;
-    RECENT_COLORS_PANEL*          recentPanel;
+    COLOR_SWATCH_BAR*             recentPanel;
     wxButton*                     modeButton;
     wxTextCtrl*                   hexInput;
     std::array<wxStaticText*, 4>  channelLabels{};
